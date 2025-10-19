@@ -1,0 +1,285 @@
+# ====================================================================================
+# CLIMATE DATA ETL PIPELINE CONFIGURATION
+# ====================================================================================
+
+# Project Information
+project:
+  name: "Climate Data ETL Pipeline"
+  version: "2.0.0"
+  author: "Climate Research Team"
+  description: "Production ETL pipeline for climate data processing"
+
+# ====================================================================================
+# DATA ACQUISITION CONFIGURATION
+# ====================================================================================
+
+data_acquisition:
+  source: "ERA5"
+  api:
+    url: "https://cds.climate.copernicus.eu/api/v2"
+    timeout: 300
+    retry_attempts: 3
+    retry_delay: 5
+  
+  output:
+    directory: "data/raw"
+    naming_convention: "era5_{variable}_{year}_{month}.nc"
+    overwrite_existing: false
+  
+  default_parameters:
+    product_type: "reanalysis"
+    format: "netcdf"
+    area: [51, 13, 48, 19]  # [north, west, south, east] - Central Europe
+    time: ["00:00", "12:00"]
+
+# ====================================================================================
+# DATA TRANSFORMATION CONFIGURATION
+# ====================================================================================
+
+data_transformation:
+  input_directory: "data/raw"
+  output_directory: "data/processed"
+  
+  # Dimension standardization
+  dimensions:
+    rename: true
+    mapping:
+      valid_time: "time"
+      lat: "latitude"
+      lon: "longitude"
+      latitude: "latitude"
+      longitude: "longitude"
+  
+  # Unit conversions
+  unit_conversions:
+    temperature:
+      enabled: true
+      from_unit: "Kelvin"
+      to_unit: "Celsius"
+      offset: -273.15
+      variables:
+        - "t2m"
+        - "temperature"
+        - "air_temperature"
+        - "t_2m"
+        - "skt"
+        - "sst"
+      validation:
+        min_value_kelvin: 150
+        max_value_kelvin: 350
+        check_negative: true
+    
+    precipitation:
+      enabled: false
+      from_unit: "millimeters"
+      to_unit: "meters"
+      scale_factor: 0.001
+      variables:
+        - "tp"
+        - "precipitation"
+        - "total_precipitation"
+        - "pr"
+      validation:
+        min_value: 0
+        max_value: 1000
+        check_negative: true
+  
+  # Temporal aggregations
+  temporal_aggregation:
+    hourly_to_daily:
+      enabled: false
+      method: "mean"  # Options: mean, sum, min, max, median
+      variables: []  # Empty list means all variables
+      time_dimension: "time"
+      
+    daily_to_monthly:
+      enabled: false
+      method: "mean"  # For temperature: mean, for precipitation: sum
+      variables: []
+      time_dimension: "time"
+      preserve_attrs: true
+      
+    custom_frequency:
+      enabled: false
+      frequency: "W"  # W=Weekly, M=Monthly, Q=Quarterly, Y=Yearly
+      method: "mean"
+      variables: []
+  
+  # Spatial operations
+  spatial:
+    reproject: false
+    target_crs: "EPSG:4326"
+    interpolation_method: "linear"
+    resample:
+      enabled: false
+      target_resolution: [0.25, 0.25]  # [lat, lon] in degrees
+  
+  # Data normalization
+  normalization:
+    enabled: true
+    method: "zscore"  # Options: zscore, minmax, robust
+    variables: []     # Empty list means all numeric variables
+    per_variable: true  # Normalize each variable independently
+    
+    zscore:
+      with_mean: true
+      with_std: true
+      ddof: 0  # Delta degrees of freedom
+    
+    minmax:
+      feature_range: [0, 1]
+      clip: false  # Clip values to feature_range
+    
+    robust:
+      with_centering: true
+      with_scaling: true
+      quantile_range: [25.0, 75.0]
+  
+  # Quality control
+  quality_control:
+    remove_outliers: false
+    outlier_method: "iqr"  # Options: iqr, zscore, isolation_forest
+    outlier_threshold: 3.0
+    
+    handle_missing:
+      method: "drop"  # Options: drop, interpolate, fill
+      fill_value: null
+    
+    validate_ranges:
+      temperature: [-100, 100]  # Celsius
+      precipitation: [0, 1000]  # mm
+
+# ====================================================================================
+# DATA EXPORT CONFIGURATION
+# ====================================================================================
+
+data_export:
+  formats:
+    - netcdf
+    - parquet
+  
+  netcdf:
+    compression:
+      enabled: true
+      level: 4  # 0-9
+      algorithm: "zlib"
+    format: "NETCDF4"
+    engine: "netcdf4"
+    
+  parquet:
+    compression: "snappy"  # Options: snappy, gzip, brotli, zstd, none
+    engine: "pyarrow"
+    row_group_size: 100000
+    
+  csv:
+    separator: ","
+    decimal: "."
+    encoding: "utf-8"
+    
+  generate_report: true
+  report_format: "text"  # Options: text, html, markdown, json
+
+# ====================================================================================
+# LOGGING CONFIGURATION
+# ====================================================================================
+
+logging:
+  version: 1
+  
+  formatters:
+    standard:
+      format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+      datefmt: "%Y-%m-%d %H:%M:%S"
+    
+    detailed:
+      format: "%(asctime)s - %(name)s - [%(filename)s:%(lineno)d] - %(levelname)s - %(message)s"
+      datefmt: "%Y-%m-%d %H:%M:%S"
+  
+  handlers:
+    console:
+      class: "logging.StreamHandler"
+      level: "INFO"
+      formatter: "standard"
+      stream: "ext://sys.stdout"
+    
+    file:
+      class: "logging.FileHandler"
+      level: "DEBUG"
+      formatter: "detailed"
+      filename: "logs/pipeline.log"
+      mode: "a"
+  
+  loggers:
+    root:
+      level: "INFO"
+      handlers:
+        - console
+        - file
+    
+    data_acquisition:
+      level: "DEBUG"
+      handlers:
+        - file
+      propagate: false
+    
+    data_transformation:
+      level: "DEBUG"
+      handlers:
+        - file
+      propagate: false
+
+# ====================================================================================
+# PERFORMANCE CONFIGURATION
+# ====================================================================================
+
+performance:
+  parallel_processing:
+    enabled: true
+    max_workers: 4
+  
+  memory:
+    chunk_size: 1000
+    max_memory_gb: 8
+    use_dask: false
+  
+  caching:
+    enabled: true
+    directory: ".cache"
+    ttl_hours: 24
+
+# ====================================================================================
+# VALIDATION AND TESTING
+# ====================================================================================
+
+validation:
+  strict_mode: false
+  
+  checks:
+    - dimension_names
+    - variable_ranges
+    - missing_data_threshold
+    - temporal_consistency
+    - spatial_consistency
+  
+  thresholds:
+    max_missing_percentage: 10.0
+    min_data_points: 100
+
+# ====================================================================================
+# NOTIFICATIONS (Optional)
+# ====================================================================================
+
+notifications:
+  enabled: false
+  
+  email:
+    smtp_server: "smtp.gmail.com"
+    smtp_port: 587
+    use_tls: true
+    sender: "pipeline@example.com"
+    recipients:
+      - "user@example.com"
+  
+  slack:
+    webhook_url: ""
+    channel: "#data-pipeline"

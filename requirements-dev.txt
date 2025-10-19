@@ -1,0 +1,41 @@
+# Development and testing dependencies
+
+# Testing framework
+pytest>=7.0.0
+pytest-cov>=4.0.0
+pytest-mock>=3.10.0
+pytest-xdist>=3.0.0
+
+# Code quality
+black>=23.0.0
+flake8>=6.0.0
+pylint>=2.15.0
+mypy>=1.0.0
+isort>=5.11.0
+
+# Documentation
+sphinx>=5.0.0
+sphinx-rtd-theme>=1.2.0
+
+# Jupyter support
+jupyter>=1.0.0
+ipykernel>=6.0.0
+notebook>=6.5.0
+
+# Additional testing tools
+responses>=0.22.0
+freezegun>=1.2.0
+
+# Performance profiling
+line-profiler>=4.0.0
+memory-profiler>=0.60.0
+
+# Pre-commit hooks
+pre-commit>=3.0.0
+
+# Testing framework
+pytest>=7.0.0            
+pytest-cov>=4.0.0
+pytest-mock>=3.10.0
+pytest-xdist>=3.0.0
+

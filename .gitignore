@@ -1,0 +1,388 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# C extensions
+*.c
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+
+# Translations
+*.mo
+*.pot
+
+# Django stuff:
+*.log
+local_settings.py
+db.sqlite3
+db.sqlite3-journal
+
+# Flask stuff:
+instance/
+.webassets-cache
+
+# Scrapy stuff:
+.scrapy
+
+# Sphinx documentation
+docs/_build/
+
+# PyBuilder
+target/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+*.ipynb
+
+# IPython
+profile_default/
+ipython_config.py
+
+# pyenv
+.python-version
+
+# pipenv
+Pipfile.lock
+
+# PEP 582
+__pypackages__/
+
+# Celery stuff
+celerybeat-schedule
+celerybeat.pid
+
+# SageMath parsed files
+*.sage.py
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Spyder project settings
+.spyderproject
+.spyproject
+
+# Rope project settings
+.ropeproject
+
+# mkdocs documentation
+/site
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Pyre type checker
+.pyre/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Data files
+data/raw/*.nc
+data/raw/*.csv
+data/raw/*.json
+data/processed/*.nc
+data/processed/*.parquet
+data/processed/*.csv
+
+# Keep directory structure
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+
+# Log files
+logs/*.log
+logs/*.txt
+!logs/.gitkeep
+
+# Cache
+.cache/
+*.cache
+
+# CDS API
+.cdsapirc
+
+# Temporary files
+*.tmp
+*.temp
+tmp/
+temp/
+
+# OS specific
+Thumbs.db
+.DS_Store
+desktop.ini
+
+# Backup files
+*.bak
+*.backup
+*~
+
+# Large files
+*.zip
+*.tar.gz
+*.tgz
+
+# Model files
+*.h5
+*.pkl
+*.joblib
+
+# Reports
+reports/*.html
+reports/*.pdf
+!reports/.gitkeep
+
+# ========================================
+# Phase 3: Vector Database & Embeddings
+# ========================================
+# ChromaDB data (local vector storage)
+chroma_db/
+.chroma/
+chromadb/
+chroma_data/
+
+# Pinecone cache
+.pinecone/
+pinecone_cache/
+
+# FAISS indices (large binary files)
+*.index
+faiss_index/
+vector_indices/
+
+# Embeddings cache (can be regenerated)
+embeddings/
+.embeddings/
+embeddings_cache/
+*.embedding
+*.vec
+
+# Sentence transformers cache
+.sentence_transformers/
+sentence_transformers_cache/
+
+# HuggingFace cache (models can be large)
+.transformers/
+transformers_cache/
+
+# ========================================
+# Secrets & API Keys (CRITICAL!)
+# ========================================
+# API keys (OpenAI, Anthropic, etc.)
+.env
+.env.local
+.env.*.local
+secrets.yaml
+secrets.json
+api_keys.txt
+api_keys.yaml
+
+# CDS API credentials (Climate Data Store)
+.cdsapirc
+cdsapirc
+
+# Database credentials
+database.ini
+db_config.yaml
+db_credentials.json
+
+# Cloud storage credentials
+aws_credentials
+gcp_credentials.json
+azure_credentials.json
+
+# SSH keys
+id_rsa
+id_rsa.pub
+*.ppk
+*.pem
+
+# ========================================
+# Large Data Files (CRITICAL!)
+# ========================================
+# ERA5 downloaded data (can be HUGE!)
+era5-download/data/**
+!era5-download/data/.gitkeep
+
+# All data folders with wildcards
+data/raw/**
+data/processed/**
+data/cache/**
+data/temp/**
+data/tmp/**
+
+# Specific large file formats
+*.nc
+*.grib
+*.grib2
+*.tif
+*.tiff
+*.hdf5
+*.h5
+*.zarr
+
+# Keep small sample files for testing
+!data/raw/sample_*.nc
+!data/raw/test_*.csv
+!tests/fixtures/*.nc
+
+# ========================================
+# Machine Learning & Models
+# ========================================
+# Model weights (large files)
+models/**
+*.h5
+*.keras
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+*.bin
+*.onnx
+
+# Keep model configs
+!models/*.json
+!models/*.yaml
+!models/README.md
+
+# MLflow experiments
+mlruns/
+mlartifacts/
+
+# Weights & Biases
+wandb/
+
+# TensorBoard logs
+runs/
+lightning_logs/
+
+# ========================================
+# Test & Coverage
+# ========================================
+# Test data (generated during tests)
+tests/test_data/**
+!tests/test_data/.gitkeep
+
+# Coverage HTML report
+htmlcov/
+
+# ========================================
+# Build & Deployment
+# ========================================
+# Docker build artifacts
+.dockerignore
+docker-compose.override.yml
+
+# Deployment secrets
+deploy_config.yaml
+k8s-secrets.yaml
+kubernetes/secrets/
+
+# ========================================
+# Output & Results
+# ========================================
+# Pipeline outputs (can be regenerated)
+output/**
+results/**
+exports/**
+outputs/**
+
+# ========================================
+# IDE & OS Specific
+# ========================================
+# VS Code workspace settings
+.vscode/
+!.vscode/settings.json
+!.vscode/tasks.json
+
+# PyCharm
+.idea/
+*.iml
+
+# Windows
+Thumbs.db
+*.stackdump
+[Dd]esktop.ini
+$RECYCLE.BIN/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon
+._*
+
+# ========================================
+# Jupyter Notebooks (Optional)
+# ========================================
+# Uncomment if you want to exclude all notebooks:
+# *.ipynb
+
+# Keep specific notebooks:
+!notebooks/examples/*.ipynb
+!notebooks/tutorials/*.ipynb
+
+# Jupyter checkpoints
+.ipynb_checkpoints/
+
+# ========================================
+# SAFETY CHECK BEFORE PHASE 3
+# ========================================
+# Check for large files: git ls-files --stage | awk '$4 > 1048576 {print $4, $2}'
+# Check for secrets: git grep -E "api[_-]?key|password|secret|token" --cached
+# Clean git history if needed: git filter-branch or BFG Repo-Cleaner
