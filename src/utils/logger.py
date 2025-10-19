@@ -38,7 +38,14 @@ def setup_logger(
         Configured logger instance
     """
     logger = logging.getLogger(name)
-    logger.setLevel(getattr(logging, level.upper()))
+    
+    # Handle both string and int log levels
+    if isinstance(level, str):
+        log_level = getattr(logging, level.upper(), logging.INFO)
+    else:
+        log_level = level
+    
+    logger.setLevel(log_level)
     
     # Clear existing handlers
     logger.handlers.clear()

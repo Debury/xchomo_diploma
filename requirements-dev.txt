@@ -28,6 +28,19 @@ freezegun>=1.2.0
 
 # Performance profiling
 line-profiler>=4.0.0
+
+# ====================================================================================
+# PHASE 4 TESTING DEPENDENCIES
+# ====================================================================================
+
+# Async testing for FastAPI
+pytest-asyncio>=0.21.0
+
+# HTTP testing client (already in requirements.txt)
+# httpx>=0.25.0
+
+# ASGI testing utilities
+asgi-lifespan>=2.1.0
 memory-profiler>=0.60.0
 
 # Pre-commit hooks
@@ -39,3 +52,15 @@ pytest-cov>=4.0.0
 pytest-mock>=3.10.0
 pytest-xdist>=3.0.0
 
+# Sentence transformers for embedding generation
+sentence-transformers>=2.2.0
+
+# ChromaDB for vector database
+chromadb>=0.4.0
+
+# Additional ML/NLP dependencies
+torch>=2.0.0
+transformers>=4.30.0
+
+# Typing extensions for better type hints
+typing-extensions>=4.5.0

@@ -283,3 +283,111 @@ notifications:
   slack:
     webhook_url: ""
     channel: "#data-pipeline"
+
+# ====================================================================================
+# PHASE 3: EMBEDDING GENERATION & VECTOR DATABASE CONFIGURATION
+# ====================================================================================
+
+embeddings:
+  # Model configuration
+  model:
+    name: "all-MiniLM-L6-v2"
+    provider: "sentence-transformers"
+    device: "cpu"  # Options: cpu, cuda, mps
+    cache_dir: ".cache/models"
+    normalize_embeddings: true
+    
+  # Batch processing
+  batch_size: 64
+  max_seq_length: 512
+  show_progress_bar: true
+  
+  # Text preparation
+  text_preparation:
+    include_metadata: true
+    include_statistics: true
+    include_location: true
+    template: "Dataset {id}: variable {variable} daily mean={mean:.2f}{unit}, range [{min:.1f}, {max:.1f}] at location [{lat:.2f}, {lon:.2f}]"
+  
+  # Statistics to compute
+  statistics:
+    - "mean"
+    - "min"
+    - "max"
+    - "std"
+    - "count"
+
+# Vector database configuration
+vector_db:
+  provider: "chromadb"
+  
+  chromadb:
+    # Storage configuration
+    persist_directory: "chroma_db"
+    settings:
+      anonymized_telemetry: false
+      allow_reset: true
+    
+    # Collection configuration
+    collection_name: "climate_data"
+    metadata_schema:
+      file_path: "string"
+      dataset_id: "string"
+      variable: "string"
+      start_date: "string"
+      end_date: "string"
+      min_lat: "float"
+      max_lat: "float"
+      min_lon: "float"
+      max_lon: "float"
+      temporal_resolution: "string"
+      spatial_resolution: "string"
+    
+    # Distance metric
+    distance_metric: "cosine"  # Options: cosine, l2, ip (inner product)
+    
+    # Query configuration
+    query:
+      default_k: 10
+      max_k: 100
+      include_distances: true
+      include_metadatas: true
+      include_documents: true
+
+# Semantic search configuration
+semantic_search:
+  enabled: true
+  
+  query_preprocessing:
+    lowercase: true
+    remove_stopwords: false
+    expand_abbreviations:
+      t2m: "2 meter temperature"
+      tp: "total precipitation"
+      skt: "skin temperature"
+      sst: "sea surface temperature"
+  
+  reranking:
+    enabled: false
+    method: "cross-encoder"
+    model: "cross-encoder/ms-marco-MiniLM-L-6-v2"
+  
+  results:
+    min_similarity_threshold: 0.5
+    group_by_dataset: false
+    max_results_per_dataset: 5
+
+# Metrics and monitoring
+embedding_metrics:
+  enabled: true
+  log_file: "logs/metrics.log"
+  
+  track:
+    - "batch_processing_time"
+    - "embedding_generation_time"
+    - "db_write_time"
+    - "db_query_time"
+    - "num_embeddings"
+    - "num_documents"
+    - "average_embedding_norm"
+    - "search_latency"

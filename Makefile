@@ -207,3 +207,101 @@ quick-viz: ## Quick visualization of latest processed data
 	@echo "$(BLUE)Creating quick visualization...$(NC)"
 	$(PYTHON) -m src.data_acquisition.visualizer $(DATA_PROCESSED)/test_era5_data.nc
 	@echo "$(GREEN)✓ Visualization generated$(NC)"
+
+##@ Phase 4: Orchestration & Web UI
+
+dagster-setup: ## Setup Dagster home directory
+	@echo "$(BLUE)Setting up Dagster...$(NC)"
+	@if not exist ".dagster_home" mkdir ".dagster_home"
+	@if not exist ".dagster_home\storage" mkdir ".dagster_home\storage"
+	@if not exist ".dagster_home\compute_logs" mkdir ".dagster_home\compute_logs"
+	@if not exist ".dagster_home\history" mkdir ".dagster_home\history"
+	@if not exist ".dagster_home\dagster.yaml" type nul > ".dagster_home\dagster.yaml"
+	@echo "$(GREEN)✓ Dagster home created at .dagster_home$(NC)"
+
+dagit: dagster-setup ## Start Dagit UI (port 3000)
+	@echo "$(BLUE)Starting Dagster dev server (UI + daemon)...$(NC)"
+	@echo "Access at: http://localhost:3000"
+	@echo "$(YELLOW)Press Ctrl+C to stop$(NC)"
+	@start_dagster.bat
+
+dagster-daemon: dagster-setup ## Start Dagster daemon (schedules & sensors)
+	@echo "$(BLUE)Starting Dagster daemon...$(NC)"
+	@echo "$(YELLOW)Note: Use 'make dagit' to start UI + daemon together$(NC)"
+	@cmd /c "set DAGSTER_HOME=%~dp0.dagster_home && $(PYTHON) -m dagster daemon run -w dagster_project/workspace.yaml"
+
+api: ## Start FastAPI web service (port 8000)
+	@echo "$(BLUE)Starting FastAPI service...$(NC)"
+	@echo "API: http://localhost:8000"
+	@echo "Docs: http://localhost:8000/docs"
+	$(PYTHON) -m uvicorn web_api.main:app --host 0.0.0.0 --port 8000 --reload
+
+dagster-all: ## Start all Dagster services (Docker Compose)
+	@echo "$(BLUE)Starting all Dagster services...$(NC)"
+	docker-compose up -d dagster-postgres dagster-daemon dagit web-api
+	@echo "$(GREEN)✓ Services started:$(NC)"
+	@echo "  - Dagit UI: http://localhost:3000"
+	@echo "  - API Service: http://localhost:8000"
+	@echo "  - API Docs: http://localhost:8000/docs"
+
+dagster-stop: ## Stop all Dagster services
+	@echo "$(BLUE)Stopping Dagster services...$(NC)"
+	docker-compose stop dagster-postgres dagster-daemon dagit web-api
+	@echo "$(GREEN)✓ Services stopped$(NC)"
+
+dagster-logs: ## Show Dagster service logs
+	docker-compose logs -f dagit dagster-daemon web-api
+
+test-dagster: ## Run Phase 4 tests (Dagster + API)
+	@echo "$(BLUE)Running Phase 4 tests...$(NC)"
+	$(PYTEST) $(TEST_DIR)/test_dagster.py $(TEST_DIR)/test_web_api.py -v
+	@echo "$(GREEN)✓ Phase 4 tests complete$(NC)"
+
+verify-phase4: ## Verify Phase 4 implementation
+	@echo "$(BLUE)Verifying Phase 4 structure...$(NC)"
+	@echo ""
+	@echo "Checking Dagster project files:"
+	@if exist "dagster_project\__init__.py" (echo "  [✓] __init__.py") else (echo "  [✗] __init__.py")
+	@if exist "dagster_project\workspace.yaml" (echo "  [✓] workspace.yaml") else (echo "  [✗] workspace.yaml")
+	@if exist "dagster_project\dagster.yaml" (echo "  [✓] dagster.yaml") else (echo "  [✗] dagster.yaml")
+	@if exist "dagster_project\resources.py" (echo "  [✓] resources.py") else (echo "  [✗] resources.py")
+	@if exist "dagster_project\jobs.py" (echo "  [✓] jobs.py") else (echo "  [✗] jobs.py")
+	@if exist "dagster_project\schedules.py" (echo "  [✓] schedules.py") else (echo "  [✗] schedules.py")
+	@if exist "dagster_project\repository.py" (echo "  [✓] repository.py") else (echo "  [✗] repository.py")
+	@echo ""
+	@echo "Checking ops:"
+	@if exist "dagster_project\ops\__init__.py" (echo "  [✓] ops\__init__.py") else (echo "  [✗] ops\__init__.py")
+	@if exist "dagster_project\ops\data_acquisition_ops.py" (echo "  [✓] ops\data_acquisition_ops.py") else (echo "  [✗] ops\data_acquisition_ops.py")
+	@if exist "dagster_project\ops\transformation_ops.py" (echo "  [✓] ops\transformation_ops.py") else (echo "  [✗] ops\transformation_ops.py")
+	@if exist "dagster_project\ops\embedding_ops.py" (echo "  [✓] ops\embedding_ops.py") else (echo "  [✗] ops\embedding_ops.py")
+	@echo ""
+	@echo "Checking Web API:"
+	@if exist "web_api\__init__.py" (echo "  [✓] web_api\__init__.py") else (echo "  [✗] web_api\__init__.py")
+	@if exist "web_api\main.py" (echo "  [✓] web_api\main.py") else (echo "  [✗] web_api\main.py")
+	@echo ""
+	@echo "Checking tests:"
+	@if exist "tests\test_dagster.py" (echo "  [✓] test_dagster.py") else (echo "  [✗] test_dagster.py")
+	@if exist "tests\test_web_api.py" (echo "  [✓] test_web_api.py") else (echo "  [✗] test_web_api.py")
+	@echo ""
+	@echo "Checking documentation:"
+	@if exist "docs\PHASE4_USAGE.md" (echo "  [✓] PHASE4_USAGE.md") else (echo "  [✗] PHASE4_USAGE.md")
+	@if exist "docs\PHASE4_SUMMARY.md" (echo "  [✓] PHASE4_SUMMARY.md") else (echo "  [✗] PHASE4_SUMMARY.md")
+	@echo ""
+	@echo "$(GREEN)✓ Phase 4 verification complete$(NC)"
+
+api-health: ## Check API health status
+	@echo "$(BLUE)Checking API health...$(NC)"
+	@curl -s http://localhost:8000/health || echo "API not running"
+
+api-list-jobs: ## List available Dagster jobs via API
+	@echo "$(BLUE)Listing jobs...$(NC)"
+	@curl -s http://localhost:8000/jobs | $(PYTHON) -m json.tool
+
+trigger-etl: ## Trigger daily ETL job via API
+	@echo "$(BLUE)Triggering daily_etl_job...$(NC)"
+	@curl -X POST http://localhost:8000/jobs/daily_etl_job/run -H "Content-Type: application/json" -d "{}"
+
+trigger-embeddings: ## Trigger embedding job via API
+	@echo "$(BLUE)Triggering embedding_job...$(NC)"
+	@curl -X POST http://localhost:8000/jobs/embedding_job/run -H "Content-Type: application/json" -d "{}"
+

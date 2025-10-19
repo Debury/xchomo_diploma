@@ -20,20 +20,51 @@ ETL-Diplomka/
 │   │   ├── transformations.py
 │   │   ├── export.py
 │   │   └── pipeline.py
+│   ├── embeddings/                   # Phase 3: Vector embeddings
+│   │   ├── __init__.py
+│   │   ├── generator.py              # Embedding generation
+│   │   ├── database.py               # ChromaDB integration
+│   │   ├── pipeline.py               # Embedding pipeline
+│   │   └── search.py                 # Semantic search
 │   └── utils/                        # Shared utilities
 │       ├── __init__.py
 │       ├── logger.py
 │       └── config_loader.py
 │
-├── tests/                            # Test suite
+├── dagster_project/                  # Phase 4: Orchestration
 │   ├── __init__.py
-│   └── test_transformation.py
+│   ├── workspace.yaml                # Dagster workspace config
+│   ├── dagster.yaml                  # Instance configuration
+│   ├── repository.py                 # Dagster repository
+│   ├── resources.py                  # Configurable resources
+│   ├── jobs.py                       # 4 workflow jobs
+│   ├── schedules.py                  # 3 schedules + 3 sensors
+│   └── ops/                          # Dagster operations
+│       ├── __init__.py
+│       ├── data_acquisition_ops.py   # Download & validate ops
+│       ├── transformation_ops.py     # Transform & export ops
+│       └── embedding_ops.py          # Embedding generation ops
+│
+├── web_api/                          # Phase 4: REST API
+│   ├── __init__.py
+│   └── main.py                       # FastAPI service (6 endpoints)
+│
+├── tests/                            # Test suite (100+ tests)
+│   ├── __init__.py
+│   ├── test_transformation.py
+│   ├── test_ingestion_formats.py
+│   ├── test_embeddings.py
+│   ├── test_validation.py
+│   ├── test_dagster.py               # Phase 4: Dagster tests
+│   └── test_web_api.py               # Phase 4: API tests
 │
 ├── data/                             # Data storage
 │   ├── raw/                         # Downloaded raw data
 │   │   └── .gitkeep
 │   └── processed/                   # Transformed data
 │       └── .gitkeep
+│
+├── chroma_db/                        # Vector database storage
 │
 ├── config/                           # Configuration files
 │   ├── pipeline_config.yaml         # Main pipeline config
@@ -68,23 +99,23 @@ make setup
 # Install dependencies
 make install
 
-# Download ERA5 data
-make download
+# Phase 1-3: Data Pipeline
+make download        # Download ERA5 data
+make transform       # Run transformation pipeline
+make run-all         # Run complete pipeline
 
-# Run transformation pipeline
-make transform
+# Phase 4: Orchestration & API
+make dagit           # Start Dagit UI (localhost:3000)
+make api             # Start FastAPI (localhost:8000)
+make dagster-all     # Start all services (Docker)
 
-# Run complete pipeline
-make run-all
+# Testing
+make test            # Run all tests
+make test-dagster    # Test Phase 4 components
 
-# Run tests
-make test
-
-# Clean outputs
-make clean
-
-# Show all commands
-make help
+# Utilities
+make clean           # Clean outputs
+make help            # Show all commands
 ```
 
 ### 📋 What Changed
@@ -97,28 +128,39 @@ ETL-Diplomka/
 └── requirements.txt
 ```
 
-#### New Structure (Professional)
+#### New Structure (Professional - 4 Phases Complete)
 ```
 ETL-Diplomka/
 ├── src/                    # All source code
-│   ├── data_acquisition/   # Phase 1 (organized)
-│   ├── data_transformation/# Phase 2 (organized)
-│   └── utils/              # Shared code
-├── tests/                  # Dedicated testing
+│   ├── data_acquisition/   # Phase 1: Data download
+│   ├── data_transformation/# Phase 2: Transformations
+│   ├── embeddings/         # Phase 3: Vector embeddings
+│   └── utils/              # Shared utilities
+├── dagster_project/        # Phase 4: Orchestration
+│   ├── ops/                # 8 Dagster operations
+│   ├── jobs.py             # 4 workflow jobs
+│   ├── schedules.py        # 3 schedules + 3 sensors
+│   └── repository.py       # Dagster definitions
+├── web_api/                # Phase 4: REST API
+│   └── main.py             # FastAPI service
+├── tests/                  # 100+ tests
 ├── config/                 # Configuration management
+├── chroma_db/              # Vector database
 ├── docs/                   # Documentation
-├── Makefile                # Automation
-└── Docker support          # Containerization
+├── Makefile                # 40+ automation commands
+└── docker-compose.yml      # Multi-service deployment
 ```
 
-### ✨ New Features Added
+### ✨ Features Across All 4 Phases
 
-1. **Makefile Automation**
+1. **Makefile Automation (40+ commands)**
    - `make install` - Install dependencies
    - `make download` - Download data
    - `make transform` - Run pipeline
+   - `make dagit` - Start orchestration UI
+   - `make api` - Start REST API
    - `make test` - Run tests
-   - `make run-all` - Complete workflow
+   - `make dagster-all` - Start all services
 
 2. **Configuration Management**
    - `config/pipeline_config.yaml` - Comprehensive settings
@@ -132,13 +174,32 @@ ETL-Diplomka/
 4. **Docker Support**
    - `Dockerfile` - Container image
    - `docker-compose.yml` - Multi-service deployment
+     - PostgreSQL for Dagster storage
+     - Dagster daemon for schedules/sensors
+     - Dagit UI for DAG visualization
+     - FastAPI REST service
+     - Climate ETL pipeline
 
-5. **Package Management**
+5. **Phase 3: Vector Embeddings**
+   - ChromaDB integration
+   - Sentence transformers
+   - Semantic search capabilities
+   - Embedding generation pipeline
+
+6. **Phase 4: Orchestration & Web UI**
+   - 8 Dagster ops (download, validate, ingest, transform, export, embeddings)
+   - 4 complete jobs (daily ETL, embeddings, complete pipeline, validation)
+   - 3 automated schedules (daily, weekly)
+   - 3 sensors (new data, quality check, config change)
+   - FastAPI REST service with 6 endpoints
+   - OpenAPI documentation
+
+7. **Package Management**
    - `setup.py` - Package installation
    - `pyproject.toml` - Modern Python config
    - Console scripts for CLI commands
 
-6. **Documentation**
+8. **Documentation**
    - `README.md` - Comprehensive project docs
    - `docs/architecture.md` - System architecture
    - Inline code documentation

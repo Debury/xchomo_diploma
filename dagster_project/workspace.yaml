@@ -1,0 +1,10 @@
+# ====================================================================================
+# DAGSTER WORKSPACE CONFIGURATION
+# ====================================================================================
+# This file defines the repositories that Dagit and the Dagster daemon will load.
+
+load_from:
+  - python_module:
+      module_name: dagster_project.repository
+      working_directory: .
+      attribute: climate_etl_repository

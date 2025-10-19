@@ -149,6 +149,11 @@ logs/*.log
 logs/*.txt
 !logs/.gitkeep
 
+# Root log files
+pipeline.log
+dagster.log
+uvicorn.log
+
 # Cache
 .cache/
 *.cache
@@ -196,6 +201,11 @@ chroma_db/
 chromadb/
 chroma_data/
 
+# Sentence transformers model cache
+.cache/
+.sentence_transformers/
+sentence_transformers_cache/
+
 # Pinecone cache
 .pinecone/
 pinecone_cache/
@@ -213,12 +223,41 @@ embeddings_cache/
 *.vec
 
 # Sentence transformers cache
+.cache/
 .sentence_transformers/
 sentence_transformers_cache/
 
 # HuggingFace cache (models can be large)
 .transformers/
 transformers_cache/
+
+# ========================================
+# Dagster & Orchestration
+# ========================================
+# Dagster home directory
+.dagster_home/
+dagster_home/
+
+# Dagster storage (SQLite & state)
+*.db
+*.db-shm
+*.db-wal
+*.db-journal
+
+# Dagster logs
+dagster.log
+
+# ========================================
+# SQLite Databases (Sources Store)
+# ========================================
+sources.db
+climate_sources.db
+*.sqlite
+*.sqlite3
+
+# Keep schema files
+!*/schema.sql
+!*/migrations/*.sql
 
 # ========================================
 # Secrets & API Keys (CRITICAL!)
@@ -327,6 +366,10 @@ htmlcov/
 # Docker build artifacts
 .dockerignore
 docker-compose.override.yml
+
+# Windows startup scripts (auto-generated)
+start_dagster.bat
+start_services.bat
 
 # Deployment secrets
 deploy_config.yaml

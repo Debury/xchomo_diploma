@@ -1,3 +1,7 @@
+# ====================================================================================
+# PHASE 1 and PHASE2
+# ====================================================================================
+
 # Production dependencies
 xarray>=2023.10.0
 netCDF4>=1.6.0
@@ -33,3 +37,55 @@ pyyaml>=6.0
 
 # Date/time utilities
 python-dateutil>=2.8.0
+
+# ====================================================================================
+# PHASE 3: EMBEDDING GENERATION & VECTOR DATABASE
+# ====================================================================================
+
+# Sentence transformers for embedding generation
+sentence-transformers>=2.2.0
+
+# ChromaDB for vector database
+chromadb>=0.4.0
+
+# ====================================================================================
+# PHASE 5: DYNAMIC SOURCE MANAGEMENT & DATABASE
+# ====================================================================================
+
+# SQLAlchemy for source store database
+sqlalchemy>=2.0.0
+
+# PostgreSQL driver (optional, SQLite is default)
+psycopg2-binary>=2.9.0
+
+# Additional ML/NLP dependencies
+torch>=2.0.0
+transformers>=4.30.0
+
+# Typing extensions for better type hints
+typing-extensions>=4.5.0
+
+# ====================================================================================
+# PHASE 4: ORCHESTRATION & WEB UI
+# ====================================================================================
+
+# Dagster orchestration framework
+dagster>=1.5.0
+dagit>=1.5.0
+dagster-webserver>=1.5.0
+
+# FastAPI web framework
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+
+# Dagster GraphQL client
+dagster-graphql>=1.5.0
+
+# HTTP client for API calls
+httpx>=0.25.0
+
+# Pydantic for data validation
+pydantic>=2.0.0
+
+# Python ASGI server
+python-multipart>=0.0.6

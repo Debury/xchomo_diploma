@@ -18,17 +18,25 @@ ETL-Diplomka/
 ```
 ETL-Diplomka/
 ├── src/                       # Organized source code
-│   ├── data_acquisition/      # Phase 1 module
-│   ├── data_transformation/   # Phase 2 module
+│   ├── data_acquisition/      # Phase 1: Data download
+│   ├── data_transformation/   # Phase 2: Transformations
+│   ├── embeddings/            # Phase 3: Vector embeddings
 │   └── utils/                 # Shared utilities
+├── dagster_project/           # Phase 4: Orchestration
+│   ├── ops/                   # Dagster operations
+│   ├── jobs.py                # Workflow definitions
+│   ├── schedules.py           # Automated scheduling
+│   └── repository.py          # Dagster repository
+├── web_api/                   # Phase 4: REST API
+│   └── main.py                # FastAPI service
 ├── tests/                     # Professional testing
 ├── config/                    # Configuration management
 ├── docs/                      # Documentation
 ├── data/                      # Data storage
+├── chroma_db/                 # Vector database
 ├── logs/                      # Logging
-├── scripts/                   # Utility scripts
 ├── Makefile                   # Automation! ⚡
-├── Dockerfile                 # Containerization 🐳
+├── docker-compose.yml         # Multi-service deployment 🐳
 ├── setup.py                   # Package management
 └── Complete documentation! 📚
 ```
@@ -59,6 +67,11 @@ make run-all
 make download        # Download ERA5 data
 make transform       # Transform data
 make visualize       # Visualize results
+
+# Phase 4: Orchestration & API
+make dagit           # Start Dagit UI (http://localhost:3000)
+make api             # Start FastAPI (http://localhost:8000)
+make dagster-all     # Start all services with Docker
 ```
 
 ### 3. Testing
@@ -69,6 +82,9 @@ make test
 
 # Run with coverage
 make test-coverage
+
+# Test Phase 4 components
+make test-dagster
 ```
 
 ### 4. View All Commands
@@ -99,15 +115,31 @@ make help
   - `export.py` - Export results
   - `pipeline.py` - Orchestrate workflow
 
+- **`src/embeddings/`** - Vector embeddings (Phase 3)
+  - `generator.py` - Generate embeddings
+  - `database.py` - ChromaDB integration
+  - `search.py` - Semantic search
+
 - **`src/utils/`** - Shared utilities
   - `logger.py` - Logging setup
   - `config_loader.py` - Config management
 
+- **`dagster_project/`** - Orchestration (Phase 4)
+  - `ops/` - Data acquisition, transformation, embedding ops
+  - `jobs.py` - 4 workflow jobs
+  - `schedules.py` - 3 schedules + 3 sensors
+  - `repository.py` - Dagster definitions
+
+- **`web_api/`** - REST API (Phase 4)
+  - `main.py` - FastAPI service with 6 endpoints
+
 ### Automation & Deployment
 
 - **`Makefile`** - Command automation (run `make help`)
+  - 40+ commands including Phase 4 orchestration
 - **`Dockerfile`** - Container image
 - **`docker-compose.yml`** - Multi-service deployment
+  - PostgreSQL, Dagster daemon, Dagit UI, FastAPI, ETL pipeline
 - **`setup.py`** - Package installation
 - **`pyproject.toml`** - Modern Python configuration
 
@@ -125,15 +157,31 @@ make install         # Install dependencies
 make install-dev     # Install dev dependencies
 make setup           # Setup environment
 
-# Data Pipeline
+# Data Pipeline (Phases 1-3)
 make download        # Download ERA5 data
 make transform       # Run transformation
 make visualize       # Visualize data
 make run-all         # Complete pipeline
 
+# Phase 4: Orchestration & API
+make dagster-setup   # Setup Dagster home directory
+make dagit           # Start Dagit UI (localhost:3000)
+make dagster-daemon  # Start daemon for schedules/sensors
+make api             # Start FastAPI (localhost:8000)
+make dagster-all     # Start all services (Docker)
+make dagster-stop    # Stop all Dagster services
+make dagster-logs    # View service logs
+
+# Phase 4: Job Triggers
+make trigger-etl     # Trigger daily ETL job
+make trigger-embeddings  # Trigger embedding job
+make api-list-jobs   # List available jobs
+make api-health      # Check API health
+
 # Testing
 make test            # Run tests
 make test-coverage   # Tests with coverage
+make test-dagster    # Test Phase 4 components
 make lint            # Run code linters
 make format          # Format code
 
@@ -141,6 +189,7 @@ make format          # Format code
 make show-config     # Display configuration
 make show-status     # Show pipeline status
 make verify-env      # Verify environment
+make verify-phase4   # Verify Phase 4 structure
 
 # Cleanup
 make clean           # Clean generated files
@@ -222,35 +271,66 @@ make help            # Show all commands
    git commit -m "Professional project restructure"
    ```
 
-### Future (Phase 3):
+### Explore Phase 4 (Orchestration):
 
-5. **Add new features**:
-   - Embedding generation module
-   - Vector database integration
-   - API endpoints
-   - Web interface
+5. **Start orchestration services**:
+   ```bash
+   # Option 1: Individual services
+   make dagit      # Dagit UI at http://localhost:3000
+   make api        # FastAPI at http://localhost:8000/docs
+   
+   # Option 2: All services at once
+   make dagster-all
+   ```
+
+6. **Explore the Dagit UI**:
+   - View job DAGs and dependencies
+   - Monitor run history
+   - Enable/disable schedules
+   - Check sensor status
+
+7. **Use the REST API**:
+   ```bash
+   # Check API health
+   make api-health
+   
+   # List available jobs
+   make api-list-jobs
+   
+   # Trigger jobs
+   make trigger-etl
+   make trigger-embeddings
+   ```
 
 ## 🎓 For Your Thesis
 
 Your project now demonstrates:
 
 ✅ **Professional Software Engineering**
-- Industry-standard project structure
-- Automated workflows (Makefile)
+- Industry-standard project structure (4 complete phases)
+- Automated workflows (Makefile with 40+ commands)
 - Configuration management
-- Docker containerization
+- Docker containerization with multi-service architecture
 
 ✅ **Best Practices**
-- Modular design
+- Modular design across all phases
 - Comprehensive documentation
-- Testing infrastructure
+- Testing infrastructure (100+ tests)
 - Code quality tools
 
 ✅ **Production Ready**
 - Error handling
-- Logging
-- Validation
-- Scalability
+- Centralized logging
+- Data validation
+- Horizontal scalability
+
+✅ **Advanced Features**
+- Workflow orchestration (Dagster)
+- Vector embeddings (ChromaDB)
+- Semantic search capabilities
+- REST API with OpenAPI docs
+- Automated scheduling & sensors
+- DAG visualization
 
 ✅ **Research Quality**
 - Reproducible pipelines

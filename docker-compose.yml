@@ -1,6 +1,112 @@
 version: '3.8'
 
 services:
+  # ====================================================================================
+  # PHASE 4: DAGSTER + WEB API SERVICES
+  # ====================================================================================
+  
+  # Dagster PostgreSQL database
+  dagster-postgres:
+    image: postgres:15
+    container_name: dagster-postgres
+    environment:
+      POSTGRES_USER: dagster
+      POSTGRES_PASSWORD: dagster
+      POSTGRES_DB: dagster
+    volumes:
+      - dagster-postgres-data:/var/lib/postgresql/data
+    networks:
+      - climate-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dagster"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Dagster Daemon (for schedules and sensors)
+  dagster-daemon:
+    build: .
+    container_name: dagster-daemon
+    command: dagster-daemon run -w dagster_project/workspace.yaml
+    volumes:
+      - ./dagster_project:/app/dagster_project
+      - ./src:/app/src
+      - ./config:/app/config
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./.env:/app/.env:ro
+      - dagster-home:/opt/dagster/dagster_home
+    environment:
+      - DAGSTER_HOME=/opt/dagster/dagster_home
+      - DAGSTER_POSTGRES_USER=dagster
+      - DAGSTER_POSTGRES_PASSWORD=dagster
+      - DAGSTER_POSTGRES_DB=dagster
+      - DAGSTER_POSTGRES_HOST=dagster-postgres
+      - DAGSTER_POSTGRES_PORT=5432
+      - PYTHONUNBUFFERED=1
+    depends_on:
+      dagster-postgres:
+        condition: service_healthy
+    networks:
+      - climate-net
+    restart: unless-stopped
+
+  # Dagit Web UI
+  dagit:
+    build: .
+    container_name: dagit
+    command: dagit -h 0.0.0.0 -p 3000 -w dagster_project/workspace.yaml
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./dagster_project:/app/dagster_project
+      - ./src:/app/src
+      - ./config:/app/config
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./.env:/app/.env:ro
+      - dagster-home:/opt/dagster/dagster_home
+    environment:
+      - DAGSTER_HOME=/opt/dagster/dagster_home
+      - DAGSTER_POSTGRES_USER=dagster
+      - DAGSTER_POSTGRES_PASSWORD=dagster
+      - DAGSTER_POSTGRES_DB=dagster
+      - DAGSTER_POSTGRES_HOST=dagster-postgres
+      - DAGSTER_POSTGRES_PORT=5432
+      - PYTHONUNBUFFERED=1
+    depends_on:
+      dagster-postgres:
+        condition: service_healthy
+    networks:
+      - climate-net
+    restart: unless-stopped
+
+  # FastAPI Web Service
+  web-api:
+    build: .
+    container_name: climate-web-api
+    command: uvicorn web_api.main:app --host 0.0.0.0 --port 8000 --reload
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./web_api:/app/web_api
+      - ./dagster_project:/app/dagster_project
+      - ./src:/app/src
+      - ./.env:/app/.env:ro
+    environment:
+      - DAGSTER_HOST=dagit
+      - DAGSTER_PORT=3000
+      - PYTHONUNBUFFERED=1
+    depends_on:
+      - dagit
+    networks:
+      - climate-net
+    restart: unless-stopped
+
+  # ====================================================================================
+  # ORIGINAL SERVICES
+  # ====================================================================================
+
   climate-etl:
     build: .
     container_name: climate-etl-pipeline
@@ -32,6 +138,13 @@ services:
     networks:
       - climate-net
 
+volumes:
+  dagster-postgres-data:
+    driver: local
+  dagster-home:
+    driver: local
+
 networks:
   climate-net:
     driver: bridge
+
