@@ -220,6 +220,7 @@ vector_indices/
 embeddings/
 .embeddings/
 embeddings_cache/
+!/src/embeddings/
 *.embedding
 *.vec
 
