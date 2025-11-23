@@ -30,6 +30,8 @@ except ImportError:  # pragma: no cover - xarray optional in some tests
 
 from src.embeddings.generator import EmbeddingGenerator
 
+CSV_MISSING_TOKENS = {"***", "***", "...", ".."}
+
 
 SUPPORTED_FORMATS = {
     "netcdf",
@@ -344,6 +346,66 @@ def _json_to_dataframe(json_path: Path) -> pd.DataFrame:
     return pd.json_normalize(payload)
 
 
+def _detect_delimited_header_offset(file_path: Path, delimiter: str) -> int:
+    """Skip metadata lines until the first line that looks like a header."""
+
+    try:
+        with open(file_path, "r", encoding="utf-8", errors="ignore") as handle:
+            for idx, line in enumerate(handle):
+                if delimiter in line:
+                    return idx
+    except OSError:
+        return 0
+    return 0
+
+
+def _promote_numeric_columns(frame: pd.DataFrame) -> pd.DataFrame:
+    """Best-effort conversion of object columns that mostly contain numbers."""
+
+    promoted = frame.copy()
+    if promoted.empty:
+        return promoted
+
+    min_required = max(3, int(0.2 * len(promoted)))
+    for col in promoted.columns:
+        if pd.api.types.is_numeric_dtype(promoted[col]):
+            continue
+        converted = pd.to_numeric(promoted[col], errors="coerce")
+        if converted.notna().sum() >= min_required:
+            promoted[col] = converted
+    return promoted
+
+
+def _open_dataset_with_fallback(file_path: Path, logger):
+    """Open NetCDF file but fall back to cfgrib engine when needed."""
+
+    if not xr:
+        raise RuntimeError("xarray is not installed, cannot process NetCDF data")
+
+    try:
+        ds = xr.open_dataset(file_path)
+        return ds, "netcdf"
+    except Exception as exc:
+        logger.warning(
+            "Default NetCDF open failed for %s (%s); trying cfgrib fallback",
+            file_path.name,
+            exc,
+        )
+        try:
+            ds = xr.open_dataset(file_path, engine="cfgrib")
+            logger.info("Opened %s via cfgrib fallback", file_path.name)
+            return ds, "grib"
+        except Exception as cf_exc:
+            logger.error(
+                "cfgrib fallback failed for %s: %s",
+                file_path.name,
+                cf_exc,
+            )
+            raise RuntimeError(
+                f"Could not open dataset {file_path} as NetCDF or GRIB"
+            ) from cf_exc
+
+
 def generate_embeddings_for_file(
     generator: EmbeddingGenerator,
     canonical_format: str,
@@ -358,10 +420,9 @@ def generate_embeddings_for_file(
     format_lower = canonical_format.lower()
 
     if format_lower == "netcdf":
-        if not xr:
-            raise RuntimeError("xarray is not installed, cannot process NetCDF data")
-        ds = xr.open_dataset(file_path)
-        processed_path = processed_dir / f"{source_id}_processed.nc"
+        ds, opened_as = _open_dataset_with_fallback(file_path, logger)
+        suffix = "grib.nc" if opened_as == "grib" else "nc"
+        processed_path = processed_dir / f"{source_id}_processed.{suffix}"
         try:
             return _dataset_embeddings(generator, ds, source_id, timestamp, processed_path, logger)
         finally:
@@ -401,7 +462,19 @@ def generate_embeddings_for_file(
             df = pd.read_csv(file_path, sep=r"\s+", engine="python")
         else:
             sep = "," if format_lower == "csv" else "\t"
-            df = pd.read_csv(file_path, sep=sep, engine="python")
+            skiprows = _detect_delimited_header_offset(file_path, sep)
+            df = pd.read_csv(
+                file_path,
+                sep=sep,
+                engine="python",
+                comment="#",
+                skip_blank_lines=True,
+                skiprows=skiprows,
+                na_values=list(CSV_MISSING_TOKENS),
+            )
+        df = df.replace(list(CSV_MISSING_TOKENS), np.nan)
+        df = df.dropna(how="all")
+        df = _promote_numeric_columns(df)
         processed_path = processed_dir / f"{source_id}_processed.parquet"
         return _dataframe_embeddings(generator, df, source_id, timestamp, processed_path, logger)
 

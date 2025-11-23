@@ -49,6 +49,12 @@ def detect_format_from_url(url: str) -> str:
         if url_lower.endswith(ext):
             return fmt
 
+    # NOAA GFS forecast files often end with .f000, .f003, etc. but are GRIB payloads
+    if "." in url_lower:
+        suffix = url_lower.rsplit(".", 1)[-1]
+        if suffix.startswith("f") and suffix[1:].isdigit():
+            return "grib"
+
     if "grib" in url_lower:
         return "grib"
     if "netcdf" in url_lower:
