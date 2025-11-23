@@ -18,90 +18,114 @@
         </nav>
     </header>
 
-    <main>
-        <section id="health" class="card">
-            <div class="section-header">
-                <h2>Service Health</h2>
-                <button id="refreshHealth">Check</button>
-            </div>
-            <div id="healthStatus" class="status-panel">Waiting for check…</div>
-        </section>
-
-        <section id="sourceForm" class="card">
-            <h2>Create / Update Source</h2>
-            <form id="createSourceForm">
-                <div class="grid">
-                    <label>Source ID
-                        <input type="text" name="source_id" required placeholder="era5_bratislava" />
-                    </label>
-                    <label>Data URL
-                        <input type="url" name="url" required placeholder="https://example.com/data.nc" />
-                    </label>
+    <main class="layout">
+        <div class="row">
+            <section id="health" class="card">
+                <div class="section-header">
+                    <h2>Service Health</h2>
+                    <button id="refreshHealth">Check</button>
                 </div>
-                <div class="grid">
-                    <label>Format
-                        <input type="text" name="format" placeholder="netcdf (optional)" />
+                <div id="healthStatus" class="status-panel">Waiting for check…</div>
+            </section>
+
+            <section id="embeddings" class="card">
+                <div class="section-header">
+                    <h2>Embedding Stats</h2>
+                    <button id="refreshEmbeddings">Refresh</button>
+                </div>
+                <pre id="embeddingStats">No data yet</pre>
+            </section>
+        </div>
+
+        <div class="row">
+            <section id="sourceForm" class="card">
+                <h2>Create / Update Source</h2>
+                <form id="createSourceForm">
+                    <div class="grid">
+                        <label>Source ID
+                            <input type="text" name="source_id" required placeholder="era5_bratislava" />
+                        </label>
+                        <label>Data URL
+                            <input type="url" name="url" required placeholder="https://example.com/data.nc" />
+                        </label>
+                    </div>
+                    <div class="grid">
+                        <label>Format
+                            <input type="text" name="format" placeholder="netcdf (optional)" />
+                        </label>
+                        <label>Variables (comma separated)
+                            <input type="text" name="variables" placeholder="temperature_2m,pm25" />
+                        </label>
+                    </div>
+                    <label>Tags (comma separated)
+                        <input type="text" name="tags" placeholder="temperature,slovakia" />
                     </label>
-                    <label>Variables (comma separated)
-                        <input type="text" name="variables" placeholder="temperature_2m,pm25" />
+                    <label>Description
+                        <textarea name="description" rows="2" placeholder="Short note about this source"></textarea>
                     </label>
+                    <div class="actions">
+                        <button type="submit">Create Source</button>
+                        <span id="sourceFormMessage" class="hint"></span>
+                    </div>
+                </form>
+                <div class="guide">
+                    <h3>Need a refresher?</h3>
+                    <ol>
+                        <li>
+                            Pick a dataset URL. Inside Docker Compose, point to the built-in samples
+                            (e.g. <code>http://web-api:8000/samples/gistemp_global_anomaly.csv</code>).
+                        </li>
+                        <li>
+                            Fill at least <strong>Source ID</strong>, <strong>Data URL</strong>, and optionally the
+                            format/variables/tags so teammates know what it is.
+                        </li>
+                        <li>
+                            Save the source, then use the table’s “Trigger ETL” button to run
+                            <code>dynamic_source_etl_job</code>. Embedding stats will update once vectors land in Qdrant.
+                        </li>
+                    </ol>
+                    <p class="hint">Deleting a source now also wipes its embeddings, keeping the vector DB tidy.</p>
                 </div>
-                <label>Tags (comma separated)
-                    <input type="text" name="tags" placeholder="temperature,slovakia" />
-                </label>
-                <label>Description
-                    <textarea name="description" rows="2" placeholder="Short note about this source"></textarea>
-                </label>
-                <div class="actions">
-                    <button type="submit">Create Source</button>
-                    <span id="sourceFormMessage" class="hint"></span>
+            </section>
+
+            <section id="sources" class="card">
+                <div class="section-header">
+                    <h2>Active Sources</h2>
+                    <button id="refreshSources">Refresh</button>
                 </div>
-            </form>
-        </section>
-
-        <section id="sources" class="card">
-            <div class="section-header">
-                <h2>Active Sources</h2>
-                <button id="refreshSources">Refresh</button>
-            </div>
-            <div class="table-wrapper">
-                <table>
-                    <thead>
-                        <tr>
-                            <th>ID</th>
-                            <th>Format</th>
-                            <th>Status</th>
-                            <th>Last processed</th>
-                            <th>Actions</th>
-                        </tr>
-                    </thead>
-                    <tbody id="sourcesTable"></tbody>
-                </table>
-            </div>
-        </section>
-
-        <section id="embeddings" class="card">
-            <div class="section-header">
-                <h2>Embedding Stats</h2>
-                <button id="refreshEmbeddings">Refresh</button>
-            </div>
-            <pre id="embeddingStats">No data yet</pre>
-        </section>
-
-        <section id="ragChat" class="card">
-            <h2>RAG Assistant</h2>
-            <form id="ragForm">
-                <label>Ask a question
-                    <textarea name="question" rows="3" required placeholder="How are Bratislava PM2.5 levels evolving?"></textarea>
-                </label>
-                <div class="actions">
-                    <button type="submit">Ask</button>
-                    <span id="ragStatus" class="hint"></span>
+                <div class="table-wrapper">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>ID</th>
+                                <th>Format</th>
+                                <th>Status</th>
+                                <th>Last processed</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="sourcesTable"></tbody>
+                    </table>
                 </div>
-            </form>
-            <div id="ragAnswer" class="rag-answer"></div>
-            <div id="ragChunks" class="rag-chunks"></div>
-        </section>
+            </section>
+        </div>
+
+        <div class="row">
+            <section id="ragChat" class="card">
+                <h2>RAG Assistant</h2>
+                <form id="ragForm">
+                    <label>Ask a question
+                        <textarea name="question" rows="3" required placeholder="How are Bratislava PM2.5 levels evolving?"></textarea>
+                    </label>
+                    <div class="actions">
+                        <button type="submit">Ask</button>
+                        <span id="ragStatus" class="hint"></span>
+                    </div>
+                </form>
+                <div id="ragAnswer" class="rag-answer"></div>
+                <div id="ragChunks" class="rag-chunks"></div>
+            </section>
+        </div>
     </main>
 
     <footer>

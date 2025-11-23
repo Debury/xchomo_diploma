@@ -44,11 +44,21 @@ header nav a:hover {
     color: var(--accent);
 }
 
-main {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+main.layout {
+    display: flex;
+    flex-direction: column;
     gap: 1.5rem;
     padding: 0 5vw 4rem;
+}
+
+.row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 1.5rem;
+}
+
+.row > .card {
+    flex: 1 1 320px;
 }
 
 .card {
@@ -78,6 +88,26 @@ button {
 
 button:hover {
     background: var(--accent-dark);
+}
+
+button.ghost {
+    background: transparent;
+    border: 1px solid rgba(148, 163, 184, 0.4);
+    color: var(--muted);
+}
+
+button.ghost:hover {
+    background: rgba(148, 163, 184, 0.15);
+}
+
+button.danger {
+    color: var(--danger);
+    border-color: rgba(244, 63, 94, 0.6);
+}
+
+button.danger:hover {
+    background: rgba(244, 63, 94, 0.15);
+    color: var(--danger);
 }
 
 label {
@@ -120,6 +150,35 @@ textarea {
     gap: 1rem;
 }
 
+.guide {
+    margin-top: 1.25rem;
+    padding: 1rem 1.2rem;
+    border-radius: 0.9rem;
+    border: 1px dashed rgba(148, 163, 184, 0.4);
+    background: rgba(15, 23, 42, 0.55);
+}
+
+.guide h3 {
+    margin-top: 0;
+    margin-bottom: 0.6rem;
+    font-size: 1rem;
+    color: var(--text);
+}
+
+.guide ol {
+    margin: 0;
+    padding-left: 1.2rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+
+.guide code {
+    font-family: "JetBrains Mono", "Fira Code", monospace;
+    font-size: 0.85rem;
+    color: var(--accent);
+}
+
 .table-wrapper {
     max-height: 320px;
     overflow: auto;
@@ -136,6 +195,18 @@ td {
     text-align: left;
     padding: 0.4rem 0.2rem;
     border-bottom: 1px solid rgba(148, 163, 184, 0.2);
+}
+
+.table-actions {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+}
+
+@media (min-width: 640px) {
+    .table-actions {
+        flex-direction: row;
+    }
 }
 
 .status-pill {

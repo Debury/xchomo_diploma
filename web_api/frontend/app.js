@@ -92,7 +92,10 @@ async function loadSources() {
                 <td><span class="status-pill ${source.processing_status}">${source.processing_status}</span></td>
                 <td>${fmtDate(source.last_processed)}</td>
                 <td>
-                    <button data-trigger="${source.source_id}">Trigger ETL</button>
+                    <div class="table-actions">
+                        <button data-trigger="${source.source_id}">Trigger ETL</button>
+                        <button class="ghost danger" data-delete="${source.source_id}">Delete</button>
+                    </div>
                 </td>
             `;
             sourcesTable.appendChild(row);
@@ -122,6 +125,29 @@ sourcesTable?.addEventListener('click', async (event) => {
             target.textContent = 'Retry';
             target.disabled = false;
             alert(`Failed to trigger ETL: ${err.message}`);
+        }
+    } else if (target instanceof HTMLButtonElement && target.dataset.delete) {
+        const sourceId = target.dataset.delete;
+        if (!confirm(`Delete source ${sourceId}?`)) {
+            return;
+        }
+        const original = target.textContent;
+        target.textContent = 'Deleting…';
+        target.disabled = true;
+        try {
+            const res = await fetch(`/sources/${sourceId}?hard_delete=true`, {
+                method: 'DELETE',
+                headers,
+            });
+            if (!res.ok) {
+                const detail = await res.json().catch(() => ({}));
+                throw new Error(detail.detail || res.statusText);
+            }
+            await loadSources();
+        } catch (err) {
+            alert(`Failed to delete source: ${err.message}`);
+            target.textContent = original;
+            target.disabled = false;
         }
     }
 });

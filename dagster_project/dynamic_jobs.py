@@ -6,6 +6,7 @@ Complete pipeline: Download → Process → Generate Embeddings → Store in Chr
 
 from dagster import job, op, Out, OpExecutionContext
 from typing import Dict, Any, List
+from datetime import datetime, timezone
 
 from dagster_project.resources import ConfigLoaderResource, LoggerResource, DataPathResource
 
@@ -21,7 +22,6 @@ def process_all_sources(context: OpExecutionContext) -> List[Dict[str, Any]]:
     from src.sources import get_source_store
     from dagster_project.ops.dynamic_source_ops import detect_format_from_url
     import requests
-    from datetime import datetime
     from pathlib import Path
     
     logger = context.resources.logger
@@ -183,7 +183,24 @@ def process_all_sources(context: OpExecutionContext) -> List[Dict[str, Any]]:
             elif format == "csv":
                 import pandas as pd
                 
-                df = pd.read_csv(filepath)
+                read_csv_kwargs = {
+                    "na_values": ["***", "*** "],
+                    "keep_default_na": True
+                }
+                df = pd.read_csv(filepath, **read_csv_kwargs)
+
+                # Some public datasets (e.g., GISTEMP) include a descriptive first row that breaks parsing
+                if len(df.columns) == 1:
+                    logger.info(
+                        "Detected single-column CSV; retrying parse after skipping potential descriptive header row."
+                    )
+                    df_alt = pd.read_csv(filepath, skiprows=1, **read_csv_kwargs)
+                    if len(df_alt.columns) > 1:
+                        df = df_alt
+                    else:
+                        logger.warning(
+                            "CSV remained single-column after skiprows=1; continuing with original parse."
+                        )
                 logger.info(f"Rows: {len(df)} | Columns: {len(df.columns)}")
                 
                 # Save processed
@@ -192,6 +209,46 @@ def process_all_sources(context: OpExecutionContext) -> List[Dict[str, Any]]:
                 processed_file = processed_dir / f"{source_id}_processed.parquet"
                 df.to_parquet(processed_file)
                 logger.info(f"✓ Saved: {processed_file.name}")
+
+                def infer_temporal_coverage(frame: pd.DataFrame):
+                    """Infer dataset-wide temporal coverage from common date/year columns."""
+                    candidate_cols = [
+                        col for col in frame.columns
+                        if isinstance(col, str) and col.strip() and any(key in col.lower() for key in ["year", "date", "time"])
+                    ]
+
+                    for col in candidate_cols:
+                        if "year" in col.lower():
+                            years = pd.to_numeric(frame[col], errors="coerce").dropna()
+                            if not years.empty:
+                                start_year = int(years.min())
+                                end_year = int(years.max())
+                                return {
+                                    "start": datetime(start_year, 1, 1, tzinfo=timezone.utc).isoformat().replace("+00:00", "Z"),
+                                    "end": datetime(end_year, 12, 31, 23, 59, 59, tzinfo=timezone.utc).isoformat().replace("+00:00", "Z"),
+                                    "field": col
+                                }
+
+                        parsed_dates = pd.to_datetime(frame[col], errors="coerce", utc=True).dropna()
+                        if not parsed_dates.empty:
+                            return {
+                                "start": parsed_dates.min().isoformat().replace("+00:00", "Z"),
+                                "end": parsed_dates.max().isoformat().replace("+00:00", "Z"),
+                                "field": col
+                            }
+
+                    return None
+
+                temporal_coverage = infer_temporal_coverage(df)
+                if temporal_coverage:
+                    logger.info(
+                        "Derived temporal coverage %s → %s from column '%s'",
+                        temporal_coverage["start"],
+                        temporal_coverage["end"],
+                        temporal_coverage["field"]
+                    )
+                else:
+                    logger.info("Could not infer temporal coverage; defaulting to run timestamp metadata.")
                 
                 # Generate embeddings for numeric columns
                 logger.info(f"\n[3/4] GENERATING EMBEDDINGS...")
@@ -200,25 +257,63 @@ def process_all_sources(context: OpExecutionContext) -> List[Dict[str, Any]]:
                 generator = EmbeddingGenerator()
                 
                 embeddings_data = []
-                
-                for col in df.select_dtypes(include=['number']).columns[:10]:
-                    text = f"Column '{col}': mean={df[col].mean():.2f}, std={df[col].std():.2f}, "
-                    text += f"min={df[col].min():.2f}, max={df[col].max():.2f}"
+                coverage_end_ts = (
+                    temporal_coverage["end"]
+                    if temporal_coverage
+                    else datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+                )
+
+                for col in df.columns:
+                    series = pd.to_numeric(df[col], errors='coerce')
+                    if series.notna().sum() == 0:
+                        continue
+                    stats = {
+                        "mean": series.mean(),
+                        "std": series.std(),
+                        "min": series.min(),
+                        "max": series.max(),
+                        "count": int(series.notna().sum()),
+                    }
+                    text = (
+                        f"Column '{col}' (n={stats['count']}): "
+                        f"mean={stats['mean']:.3f}, std={stats['std']:.3f}, "
+                        f"min={stats['min']:.3f}, max={stats['max']:.3f}"
+                    )
                     
                     # Generate embedding (expects list of strings, returns numpy array)
                     embedding_array = generator.generate_embeddings([text])
                     embedding = embedding_array[0].tolist()  # Convert first element to list
                     
+                    metadata = {
+                        'source_id': source_id,
+                        'variable': col,
+                        'text': text,
+                        'timestamp': coverage_end_ts
+                    }
+
+                    if temporal_coverage:
+                        metadata.update({
+                            'start_timestamp': temporal_coverage['start'],
+                            'end_timestamp': temporal_coverage['end'],
+                            'temporal_coverage_field': temporal_coverage['field']
+                        })
+                    
                     embeddings_data.append({
                         'id': f"{source_id}_{col}_{timestamp}",
                         'embedding': embedding,
-                        'metadata': {
-                            'source_id': source_id,
-                            'variable': col,
-                            'text': text,
-                            'timestamp': datetime.now().isoformat()
-                        }
+                        'metadata': metadata
                     })
+
+                if not embeddings_data:
+                    logger.warning(f"No numeric columns found in {source_id}; skipping embedding upsert.")
+                    store.update_processing_status(source_id, "completed", error_message=None)
+                    results.append({
+                        "source_id": source_id,
+                        "status": "no_embeddings",
+                        "format": "csv",
+                        "message": "No numeric columns detected, nothing stored in vector DB."
+                    })
+                    continue
                 
                 logger.info(f"\n[4/4] STORING IN CHROMADB...")
                 from src.embeddings.database import VectorDatabase

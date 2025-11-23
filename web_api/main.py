@@ -222,6 +222,13 @@ app = FastAPI(
 
 FRONTEND_DIR = Path(__file__).parent / "frontend"
 
+_sample_dir_env = os.getenv("SAMPLE_DATA_DIR")
+if _sample_dir_env:
+    SAMPLE_DATA_DIR = Path(_sample_dir_env)
+else:
+    SAMPLE_DATA_DIR = Path(__file__).parent.parent / "data" / "external" / "open_sources"
+SAMPLE_DATA_DIR.mkdir(parents=True, exist_ok=True)
+
 # Configure CORS
 app.add_middleware(
     CORSMiddleware,
@@ -346,6 +353,26 @@ async def serve_frontend():
     if not FRONTEND_DIR.exists():
         raise HTTPException(status_code=404, detail="Frontend assets not found. Run git pull or rebuild the image.")
     return FileResponse(FRONTEND_DIR / "index.html")
+
+
+@app.get("/samples/{file_name:path}")
+async def download_sample_data(file_name: str = PathParam(..., description="Sample file name")):
+    """Expose pre-bundled demo datasets so sources can fetch a known-good file."""
+    if any(sep in file_name for sep in ("/", "\\")) or ".." in Path(file_name).parts:
+        raise HTTPException(status_code=400, detail="Invalid file path supplied")
+
+    safe_name = os.path.basename(file_name)
+    file_path = SAMPLE_DATA_DIR / safe_name
+    if not file_path.exists() or not file_path.is_file():
+        raise HTTPException(status_code=404, detail=f"Sample file '{safe_name}' not found")
+
+    media_type = "application/octet-stream"
+    if safe_name.endswith(".nc"):
+        media_type = "application/netcdf"
+    elif safe_name.endswith(".csv"):
+        media_type = "text/csv"
+
+    return FileResponse(file_path, filename=safe_name, media_type=media_type)
 
 
 @app.get("/health", response_model=HealthResponse)
@@ -821,9 +848,16 @@ async def delete_source(
     """
     try:
         from src.sources import get_source_store
+        from src.embeddings.database import VectorDatabase
         
         store = get_source_store()
-        
+        source = store.get_source(source_id)
+        if not source:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Source with ID '{source_id}' not found"
+            )
+
         if hard_delete:
             success = store.hard_delete_source(source_id)
         else:
@@ -833,6 +867,15 @@ async def delete_source(
             raise HTTPException(
                 status_code=404,
                 detail=f"Source with ID '{source_id}' not found"
+            )
+
+        try:
+            db = VectorDatabase()
+            db.delete_embeddings_by_source(source_id)
+        except Exception as cleanup_error:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Source removed but failed to delete embeddings: {cleanup_error}"
             )
         
         return None
@@ -1115,7 +1158,9 @@ async def get_embeddings_stats():
         # Extract statistics from metadata
         variables = set()
         sources = set()
-        timestamps = []
+        start_timestamps = []
+        end_timestamps = []
+        fallback_timestamps = []
         
         for metadata in results.get('metadatas', []):
             if metadata:
@@ -1123,16 +1168,26 @@ async def get_embeddings_stats():
                     variables.add(metadata['variable'])
                 if 'source_id' in metadata:
                     sources.add(metadata['source_id'])
-                if 'timestamp' in metadata:
-                    timestamps.append(metadata['timestamp'])
+                if 'start_timestamp' in metadata and metadata['start_timestamp']:
+                    start_timestamps.append(metadata['start_timestamp'])
+                if 'end_timestamp' in metadata and metadata['end_timestamp']:
+                    end_timestamps.append(metadata['end_timestamp'])
+                if 'timestamp' in metadata and metadata['timestamp']:
+                    fallback_timestamps.append(metadata['timestamp'])
         
         # Calculate date range
         date_range = None
-        if timestamps:
-            timestamps.sort()
+        if not start_timestamps and fallback_timestamps:
+            start_timestamps.extend(fallback_timestamps)
+        if not end_timestamps and fallback_timestamps:
+            end_timestamps.extend(fallback_timestamps)
+
+        if start_timestamps and end_timestamps:
+            earliest = min(start_timestamps)
+            latest = max(end_timestamps)
             date_range = {
-                "earliest": timestamps[0],
-                "latest": timestamps[-1]
+                "earliest": earliest,
+                "latest": latest
             }
         
         return EmbeddingStatsResponse(

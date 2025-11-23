@@ -172,6 +172,35 @@ make clean
 
 ## 📖 Usage
 
+### Sample datasets for demos
+
+- The curated Excel registry `Kopie souboru D1.1.xlsx` (project root) lists high-value open climate sources (CERRA, ERA5, GISTEMP, Open-Meteo air quality, etc.) together with access links and coverage metadata. Use it to pick realistic datasets for RAG experiments.
+- NetCDF files generated from those sources (see `data/external/open_sources/`) are exposed at runtime through the FastAPI route `GET /samples/{filename}`. Example: `http://localhost:8000/samples/openmeteo_bratislava_temp.nc` streams the Bratislava Open-Meteo temperature cube.
+- When defining a new source through `/sources`, you can now point the URL to that sample endpoint so the Dagster fetch op downloads a guaranteed-good file inside Docker (service-to-service URL: `http://web-api:8000/samples/<file>`).
+
+### Creating a dynamic source (quick refresher)
+
+1. **Pick a dataset** – either an external CSV/NetCDF URL or one of the hosted samples listed above (use the internal URL `http://web-api:8000/samples/<file>` when running inside Docker Compose).
+2. **Prepare the payload** – the only required fields are `source_id`, `url`, and (optionally) `format`. Variables, tags, and description make the UI easier to understand but can be omitted.
+3. **Call the API or use the UI form** – submit a `POST /sources` request or fill out the “Create / Update Source” card in the dashboard.
+4. **Trigger ETL** – once the source appears in the Active Sources table, click “Trigger ETL” or call `POST /sources/{source_id}/trigger` to run `dynamic_source_etl_job`.
+5. **Inspect embeddings** – `/embeddings/stats` (or the dashboard panel) will confirm how many vectors landed in Qdrant and what temporal range they cover.
+
+Example `POST /sources` payload:
+
+```json
+{
+  "source_id": "gistemp_global",
+  "url": "http://web-api:8000/samples/gistemp_global_anomaly.csv",
+  "format": "csv",
+  "description": "NASA GISTEMP global mean temperature anomalies",
+  "tags": ["gistemp", "global"],
+  "variables": ["Jan", "Feb", "Mar"]
+}
+```
+
+> 💡 Tip: deleting a source (soft or hard) now also removes every embedding whose payload `source_id` matches, so stale vectors never linger in Qdrant.
+
 ### Phase 4: Orchestration & Web UI (NEW! 🎉)
 
 **Start Dagster UI** (workflow visualization):
