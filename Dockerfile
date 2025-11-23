@@ -37,6 +37,7 @@ RUN mkdir -p data/raw data/processed logs
 
 # Set environment variables
 ENV PYTHONUNBUFFERED=1
+ENV PYTHONPATH=/app
 ENV DATA_RAW_DIR=/app/data/raw
 ENV DATA_PROCESSED_DIR=/app/data/processed
 ENV LOGS_DIR=/app/logs
