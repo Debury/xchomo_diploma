@@ -1,8 +1,13 @@
-"""
-Dagster Repository for Climate ETL Pipeline
+"""Dagster repository exposing jobs, schedules, and sensors to Dagit."""
 
-Central repository that exposes all jobs, schedules, and sensors to Dagit UI.
-"""
+import sys
+from pathlib import Path
+
+# When Dagster loads this module inside the container, ensure /app/src is importable.
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+SRC_PATH = PROJECT_ROOT / "src"
+if SRC_PATH.exists() and str(SRC_PATH) not in sys.path:
+    sys.path.append(str(SRC_PATH))
 
 from dagster import Definitions
 
