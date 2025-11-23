@@ -3,8 +3,13 @@
 import sys
 from pathlib import Path
 
-# When Dagster loads this module inside the container, ensure /app/src is importable.
+# When Dagster loads this module inside the container, ensure /app is on sys.path
+# so that the top-level `src` package can be imported.
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if PROJECT_ROOT.exists() and str(PROJECT_ROOT) not in sys.path:
+    sys.path.append(str(PROJECT_ROOT))
+
+# Some interactive environments only mount /app/src, so fall back to that if needed.
 SRC_PATH = PROJECT_ROOT / "src"
 if SRC_PATH.exists() and str(SRC_PATH) not in sys.path:
     sys.path.append(str(SRC_PATH))
