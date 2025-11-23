@@ -11,43 +11,53 @@ The Climate Data ETL Pipeline is designed as a modular, scalable system for proc
 │                  Climate Data ETL Pipeline - Complete System            │
 └─────────────────────────────────────────────────────────────────────────┘
 
-                              ┌──────────────────┐
-                              │   Data Sources   │
-                              │  (ERA5, CDS API) │
-                              └────────┬─────────┘
+                              ┌──────────────────────────┐
+                              │   Web App Interface      │
+                              │  (User submits URL)      │
+                              └────────────┬─────────────┘
+                                           │
+                              ┌────────────▼─────────────┐
+                              │   Data Sources (URLs)    │
+                              │  • ERA5 reanalysis       │
+                              │  • CMIP6 climate models  │
+                              │  • Weather stations      │
+                              │  • Air pollution data    │
+                              └────────────┬─────────────┘
+                                           │
+                      ┌────────────────────▼───────────────┐
+                      │  PHASE 1: Data Acquisition         │
+                      │  • Download from URL               │
+                      │  • Auto-detect format              │
+                      │  • Validate data                   │
+                      └────────────────┬───────────────────┘
+                                       │
+                          ┌────────────▼─────────┐
+                          │  Raw Data Storage    │
+                          │    (data/raw/)       │
+                          └────────────┬─────────┘
                                        │
                       ┌────────────────▼───────────────┐
-                      │  PHASE 1: Data Acquisition     │
-                      │  • ERA5 Downloader             │
-                      │  • Data Visualizer             │
-                      └────────────┬───────────────────┘
-                                   │
-                          ┌────────▼─────────┐
-                          │  Raw Data Storage│
-                          │    (data/raw/)   │
-                          └────────┬─────────┘
-                                   │
-                      ┌────────────▼───────────────┐
-                      │ PHASE 2: Transformation    │
-                      │  • Ingestion (multi-format)│
-                      │  • Transformations         │
-                      │  • Validation              │
-                      │  • Export (NetCDF/Parquet) │
-                      └────────────┬───────────────┘
-                                   │
-                     ┌─────────────▼──────────────┐
-                     │  Processed Data Storage    │
-                     │   (data/processed/)        │
-                     └─────────────┬──────────────┘
-                                   │
-                      ┌────────────▼───────────────┐
-                      │  PHASE 3: Embeddings       │
-                      │  • Embedding Generator     │
-                      │  • ChromaDB Storage        │
-                      │  • Semantic Search         │
-                      └────────────┬───────────────┘
-                                   │
-                          ┌────────▼─────────┐
+                      │ PHASE 2: Transformation        │
+                      │  • Ingestion (multi-format)    │
+                      │  • Metadata extraction         │
+                      │  • Statistics computation      │
+                      │  • Validation                  │
+                      └────────────────┬───────────────┘
+                                       │
+                     ┌─────────────────▼──────────────┐
+                     │  Processed Data Storage        │
+                     │   (data/processed/)            │
+                     └─────────────────┬──────────────┘
+                                       │
+                      ┌────────────────▼───────────────┐
+                      │  PHASE 3: Embeddings           │
+                      │  • Text generation             │
+                      │  • Embedding generation        │
+                      │  • Qdrant vector storage       │
+                      │  • Semantic search ready       │
+                      └────────────────┬───────────────┘
+                                       │
+                          ┌────────────▼─────────┐
                           │  Vector Database │
                           │    (ChromaDB)    │
                           └──────────────────┘

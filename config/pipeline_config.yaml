@@ -302,20 +302,36 @@ embeddings:
   max_seq_length: 512
   show_progress_bar: true
   
-  # Text preparation
-  text_preparation:
-    include_metadata: true
-    include_statistics: true
-    include_location: true
-    template: "Dataset {id}: variable {variable} daily mean={mean:.2f}{unit}, range [{min:.1f}, {max:.1f}] at location [{lat:.2f}, {lon:.2f}]"
-  
-  # Statistics to compute
+  # Statistics to compute (flexible - no hardcoded variables)
   statistics:
     - "mean"
     - "min"
     - "max"
     - "std"
     - "count"
+    - "median"
+    - "percentile_25"
+    - "percentile_75"
+  
+  # Text generation for embeddings (RAG-optimized)
+  text_generation:
+    # Include sample values in text (crucial for RAG)
+    include_sample_values: true
+    
+    # Include statistics in text
+    include_statistics: true
+    
+    # Include coordinate information
+    include_coordinates: true
+    
+    # Include variable attributes
+    include_attributes: true
+    
+    # Verbosity level: low, medium, high
+    # - low: basic info (variable, mean, range)
+    # - medium: + std, counts, spatial/temporal info (recommended for RAG)
+    # - high: + all attributes and metadata
+    verbosity: "medium"
 
 # Vector database configuration
 vector_db:
@@ -330,18 +346,37 @@ vector_db:
     
     # Collection configuration
     collection_name: "climate_data"
+    
+    # Metadata schema (flexible - stores any meteorological variable)
+    # Note: Actual metadata is dynamically extracted from datasets
     metadata_schema:
       file_path: "string"
       dataset_id: "string"
       variable: "string"
+      long_name: "string"
+      standard_name: "string"
+      unit: "string"
+      dtype: "string"
+      # Statistics (dynamically added)
+      stat_mean: "float"
+      stat_min: "float"
+      stat_max: "float"
+      stat_std: "float"
+      stat_count: "float"
+      # Spatial extent (if available)
+      lat_min: "float"
+      lat_max: "float"
+      lon_min: "float"
+      lon_max: "float"
+      # Temporal extent (if available)
       start_date: "string"
       end_date: "string"
-      min_lat: "float"
-      max_lat: "float"
-      min_lon: "float"
-      max_lon: "float"
-      temporal_resolution: "string"
-      spatial_resolution: "string"
+      temporal_frequency: "string"
+      # Dimensions
+      dimensions: "string"
+      shape: "string"
+      # Sample values
+      sample_values: "string"
     
     # Distance metric
     distance_metric: "cosine"  # Options: cosine, l2, ip (inner product)
@@ -361,11 +396,15 @@ semantic_search:
   query_preprocessing:
     lowercase: true
     remove_stopwords: false
+    # Flexible abbreviation expansion - can add more as needed
     expand_abbreviations:
       t2m: "2 meter temperature"
       tp: "total precipitation"
       skt: "skin temperature"
       sst: "sea surface temperature"
+      u10: "10 meter u wind component"
+      v10: "10 meter v wind component"
+      msl: "mean sea level pressure"
   
   reranking:
     enabled: false
