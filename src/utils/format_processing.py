@@ -150,6 +150,10 @@ def prepare_file_for_processing(
         if txt_member:
             return extract_dir / txt_member, "txt"
 
+        csv_member = _find_member(lambda m: m.suffix.lower() == ".csv")
+        if csv_member:
+            return extract_dir / csv_member, "csv"
+
         json_member = _find_member(lambda m: m.suffix.lower() in {".json", ".geojson"})
         if json_member:
             return extract_dir / json_member, "json"

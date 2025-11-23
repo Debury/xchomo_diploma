@@ -318,6 +318,23 @@ def test_prepare_file_for_processing_zip_ascii(tmp_path, test_logger):
     assert prepared.exists()
 
 
+def test_prepare_file_for_processing_zip_csv(tmp_path, test_logger):
+    csv_folder = tmp_path / "csv_archive"
+    csv_folder.mkdir()
+    csv_path = csv_folder / "data.csv"
+    csv_path.write_text("time,value\n2024-01-01,12\n")
+
+    archive_path = tmp_path / "csvbundle.zip"
+    with zipfile.ZipFile(archive_path, "w") as archive:
+        archive.write(csv_path, arcname="data.csv")
+
+    prepared, fmt = prepare_file_for_processing(archive_path, "zip", test_logger)
+
+    assert fmt == "csv"
+    assert prepared.suffix == ".csv"
+    assert prepared.exists()
+
+
 def test_prepare_file_for_processing_gzip_geotiff(tmp_path, test_logger):
     tif_path = tmp_path / "sample.tif"
     _write_geotiff(tif_path)
