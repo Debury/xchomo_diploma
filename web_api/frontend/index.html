@@ -31,9 +31,29 @@
             <section id="embeddings" class="card">
                 <div class="section-header">
                     <h2>Embedding Stats</h2>
-                    <button id="refreshEmbeddings">Refresh</button>
+                    <div class="button-group">
+                        <button id="refreshEmbeddings">Refresh</button>
+                        <button id="clearEmbeddings" class="ghost danger">Clear DB</button>
+                    </div>
                 </div>
-                <pre id="embeddingStats">No data yet</pre>
+                <div id="embeddingStatsSummary" class="stat-grid">
+                    <div class="stat-card">
+                        <p class="hint">Total embeddings</p>
+                        <strong>—</strong>
+                    </div>
+                    <div class="stat-card">
+                        <p class="hint">Sources</p>
+                        <strong>—</strong>
+                    </div>
+                    <div class="stat-card">
+                        <p class="hint">Date range</p>
+                        <strong>—</strong>
+                    </div>
+                </div>
+                <details class="raw-json-panel">
+                    <summary>View raw JSON</summary>
+                    <pre id="embeddingStatsRaw">No data yet</pre>
+                </details>
             </section>
         </div>
 
@@ -45,10 +65,7 @@
                         <label>Source ID
                             <input type="text" name="source_id" required placeholder="era5_bratislava" />
                         </label>
-                                <div class="button-group">
-                                    <button id="refreshEmbeddings">Refresh</button>
-                                    <button id="clearEmbeddings" class="ghost danger">Clear DB</button>
-                                </div>
+                        <label>Data URL
                             <input type="url" name="url" required placeholder="https://example.com/data.nc" />
                         </label>
                     </div>

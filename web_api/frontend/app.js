@@ -6,7 +6,8 @@ const ragForm = document.getElementById('ragForm');
 const ragAnswer = document.getElementById('ragAnswer');
 const ragChunks = document.getElementById('ragChunks');
 const ragStatus = document.getElementById('ragStatus');
-const embeddingStats = document.getElementById('embeddingStats');
+const embeddingStatsSummary = document.getElementById('embeddingStatsSummary');
+const embeddingStatsRaw = document.getElementById('embeddingStatsRaw');
 
 const refreshHealthBtn = document.getElementById('refreshHealth');
 const refreshSourcesBtn = document.getElementById('refreshSources');
@@ -153,14 +154,77 @@ sourcesTable?.addEventListener('click', async (event) => {
     }
 });
 
+function summarizeList(items = [], maxItems = 5) {
+    if (!items.length) {
+        return '—';
+    }
+    if (items.length <= maxItems) {
+        return items.join(', ');
+    }
+    const head = items.slice(0, maxItems).join(', ');
+    return `${head} … (+${items.length - maxItems} more)`;
+}
+
+function renderEmbeddingStats(data) {
+    if (!embeddingStatsSummary || !embeddingStatsRaw) {
+        return;
+    }
+
+    if (!data || Object.keys(data).length === 0) {
+        embeddingStatsSummary.innerHTML = '<p class="hint">No embeddings stored yet.</p>';
+        embeddingStatsRaw.textContent = '{}';
+        return;
+    }
+
+    const total = data.total_embeddings ?? 0;
+    const collection = data.collection_name || '—';
+    const variables = summarizeList(data.variables || []);
+    const sources = summarizeList(data.sources || []);
+    const dateRange = data?.date_range
+        ? `${data.date_range.earliest || '—'} → ${data.date_range.latest || '—'}`
+        : '—';
+
+    embeddingStatsSummary.innerHTML = `
+        <div class="stat-card">
+            <p class="hint">Total embeddings</p>
+            <strong>${total.toLocaleString()}</strong>
+        </div>
+        <div class="stat-card">
+            <p class="hint">Collection</p>
+            <strong>${collection}</strong>
+        </div>
+        <div class="stat-card">
+            <p class="hint">Sources</p>
+            <strong>${sources}</strong>
+        </div>
+        <div class="stat-card">
+            <p class="hint">Variables tracked</p>
+            <strong>${variables}</strong>
+        </div>
+        <div class="stat-card">
+            <p class="hint">Date range</p>
+            <strong>${dateRange}</strong>
+        </div>
+    `;
+
+    embeddingStatsRaw.textContent = JSON.stringify(data, null, 2);
+}
+
 async function loadEmbeddingStats() {
-    embeddingStats.textContent = 'Loading…';
+    if (embeddingStatsSummary) {
+        embeddingStatsSummary.innerHTML = '<p class="hint">Loading…</p>';
+    }
     try {
         const res = await fetch('/embeddings/stats');
         const data = await res.json();
-        embeddingStats.textContent = JSON.stringify(data, null, 2);
+        renderEmbeddingStats(data);
     } catch (err) {
-        embeddingStats.textContent = `Failed to load stats: ${err.message}`;
+        if (embeddingStatsSummary) {
+            embeddingStatsSummary.innerHTML = `<p class="hint">Failed to load stats: ${err.message}</p>`;
+        }
+        if (embeddingStatsRaw) {
+            embeddingStatsRaw.textContent = '';
+        }
     }
 }
 
@@ -227,7 +291,16 @@ clearEmbeddingsBtn?.addEventListener('click', async () => {
             throw new Error(detail.detail || res.statusText);
         }
         const data = await res.json();
-        embeddingStats.textContent = `Cleared ${data.removed_embeddings} embeddings from ${data.collection_name}.`;
+        if (embeddingStatsSummary) {
+            embeddingStatsSummary.innerHTML = `
+                <div class="stat-card">
+                    <p class="hint">Status</p>
+                    <strong>Cleared ${data.removed_embeddings} from ${data.collection_name}</strong>
+                </div>`;
+        }
+        if (embeddingStatsRaw) {
+            embeddingStatsRaw.textContent = JSON.stringify(data, null, 2);
+        }
         await loadEmbeddingStats();
     } catch (err) {
         alert(`Failed to clear embeddings: ${err.message}`);
