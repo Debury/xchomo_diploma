@@ -195,7 +195,8 @@ reports/*.pdf
 # ========================================
 # Phase 3: Vector Database & Embeddings
 # ========================================
-# ChromaDB data (local vector storage)
+# Vector DB data (local Qdrant storage)
+qdrant_data/
 chroma_db/
 .chroma/
 chromadb/

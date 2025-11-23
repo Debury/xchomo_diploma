@@ -45,8 +45,8 @@ python-dateutil>=2.8.0
 # Sentence transformers for embedding generation
 sentence-transformers>=2.2.0
 
-# ChromaDB for vector database
-chromadb>=0.4.0
+# Qdrant for vector database
+qdrant-client>=1.12.1
 
 # ====================================================================================
 # PHASE 5: DYNAMIC SOURCE MANAGEMENT & DATABASE

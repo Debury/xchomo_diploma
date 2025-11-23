@@ -1,5 +1,5 @@
 """
-Test the quality of generated embeddings in ChromaDB.
+Test the quality of generated embeddings stored in Qdrant.
 
 This script validates:
 1. Semantic similarity - do similar queries return similar results?
@@ -37,7 +37,7 @@ def test_basic_stats():
     db = VectorDatabase()
     total = db.collection.count()
     
-    console.print(f"✓ Total embeddings in ChromaDB: [bold green]{total}[/bold green]")
+    console.print(f"✓ Total embeddings in Qdrant: [bold green]{total}[/bold green]")
     
     if total == 0:
         console.print("[red]✗ No embeddings found! Run ETL job first.[/red]")
@@ -109,14 +109,24 @@ def test_semantic_similarity():
         
         if results['ids'] and len(results['ids'][0]) > 0:
             console.print("✓ Top results:")
-            for i, (doc_id, distance, doc) in enumerate(zip(
-                results['ids'][0][:3],
-                results['distances'][0][:3],
-                results['documents'][0][:3]
-            ), 1):
-                # Lower distance = more similar (for cosine: 0 = identical, 2 = opposite)
-                similarity = 1 - (distance / 2)  # Convert to 0-1 scale
-                console.print(f"  [{i}] Similarity: [green]{similarity:.2%}[/green]")
+            scores_batch = results.get('scores') or [[]]
+            distances_batch = results.get('distances') or [[]]
+            documents_batch = results.get('documents') or [[]]
+            scores = scores_batch[0] if scores_batch else []
+            distances = distances_batch[0] if distances_batch else []
+            documents = documents_batch[0] if documents_batch else []
+
+            for i, doc_id in enumerate(results['ids'][0][:3], 1):
+                index = i - 1
+                score = scores[index] if index < len(scores) else None
+                distance = distances[index] if index < len(distances) else None
+                similarity = None
+                if score is not None:
+                    similarity = float(score)
+                elif distance is not None:
+                    similarity = max(0.0, 1 - float(distance))
+                doc = documents[index] if index < len(documents) else ""
+                console.print(f"  [{i}] Similarity: [green]{(similarity or 0):.2%}[/green]")
                 console.print(f"      {doc[:100]}...")
         else:
             console.print("[red]✗ No results found[/red]")
@@ -224,8 +234,11 @@ def test_retrieval_accuracy():
         
         if results['ids'] and len(results['ids'][0]) > 0:
             retrieved_id = results['ids'][0][0]
-            distance = results['distances'][0][0]
-            similarity = 1 - (distance / 2)
+            scores = results.get('scores', [[]])[0]
+            distances = results.get('distances', [[]])[0]
+            score = scores[0] if scores else None
+            distance = distances[0] if distances else None
+            similarity = float(score) if score is not None else max(0.0, 1 - float(distance or 1))
             
             if retrieved_id == original_id:
                 console.print(f"  ✓ [green]CORRECT[/green] - Retrieved original document")
@@ -390,7 +403,7 @@ def generate_quality_report():
 def main():
     """Run all quality tests."""
     console.print(Panel(
-        "[bold cyan]ChromaDB Embedding Quality Test Suite[/bold cyan]\n"
+    "[bold cyan]Qdrant Embedding Quality Test Suite[/bold cyan]\n"
         "Testing semantic quality, distribution, and retrieval accuracy",
         title="Embedding Quality Assessment",
         border_style="cyan"

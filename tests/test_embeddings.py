@@ -114,13 +114,13 @@ class TestVectorDatabase:
     
     def test_init(self):
         """Test database initialization"""
-        db = VectorDatabase(collection_name="test_collection")
+        db = VectorDatabase(collection_name="test_collection", auto_connect=False)
         assert db.collection_name == "test_collection"
-        assert db.client is not None
+        assert db._backend == "memory"
     
     def test_add_and_count(self):
         """Test adding embeddings and counting"""
-        db = VectorDatabase(collection_name="test_add")
+        db = VectorDatabase(collection_name="test_add", auto_connect=False)
         
         embeddings = np.random.randn(3, 384).astype(np.float32)
         ids = ["doc1", "doc2", "doc3"]
@@ -133,7 +133,7 @@ class TestVectorDatabase:
     
     def test_query(self):
         """Test querying embeddings"""
-        db = VectorDatabase(collection_name="test_query")
+        db = VectorDatabase(collection_name="test_query", auto_connect=False)
         
         # Add data
         embeddings = np.random.randn(5, 384).astype(np.float32)

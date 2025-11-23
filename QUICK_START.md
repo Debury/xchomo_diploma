@@ -43,6 +43,24 @@ ETL-Diplomka/
 
 ## 🚀 How to Use Your New Structure
 
+### 🐳 One-command docker demo (Dagster + API + RAG UI)
+
+```powershell
+docker compose up --build qdrant dagster-postgres dagster-daemon dagit web-api
+```
+
+Then:
+
+1. Open **Dagster** at [http://localhost:3000](http://localhost:3000) to watch runs and schedules.
+2. Open the **FastAPI docs** at [http://localhost:8000/docs](http://localhost:8000/docs) for every REST endpoint.
+3. Launch the new **Climate RAG Console** UI at [http://localhost:8000/ui](http://localhost:8000/ui) to:
+  - Create data sources (ID, URL, optional variables/tags).
+  - Trigger `dynamic_source_etl_job` per source (button in the UI) and watch the run progress in Dagster.
+  - Inspect embedding stats and issue natural-language RAG questions via the built-in chat panel.
+4. (Optional) add `climate-etl` or `jupyter` services to the `docker compose` command if you need the legacy batch jobs or notebooks running alongside the orchestrated flow.
+
+All vector embeddings now persist inside the bundled **Qdrant** service (`qdrant-data` volume), so the RAG chat and `/rag/chat` API remain stateful across restarts.
+
 ### 1. First Time Setup
 
 ```bash

@@ -8,11 +8,13 @@ Endpoints allow listing jobs, triggering runs, and checking status.
 import os
 import sys
 from pathlib import Path
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime
 
 from fastapi import FastAPI, HTTPException, Query, Path as PathParam
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 import httpx
 
@@ -147,7 +149,7 @@ class EmbeddingStatsResponse(BaseModel):
     variables: List[str] = Field(..., description="List of unique variables")
     date_range: Optional[Dict[str, str]] = Field(None, description="Earliest and latest timestamps")
     sources: List[str] = Field(..., description="List of source IDs")
-    collection_name: str = Field(..., description="ChromaDB collection name")
+    collection_name: str = Field(..., description="Qdrant collection name")
 
 
 class EmbeddingSearchResult(BaseModel):
@@ -158,6 +160,26 @@ class EmbeddingSearchResult(BaseModel):
     location: Optional[Dict[str, float]]
     metadata: Dict[str, Any]
     similarity_score: float = Field(..., description="Cosine similarity score (0-1)")
+
+
+class RAGChunk(BaseModel):
+    source_id: str
+    variable: Optional[str]
+    similarity: float
+    text: str
+    metadata: Dict[str, Any]
+
+
+class RAGChatRequest(BaseModel):
+    question: str = Field(..., description="Natural language climate question", min_length=3)
+    top_k: int = Field(3, ge=1, le=10, description="How many chunks to retrieve")
+
+
+class RAGChatResponse(BaseModel):
+    question: str
+    answer: str
+    references: List[str]
+    chunks: List[RAGChunk]
 
 
 class SourceResponse(BaseModel):
@@ -198,6 +220,8 @@ app = FastAPI(
     redoc_url="/redoc"
 )
 
+FRONTEND_DIR = Path(__file__).parent / "frontend"
+
 # Configure CORS
 app.add_middleware(
     CORSMiddleware,
@@ -206,6 +230,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+if FRONTEND_DIR.exists():
+    app.mount("/ui/static", StaticFiles(directory=FRONTEND_DIR, html=False), name="rag-ui-static")
 
 # Configuration
 DAGSTER_HOST = os.getenv("DAGSTER_HOST", "localhost")
@@ -261,6 +288,40 @@ async def execute_graphql_query(query: str, variables: Optional[Dict] = None) ->
             )
 
 
+def summarize_hits(results: List[Dict[str, Any]]) -> Tuple[str, List[str]]:
+    """Build a human-readable answer and reference list from semantic hits."""
+    if not results:
+        return "No supporting context found.", []
+
+    sentences: List[str] = []
+    references: List[str] = []
+    for hit in results:
+        metadata = hit.get("metadata") or {}
+        variable = metadata.get("variable", "variable")
+        source_id = metadata.get("source_id", "source")
+        unit = metadata.get("unit") or ""
+        stat_mean = metadata.get("stat_mean")
+        temporal = metadata.get("temporal_extent") or {}
+        latest = temporal.get("end") or metadata.get("timestamp") or "n/a"
+        if isinstance(stat_mean, (int, float)):
+            sentences.append(
+                f"{variable} from {source_id} averages {stat_mean:.2f}{unit} (latest {latest})."
+            )
+        else:
+            sentences.append(
+                f"{variable} from {source_id} covers {metadata.get('long_name', 'the dataset')} (latest {latest})."
+            )
+        references.append(f"{source_id}:{variable}")
+
+    ordered_refs: List[str] = []
+    seen = set()
+    for ref in references:
+        if ref not in seen:
+            seen.add(ref)
+            ordered_refs.append(ref)
+    return " ".join(sentences), ordered_refs
+
+
 # ====================================================================================
 # API ENDPOINTS
 # ====================================================================================
@@ -277,6 +338,14 @@ async def root():
         "docs": "/docs",
         "health": "/health"
     }
+
+
+@app.get("/ui", response_class=FileResponse)
+async def serve_frontend():
+    """Serve the lightweight RAG dashboard frontend."""
+    if not FRONTEND_DIR.exists():
+        raise HTTPException(status_code=404, detail="Frontend assets not found. Run git pull or rebuild the image.")
+    return FileResponse(FRONTEND_DIR / "index.html")
 
 
 @app.get("/health", response_model=HealthResponse)
@@ -1014,7 +1083,7 @@ async def get_embeddings_stats():
     """
     Get statistics about the vector database.
     
-    Returns comprehensive information about embeddings stored in ChromaDB:
+    Returns comprehensive information about embeddings stored in Qdrant:
     - Total number of embeddings
     - Unique variables present
     - Date range covered
@@ -1164,37 +1233,75 @@ async def search_embeddings(
     - "wind speed patterns"
     """
     try:
-        from src.embeddings.search import EmbeddingSearch
-        
-        search = EmbeddingSearch()
-        
-        # Perform semantic search
-        results = search.search(query, n_results=limit)
-        
+        from src.embeddings.search import SemanticSearcher
+
+        searcher = SemanticSearcher()
+        results = searcher.search(query, k=limit)
+
         if not results:
             return []
-        
+
         search_results = []
         for result in results:
+            metadata = result.get('metadata', {}) or {}
+            location = None
+            if 'latitude' in metadata and 'longitude' in metadata:
+                location = {
+                    'lat': metadata.get('latitude'),
+                    'lon': metadata.get('longitude')
+                }
             search_results.append(EmbeddingSearchResult(
                 id=result.get('id', ''),
-                variable=result.get('metadata', {}).get('variable', 'unknown'),
-                timestamp=result.get('metadata', {}).get('timestamp'),
-                location={
-                    'lat': result.get('metadata', {}).get('latitude'),
-                    'lon': result.get('metadata', {}).get('longitude')
-                } if 'latitude' in result.get('metadata', {}) else None,
-                metadata=result.get('metadata', {}),
-                similarity_score=1.0 - result.get('distance', 1.0)  # Convert distance to similarity
+                variable=metadata.get('variable', 'unknown'),
+                timestamp=metadata.get('timestamp'),
+                location=location,
+                metadata=metadata,
+                similarity_score=float(result.get('similarity', 0.0))
             ))
-        
+
         return search_results
-    
+
     except Exception as e:
         raise HTTPException(
             status_code=500,
             detail=f"Error performing semantic search: {str(e)}"
         )
+
+
+@app.post("/rag/chat", response_model=RAGChatResponse)
+async def rag_chat(request: RAGChatRequest):
+    """Run a lightweight RAG flow over the stored embeddings."""
+    try:
+        from src.embeddings.search import SemanticSearcher
+
+        searcher = SemanticSearcher()
+        hits = searcher.search(request.question, k=request.top_k)
+        if not hits:
+            raise HTTPException(status_code=404, detail="No relevant context found in embeddings store")
+
+        answer, references = summarize_hits(hits)
+        chunks = [
+            RAGChunk(
+                source_id=(hit.get('metadata') or {}).get('source_id', 'source'),
+                variable=(hit.get('metadata') or {}).get('variable'),
+                similarity=float(hit.get('similarity', 0.0)),
+                text=hit.get('text') or hit.get('document') or "",
+                metadata=hit.get('metadata') or {},
+            )
+            for hit in hits
+        ]
+
+        return RAGChatResponse(
+            question=request.question,
+            answer=answer,
+            references=references,
+            chunks=chunks,
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error running RAG chat: {str(e)}")
 
 
 # ====================================================================================

@@ -335,18 +335,21 @@ embeddings:
 
 # Vector database configuration
 vector_db:
-  provider: "chromadb"
+  provider: "qdrant"
   
-  chromadb:
-    # Storage configuration
-    persist_directory: "chroma_db"
-    settings:
-      anonymized_telemetry: false
-      allow_reset: true
-    
+  qdrant:
+    # Connection configuration
+    host: "localhost"
+    grpc_port: 6334
+    rest_port: 6333
+    prefer_grpc: true
+
     # Collection configuration
     collection_name: "climate_data"
-    
+    vector_size: 384
+    distance: "COSINE"
+    on_disk_payload: true
+
     # Metadata schema (flexible - stores any meteorological variable)
     # Note: Actual metadata is dynamically extracted from datasets
     metadata_schema:

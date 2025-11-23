@@ -19,7 +19,7 @@ $directories = @(
     "logs",
     "data\raw",
     "data\processed",
-    "chroma_db"
+    "qdrant_data"
 )
 
 foreach ($dir in $directories) {
