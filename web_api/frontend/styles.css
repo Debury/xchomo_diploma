@@ -76,6 +76,15 @@ main.layout {
     gap: 1rem;
 }
 
+.button-group {
+    display: flex;
+    gap: 0.5rem;
+}
+
+.button-group button {
+    flex: none;
+}
+
 button {
     background: var(--accent);
     border: none;

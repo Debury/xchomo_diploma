@@ -152,6 +152,43 @@ class TestSourceDeletion:
 
 
 # ====================================================================================
+# EMBEDDING MAINTENANCE TESTS
+# ====================================================================================
+
+
+class TestEmbeddingMaintenance:
+    """Ensure embedding admin endpoints behave correctly."""
+
+    @pytest.mark.asyncio
+    async def test_clear_embeddings_requires_confirmation(self, client):
+        async with client:
+            response = await client.post("/embeddings/clear")
+            assert response.status_code == status.HTTP_400_BAD_REQUEST
+
+    @pytest.mark.asyncio
+    async def test_clear_embeddings_endpoint(self, client, monkeypatch):
+        payload = {"calls": 0}
+
+        class DummyVectorDB:
+            collection_name = "dummy"
+
+            def clear_collection(self) -> int:
+                payload["calls"] += 1
+                return 7
+
+        monkeypatch.setattr("src.embeddings.database.VectorDatabase", DummyVectorDB)
+
+        async with client:
+            response = await client.post("/embeddings/clear?confirm=true")
+            assert response.status_code == status.HTTP_200_OK
+            data = response.json()
+            assert data["removed_embeddings"] == 7
+            assert data["collection_name"] == "dummy"
+
+        assert payload["calls"] == 1
+
+
+# ====================================================================================
 # JOB ENDPOINTS TESTS
 # ====================================================================================
 

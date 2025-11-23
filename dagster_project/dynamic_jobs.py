@@ -241,12 +241,11 @@ def process_all_sources(context: OpExecutionContext) -> List[Dict[str, Any]]:
 
                 temporal_coverage = infer_temporal_coverage(df)
                 if temporal_coverage:
-                    logger.info(
-                        "Derived temporal coverage %s → %s from column '%s'",
-                        temporal_coverage["start"],
-                        temporal_coverage["end"],
-                        temporal_coverage["field"]
+                    coverage_message = (
+                        f"Derived temporal coverage {temporal_coverage['start']} → {temporal_coverage['end']} "
+                        f"from column '{temporal_coverage['field']}'"
                     )
+                    logger.info(coverage_message)
                 else:
                     logger.info("Could not infer temporal coverage; defaulting to run timestamp metadata.")
                 

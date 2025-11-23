@@ -11,6 +11,7 @@ const embeddingStats = document.getElementById('embeddingStats');
 const refreshHealthBtn = document.getElementById('refreshHealth');
 const refreshSourcesBtn = document.getElementById('refreshSources');
 const refreshEmbeddingsBtn = document.getElementById('refreshEmbeddings');
+const clearEmbeddingsBtn = document.getElementById('clearEmbeddings');
 
 const headers = {
     'Content-Type': 'application/json',
@@ -209,6 +210,32 @@ ragForm?.addEventListener('submit', async (event) => {
 refreshHealthBtn?.addEventListener('click', checkHealth);
 refreshSourcesBtn?.addEventListener('click', loadSources);
 refreshEmbeddingsBtn?.addEventListener('click', loadEmbeddingStats);
+clearEmbeddingsBtn?.addEventListener('click', async () => {
+    if (!confirm('This will delete all embeddings from the vector database. Continue?')) {
+        return;
+    }
+    const original = clearEmbeddingsBtn.textContent;
+    clearEmbeddingsBtn.textContent = 'Clearing…';
+    clearEmbeddingsBtn.disabled = true;
+    try {
+        const res = await fetch('/embeddings/clear?confirm=true', {
+            method: 'POST',
+            headers,
+        });
+        if (!res.ok) {
+            const detail = await res.json().catch(() => ({}));
+            throw new Error(detail.detail || res.statusText);
+        }
+        const data = await res.json();
+        embeddingStats.textContent = `Cleared ${data.removed_embeddings} embeddings from ${data.collection_name}.`;
+        await loadEmbeddingStats();
+    } catch (err) {
+        alert(`Failed to clear embeddings: ${err.message}`);
+    } finally {
+        clearEmbeddingsBtn.textContent = original;
+        clearEmbeddingsBtn.disabled = false;
+    }
+});
 
 // Initial load
 checkHealth();

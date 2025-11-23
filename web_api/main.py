@@ -1205,6 +1205,35 @@ async def get_embeddings_stats():
         )
 
 
+@app.post("/embeddings/clear")
+async def clear_embeddings(
+    confirm: bool = Query(default=False, description="Set to true to confirm destructive deletion")
+):
+    """Delete all embeddings from the configured vector database collection."""
+    if not confirm:
+        raise HTTPException(
+            status_code=400,
+            detail="Set confirm=true to clear all embeddings."
+        )
+
+    try:
+        from src.embeddings.database import VectorDatabase
+
+        db = VectorDatabase()
+        removed = db.clear_collection()
+        return {
+            "removed_embeddings": removed,
+            "collection_name": db.collection_name
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to clear embeddings: {str(e)}"
+        )
+
+
 @app.get("/embeddings/sample", response_model=List[EmbeddingResponse])
 async def get_sample_embeddings(
     limit: int = Query(default=10, ge=1, le=100, description="Number of samples to return")

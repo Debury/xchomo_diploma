@@ -178,6 +178,18 @@ make clean
 - NetCDF files generated from those sources (see `data/external/open_sources/`) are exposed at runtime through the FastAPI route `GET /samples/{filename}`. Example: `http://localhost:8000/samples/openmeteo_bratislava_temp.nc` streams the Bratislava Open-Meteo temperature cube.
 - When defining a new source through `/sources`, you can now point the URL to that sample endpoint so the Dagster fetch op downloads a guaranteed-good file inside Docker (service-to-service URL: `http://web-api:8000/samples/<file>`).
 
+#### Why keep the samples?
+
+- **Reproducible demos:** The hosted files live inside the repo, so anyone can replay the ingestion flow without chasing expiring links or API keys.
+- **Works inside Docker:** Services such as Dagster → web-api communicate on the internal network; pointing to `http://web-api:8000/samples/...` avoids TLS/DNS issues that occasionally pop up with external URLs in air-gapped environments.
+- **Faster iteration:** Sample downloads complete in seconds, making it easier to validate schema/metadata tweaks before switching to heavier public archives.
+
+#### Using real URLs
+
+- Grab a link from `Kopie souboru D1.1.xlsx` (each row includes licensing notes and the recommended access path).
+- Paste that URL into the “Data URL” field or your `POST /sources` payload. If the file is behind HTTPS auth, mount the credentials via `.netrc` or add them to the container per the docs in `docs/architecture.md`.
+- For APIs that require query parameters (e.g., Open-Meteo), create a one-off download via `scripts/run_test_source.py` first, then host it through `/samples` or serve it from a cloud bucket that your Docker stack can reach.
+
 ### Creating a dynamic source (quick refresher)
 
 1. **Pick a dataset** – either an external CSV/NetCDF URL or one of the hosted samples listed above (use the internal URL `http://web-api:8000/samples/<file>` when running inside Docker Compose).
