@@ -43,6 +43,7 @@ services:
       - DAGSTER_POSTGRES_DB=dagster
       - DAGSTER_POSTGRES_HOST=dagster-postgres
       - DAGSTER_POSTGRES_PORT=5432
+      - PYTHONPATH=/app
       - PYTHONUNBUFFERED=1
       - QDRANT_HOST=qdrant
       - QDRANT_REST_PORT=6333
@@ -91,6 +92,7 @@ services:
       - DAGSTER_POSTGRES_DB=dagster
       - DAGSTER_POSTGRES_HOST=dagster-postgres
       - DAGSTER_POSTGRES_PORT=5432
+      - PYTHONPATH=/app
       - PYTHONUNBUFFERED=1
       - QDRANT_HOST=qdrant
       - QDRANT_REST_PORT=6333
