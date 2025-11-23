@@ -111,30 +111,30 @@ class LoggerResource(ConfigurableResource):
         )
         return logger
     
-    def info(self, message: str, **kwargs):
+    def info(self, message: str, *args, **kwargs):
         """Log info level message"""
         logger = self._get_logger()
-        logger.info(message, **kwargs)
-    
-    def warning(self, message: str, **kwargs):
+        logger.info(message, *args, **kwargs)
+
+    def warning(self, message: str, *args, **kwargs):
         """Log warning level message"""
         logger = self._get_logger()
-        logger.warning(message, **kwargs)
-    
-    def error(self, message: str, **kwargs):
+        logger.warning(message, *args, **kwargs)
+
+    def error(self, message: str, *args, **kwargs):
         """Log error level message"""
         logger = self._get_logger()
-        logger.error(message, **kwargs)
-    
-    def debug(self, message: str, **kwargs):
+        logger.error(message, *args, **kwargs)
+
+    def debug(self, message: str, *args, **kwargs):
         """Log debug level message"""
         logger = self._get_logger()
-        logger.debug(message, **kwargs)
-    
-    def exception(self, message: str, **kwargs):
+        logger.debug(message, *args, **kwargs)
+
+    def exception(self, message: str, *args, **kwargs):
         """Log exception with traceback"""
         logger = self._get_logger()
-        logger.exception(message, **kwargs)
+        logger.exception(message, *args, **kwargs)
 
 
 class DataPathResource(ConfigurableResource):

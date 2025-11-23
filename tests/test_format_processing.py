@@ -1,5 +1,7 @@
+import gzip
 import json
 import logging
+import shutil
 import zipfile
 from pathlib import Path
 
@@ -313,4 +315,19 @@ def test_prepare_file_for_processing_zip_ascii(tmp_path, test_logger):
 
     assert fmt == "ascii_grid"
     assert prepared.suffix == ".asc"
+    assert prepared.exists()
+
+
+def test_prepare_file_for_processing_gzip_geotiff(tmp_path, test_logger):
+    tif_path = tmp_path / "sample.tif"
+    _write_geotiff(tif_path)
+
+    gz_path = tmp_path / "sample.tif.gz"
+    with open(tif_path, "rb") as src, gzip.open(gz_path, "wb") as dst:
+        shutil.copyfileobj(src, dst)
+
+    prepared, fmt = prepare_file_for_processing(gz_path, "netcdf", test_logger)
+
+    assert fmt == "geotiff"
+    assert prepared.suffix == ".tif"
     assert prepared.exists()

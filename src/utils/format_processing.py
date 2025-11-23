@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gzip
 import json
 import math
 import shutil
@@ -55,6 +56,46 @@ class FormatProcessResult:
     artifacts: Dict[str, object]
 
 
+def _infer_format_from_suffix(file_path: Path) -> Optional[str]:
+    """Guess format from file suffix chain (e.g., .tif.gz -> geotiff)."""
+
+    suffix_map = {
+        ".nc": "netcdf",
+        ".nc4": "netcdf",
+        ".cdf": "netcdf",
+        ".grib": "grib",
+        ".grb": "grib",
+        ".grb2": "grib",
+        ".h5": "hdf5",
+        ".hdf5": "hdf5",
+        ".tif": "geotiff",
+        ".tiff": "geotiff",
+        ".asc": "ascii_grid",
+        ".csv": "csv",
+        ".tsv": "tsv",
+        ".txt": "txt",
+        ".json": "json",
+        ".geojson": "json",
+        ".zip": "zip",
+        ".gz": "gzip",
+    }
+
+    suffixes = [s.lower() for s in file_path.suffixes]
+    for suffix in reversed(suffixes):
+        if suffix in suffix_map:
+            return suffix_map[suffix]
+    return None
+
+
+def _decompress_gzip(file_path: Path) -> Path:
+    """Decompress .gz files next to the original and return the new path."""
+
+    target_path = file_path.with_suffix("")
+    with gzip.open(file_path, "rb") as source, open(target_path, "wb") as dest:
+        shutil.copyfileobj(source, dest)
+    return target_path
+
+
 def prepare_file_for_processing(
     download_path: Path,
     detected_format: str,
@@ -62,45 +103,64 @@ def prepare_file_for_processing(
 ) -> Tuple[Path, str]:
     """Normalize downloaded assets (e.g., unzip shapefiles) before processing."""
 
-    if detected_format != "zip":
-        return download_path, detected_format
+    declared_format = (detected_format or "").lower()
+    inferred_format = _infer_format_from_suffix(download_path)
 
-    extract_dir = download_path.parent / f"{download_path.stem}_extracted"
-    if extract_dir.exists():
-        shutil.rmtree(extract_dir)
-    extract_dir.mkdir(parents=True, exist_ok=True)
+    if inferred_format == "gzip":
+        decompressed_path = _decompress_gzip(download_path)
+        logger.info("Decompressed gzip archive %s -> %s", download_path.name, decompressed_path.name)
+        download_path = decompressed_path
+        inferred_format = _infer_format_from_suffix(download_path)
 
-    with zipfile.ZipFile(download_path, "r") as archive:
-        archive.extractall(extract_dir)
-        members = [Path(name) for name in archive.namelist()]
+    canonical_format = declared_format or inferred_format or ""
+    if inferred_format and canonical_format != inferred_format and inferred_format != "gzip":
+        logger.warning(
+            "Declared format '%s' mismatches %s; using '%s' inferred from file extension",
+            declared_format or "unknown",
+            download_path.name,
+            inferred_format,
+        )
+        canonical_format = inferred_format
 
-    def _find_member(predicate):
-        for member in members:
-            if predicate(member):
-                return member
-        return None
+    if canonical_format == "zip":
+        extract_dir = download_path.parent / f"{download_path.stem}_extracted"
+        if extract_dir.exists():
+            shutil.rmtree(extract_dir)
+        extract_dir.mkdir(parents=True, exist_ok=True)
 
-    shapefile_member = _find_member(lambda m: m.suffix.lower() == ".shp")
-    if shapefile_member:
-        return extract_dir / shapefile_member, "shapefile"
+        with zipfile.ZipFile(download_path, "r") as archive:
+            archive.extractall(extract_dir)
+            members = [Path(name) for name in archive.namelist()]
 
-    ascii_member = _find_member(lambda m: m.suffix.lower() == ".asc")
-    if ascii_member:
-        return extract_dir / ascii_member, "ascii_grid"
+        def _find_member(predicate):
+            for member in members:
+                if predicate(member):
+                    return member
+            return None
 
-    txt_member = _find_member(lambda m: m.suffix.lower() == ".txt")
-    if txt_member:
-        return extract_dir / txt_member, "txt"
+        shapefile_member = _find_member(lambda m: m.suffix.lower() == ".shp")
+        if shapefile_member:
+            return extract_dir / shapefile_member, "shapefile"
 
-    json_member = _find_member(lambda m: m.suffix.lower() in {".json", ".geojson"})
-    if json_member:
-        return extract_dir / json_member, "json"
+        ascii_member = _find_member(lambda m: m.suffix.lower() == ".asc")
+        if ascii_member:
+            return extract_dir / ascii_member, "ascii_grid"
 
-    hdr_member = _find_member(lambda m: m.name.lower().endswith("hdr.adf"))
-    if hdr_member:
-        return extract_dir / hdr_member, "esri_grid"
+        txt_member = _find_member(lambda m: m.suffix.lower() == ".txt")
+        if txt_member:
+            return extract_dir / txt_member, "txt"
 
-    raise ValueError("Unsupported ZIP archive contents for climate ingestion")
+        json_member = _find_member(lambda m: m.suffix.lower() in {".json", ".geojson"})
+        if json_member:
+            return extract_dir / json_member, "json"
+
+        hdr_member = _find_member(lambda m: m.name.lower().endswith("hdr.adf"))
+        if hdr_member:
+            return extract_dir / hdr_member, "esri_grid"
+
+        raise ValueError("Unsupported ZIP archive contents for climate ingestion")
+
+    return download_path, canonical_format
 
 
 def _build_embedding(generator: EmbeddingGenerator, text: str) -> List[float]:
