@@ -9,7 +9,7 @@ import requests
 import traceback
 from datetime import datetime
 from typing import Dict, Any, List, Optional
-import numpy as np  # <--- Added missing import
+import numpy as np
 
 # --- PATH SETUP ---
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -130,18 +130,27 @@ def process_all_sources(context: OpExecutionContext) -> List[Dict[str, Any]]:
                 batch_texts = []
                 for item in batch_slice:
                     meta = item["metadata"]
-                    vec = item["vector"] # [Mean, Std, Min, Max, P10, Median, P90, Range]
+                    vec = item["vector"] 
                     variable = meta.get("variable", "unknown")
                     
-                    parts = [f"Climate variable: {variable}"]
+                    # --- NEW: Variable Mapping for Clarity ---
+                    VAR_MAP = {
+                        "t": "Air Temperature",
+                        "2t": "2-meter Temperature",
+                        "tp": "Total Precipitation",
+                        "z": "Geopotential",
+                        "band_1": "Satellite Image Band 1",
+                        "air": "Air Temperature",
+                        "gray": "Terrain Intensity"
+                    }
+                    readable_var = VAR_MAP.get(variable, variable)
                     
-                    # --- NEW: Smart Date Handling ---
+                    parts = [f"Climate variable: {readable_var} ({variable})"]
+                    
                     if "time_start" in meta:
                         t_str = str(meta['time_start'])
                         parts.append(f"Time: {t_str}")
-                        # Extract Month Name for better RAG
                         try:
-                            # Handle typical numpy/iso formats
                             clean_date = t_str.split('T')[0]
                             dt_obj = datetime.strptime(clean_date, '%Y-%m-%d')
                             month_name = dt_obj.strftime('%B')
@@ -150,13 +159,12 @@ def process_all_sources(context: OpExecutionContext) -> List[Dict[str, Any]]:
 
                     if "lat_min" in meta: parts.append(f"Lat {meta['lat_min']:.1f}")
                     
-                    # --- NEW: Rich Stats for LLM ---
                     if len(vec) >= 8: 
                         parts.append(f"Mean={vec[0]:.1f}")
-                        parts.append(f"Std={vec[1]:.1f}") # Added Standard Deviation
+                        parts.append(f"Std={vec[1]:.1f}")
                         parts.append(f"Max={vec[3]:.1f}")
-                        parts.append(f"P90={vec[6]:.1f} (High Extreme)") # 90th percentile
-                        parts.append(f"Range={vec[7]:.1f}")             # Variability
+                        parts.append(f"P90={vec[6]:.1f} (High Extreme)")
+                        parts.append(f"Range={vec[7]:.1f}")
                     
                     batch_texts.append(" | ".join(parts))
 
@@ -174,16 +182,15 @@ def process_all_sources(context: OpExecutionContext) -> List[Dict[str, Any]]:
                     meta = stat_item["metadata"]
                     meta_clean = {k: (float(v) if isinstance(v, (np.float32, np.float64)) else v) for k,v in meta.items()}
                     
-                    # Store rich payload for filtering
                     payload = {
                         **meta_clean,
                         "source_id": source_id,
                         "timestamp": timestamp,
                         "stat_mean": float(v[0]),
-                        "stat_std": float(v[1]), # Added Standard Deviation
+                        "stat_std": float(v[1]),
                         "stat_max": float(v[3]),
-                        "stat_p90": float(v[6]),  # Storing for sorting
-                        "stat_range": float(v[7]) # Storing for filtering
+                        "stat_p90": float(v[6]), 
+                        "stat_range": float(v[7])
                     }
                     metadatas.append(payload)
 
