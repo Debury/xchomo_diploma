@@ -406,20 +406,20 @@ async def delete_source(source_id: str):
 @app.post("/rag/chat", response_model=RAGChatResponse)
 async def rag_chat(request: RAGChatRequest):
     try:
-        from src.climate_embeddings.rag.rag_pipeline import RAGPipeline
-        from src.climate_embeddings.index.vector_index import VectorIndex
         from src.climate_embeddings.embeddings.text_models import TextEmbedder
         from src.llm.ollama_client import OllamaClient
         from src.embeddings.database import VectorDatabase
         
         # 1. Setup Retrieval from Qdrant
         db = VectorDatabase()
-        # Search Qdrant directly
         embedder = TextEmbedder()
+        
+        # Embed query
         query_vec = embedder.embed_queries([request.question])[0]
         
-        search_result = db.client.search(
-            collection_name=db.collection,
+        # FIX: Use the wrapper method we just created in database.py
+        # This handles the client logic internally
+        search_result = db.search(
             query_vector=query_vec.tolist(),
             limit=request.top_k
         )
@@ -434,12 +434,16 @@ async def rag_chat(request: RAGChatRequest):
             text = meta.get('text_content', str(meta))
             context_chunks.append({"metadata": meta, "score": hit.score})
             
-            ref = f"{meta.get('source_id')}:{meta.get('variable')}"
+            # Safely get variables
+            s_id = meta.get('source_id', 'unknown')
+            var = meta.get('variable', 'unknown')
+            
+            ref = f"{s_id}:{var}"
             refs.add(ref)
             
             chunks_model.append(RAGChunk(
-                source_id=meta.get('source_id', 'unknown'),
-                variable=meta.get('variable'),
+                source_id=s_id,
+                variable=var,
                 similarity=hit.score,
                 text=text[:200] + "...",
                 metadata=meta
@@ -450,13 +454,19 @@ async def rag_chat(request: RAGChatRequest):
         answer = ""
         
         if request.use_llm:
-            client = OllamaClient()
-            if client.check_health():
-                answer = client.generate_rag_answer(request.question, context_chunks, request.temperature)
-                llm_used = True
+            try:
+                client = OllamaClient()
+                if client.check_health():
+                    answer = client.generate_rag_answer(request.question, context_chunks, request.temperature)
+                    llm_used = True
+            except Exception as e:
+                print(f"LLM Error: {e}")
         
         if not answer:
-            answer = f"Found {len(context_chunks)} relevant records."
+            if not context_chunks:
+                answer = "No relevant climate data found."
+            else:
+                answer = f"Found {len(context_chunks)} relevant records. (LLM disabled or unavailable)"
             
         return RAGChatResponse(
             question=request.question,
@@ -470,7 +480,7 @@ async def rag_chat(request: RAGChatRequest):
         import traceback
         traceback.print_exc()
         raise HTTPException(500, str(e))
-
+        
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
