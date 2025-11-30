@@ -10,9 +10,9 @@ from .database import VectorDatabase
 from .search import SemanticSearcher, semantic_search
 
 # Re-export from climate_embeddings for convenience
-from climate_embeddings.embeddings import TextEmbedder, get_text_embedder
-from climate_embeddings.index import VectorIndex, SearchResult
-from climate_embeddings.loaders import load_raster_auto, raster_to_embeddings, load_from_zip
+from src.climate_embeddings.embeddings import TextEmbedder, get_text_embedder
+from src.climate_embeddings.index import VectorIndex, SearchResult
+from src.climate_embeddings.loaders import load_raster_auto, raster_to_embeddings, load_from_zip
 
 __all__ = [
     # Qdrant-specific (kept here)
