@@ -46,7 +46,7 @@ Important guidelines:
         self,
         base_url: Optional[str] = None,
         model: Optional[str] = None,
-        timeout: float = 60.0,
+        timeout: float = 120.0,
     ):
         """
         Initialize Ollama client.
