@@ -60,18 +60,18 @@ if os.path.exists(nc_path):
     os.remove(nc_path)
 
 ds = xr.Dataset({
-    \"temperature\": ([\"time\", \"lat\", \"lon\"], np.random.randn(10, 5, 5) * 10 + 15),
-    \"precipitation\": ([\"time\", \"lat\", \"lon\"], np.random.rand(10, 5, 5) * 50)
+    \"temperature\": ([\"time\", \"lat\", \"lon\"], np.random.randn(10, 5, 5).astype(np.float32) * 10 + 15),
+    \"precipitation\": ([\"time\", \"lat\", \"lon\"], np.random.rand(10, 5, 5).astype(np.float32) * 50)
 }, coords={
-    \"time\": range(10),
+    \"time\": np.arange(10),
     \"lat\": np.linspace(45, 50, 5),
     \"lon\": np.linspace(10, 15, 5)
 })
 
-# Use explicit mode and close properly
-ds.to_netcdf(nc_path, mode=\"w\", format=\"NETCDF4\", engine=\"netcdf4\")
+# Use h5netcdf engine which is more reliable
+ds.to_netcdf(nc_path, engine=\"h5netcdf\")
 ds.close()
-del ds  # Force cleanup
+del ds
 print(\"✓ Created test_climate.nc\")
 '"
 
