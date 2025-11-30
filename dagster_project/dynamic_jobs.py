@@ -9,6 +9,7 @@ import requests
 import traceback
 from datetime import datetime
 from typing import Dict, Any, List, Optional
+import numpy as np  # <--- Added missing import
 
 # --- PATH SETUP ---
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
