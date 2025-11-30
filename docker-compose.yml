@@ -127,11 +127,28 @@ services:
       - QDRANT_REST_PORT=6333
       - QDRANT_GRPC_PORT=6334
       - VECTOR_DB_MEMORY_ONLY=false
+      - OLLAMA_URL=http://ollama:11434
+      - OLLAMA_MODEL=llama3.2:3b
     depends_on:
       dagit:
         condition: service_started
       qdrant:
         condition: service_started
+      ollama:
+        condition: service_started
+    networks:
+      - climate-net
+    restart: unless-stopped
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: climate-ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-data:/root/.ollama
+    environment:
+      - OLLAMA_KEEP_ALIVE=24h
     networks:
       - climate-net
     restart: unless-stopped
@@ -184,6 +201,8 @@ volumes:
   dagster-home:
     driver: local
   qdrant-data:
+    driver: local
+  ollama-data:
     driver: local
 
 networks:
