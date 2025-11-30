@@ -152,6 +152,7 @@ def process_all_sources(context: OpExecutionContext) -> List[Dict[str, Any]]:
                     # --- NEW: Rich Stats for LLM ---
                     if len(vec) >= 8: 
                         parts.append(f"Mean={vec[0]:.1f}")
+                        parts.append(f"Std={vec[1]:.1f}") # Added Standard Deviation
                         parts.append(f"Max={vec[3]:.1f}")
                         parts.append(f"P90={vec[6]:.1f} (High Extreme)") # 90th percentile
                         parts.append(f"Range={vec[7]:.1f}")             # Variability
@@ -178,6 +179,7 @@ def process_all_sources(context: OpExecutionContext) -> List[Dict[str, Any]]:
                         "source_id": source_id,
                         "timestamp": timestamp,
                         "stat_mean": float(v[0]),
+                        "stat_std": float(v[1]), # Added Standard Deviation
                         "stat_max": float(v[3]),
                         "stat_p90": float(v[6]),  # Storing for sorting
                         "stat_range": float(v[7]) # Storing for filtering
