@@ -158,28 +158,29 @@ services:
   # ORIGINAL SERVICES
   # ====================================================================================
 
-  climate-etl:
-    build: .
-    container_name: climate-etl-pipeline
-    volumes:
-      - ./data:/app/data
-      - ./logs:/app/logs
-      - ./.env:/app/.env:ro
-      - ./config:/app/config:ro
-    environment:
-      - PYTHONUNBUFFERED=1
-      - LOG_LEVEL=INFO
-      - QDRANT_HOST=qdrant
-      - QDRANT_REST_PORT=6333
-      - QDRANT_GRPC_PORT=6334
-      - VECTOR_DB_MEMORY_ONLY=false
-    command: python -m src.data_transformation.pipeline data/raw/test_era5_data.nc
-    restart: unless-stopped
-    depends_on:
-      qdrant:
-        condition: service_started
-    networks:
-      - climate-net
+  # Legacy standalone ETL container - DISABLED (ETL runs via Dagster now)
+  # climate-etl:
+  #   build: .
+  #   container_name: climate-etl-pipeline
+  #   volumes:
+  #     - ./data:/app/data
+  #     - ./logs:/app/logs
+  #     - ./.env:/app/.env:ro
+  #     - ./config:/app/config:ro
+  #   environment:
+  #     - PYTHONUNBUFFERED=1
+  #     - LOG_LEVEL=INFO
+  #     - QDRANT_HOST=qdrant
+  #     - QDRANT_REST_PORT=6333
+  #     - QDRANT_GRPC_PORT=6334
+  #     - VECTOR_DB_MEMORY_ONLY=false
+  #   command: python -m src.data_transformation.pipeline data/raw/test_era5_data.nc
+  #   restart: unless-stopped
+  #   depends_on:
+  #     qdrant:
+  #       condition: service_started
+  #   networks:
+  #     - climate-net
 
   # Optional: Jupyter notebook for interactive analysis
   jupyter:
