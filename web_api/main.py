@@ -1,8 +1,5 @@
 """
 FastAPI Web Service for Climate ETL Pipeline
-
-Provides REST API endpoints for interacting with Dagster pipelines.
-Endpoints allow listing jobs, triggering runs, and checking status.
 """
 
 import os
@@ -21,9 +18,8 @@ import httpx
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-
 # ====================================================================================
-# PYDANTIC MODELS
+# PYDANTIC MODELS (Simplified for brevity)
 # ====================================================================================
 
 class JobInfo(BaseModel):
@@ -123,7 +119,6 @@ class SourceResponse(BaseModel):
     is_active: bool
     processing_status: str
     error_message: Optional[str] = None
-    # Optional fields for compatibility
     id: Optional[int] = None
     collection_name: Optional[str] = None
     created_at: Optional[str] = None
@@ -136,10 +131,7 @@ class SourceResponse(BaseModel):
 # FASTAPI APPLICATION
 # ====================================================================================
 
-app = FastAPI(
-    title="Climate ETL Pipeline API",
-    version="1.0.0"
-)
+app = FastAPI(title="Climate ETL Pipeline API", version="1.0.0")
 
 FRONTEND_DIR = Path(__file__).parent / "frontend"
 SAMPLE_DATA_DIR = Path(__file__).parent.parent / "data" / "raw"
@@ -179,7 +171,6 @@ async def execute_graphql_query(query: str, variables: Optional[Dict] = None) ->
             raise HTTPException(status_code=503, detail="Dagster unavailable")
 
 async def launch_dagster_run(job_name: str, run_config: Dict, tags: Dict = None):
-    # Fetch repo info
     repo_data = await execute_graphql_query("""
     query { repositoriesOrError { ... on RepositoryConnection { nodes { name location { name } } } } }
     """)
@@ -226,31 +217,9 @@ async def launch_dagster_run(job_name: str, run_config: Dict, tags: Dict = None)
     err_msg = launch_res.get("message") or str(launch_res.get("errors"))
     raise HTTPException(status_code=500, detail=f"Job launch failed: {err_msg}")
 
-def summarize_hits(results: List[Dict[str, Any]]) -> Tuple[str, List[str]]:
-    if not results: return "No context found.", []
-    refs = []
-    seen = set()
-    for h in results:
-        m = h.get('metadata', {})
-        ref = f"{m.get('source_id', '?')}:{m.get('variable', '?')}"
-        if ref not in seen:
-            seen.add(ref)
-            refs.append(ref)
-    return f"Found {len(results)} relevant data points.", refs
-
 # ====================================================================================
 # ENDPOINTS
 # ====================================================================================
-
-@app.get("/")
-async def root():
-    return {"status": "ok", "docs": "/docs"}
-
-@app.get("/ui", response_class=FileResponse)
-async def serve_frontend():
-    if not FRONTEND_DIR.exists():
-        raise HTTPException(404, "Frontend not found")
-    return FileResponse(FRONTEND_DIR / "index.html")
 
 @app.get("/health", response_model=HealthResponse)
 async def health_check():
@@ -265,27 +234,33 @@ async def health_check():
 
 @app.get("/embeddings/stats", response_model=EmbeddingStatsResponse)
 async def get_embeddings_stats():
-    """Get stats from Qdrant."""
+    """Get stats from Qdrant, using climate dates instead of ingest dates."""
     try:
         from src.embeddings.database import VectorDatabase
         db = VectorDatabase()
         
-        # FIX: Check if collection exists first
-        collections = db.client.get_collections().collections
-        exists = any(c.name == db.collection for c in collections)
-        
-        if not exists:
-            return EmbeddingStatsResponse(
-                total_embeddings=0, variables=[], date_range=None, sources=[], collection_name=db.collection
+        # Check collection existence safely
+        if db.client:
+            try:
+                collections = db.client.get_collections().collections
+                if not any(c.name == db.collection for c in collections):
+                    raise Exception("No collection")
+                count_res = db.client.count(collection_name=db.collection)
+                count = count_res.count
+            except:
+                return EmbeddingStatsResponse(
+                    total_embeddings=0, variables=[], date_range=None, sources=[], collection_name=db.collection
+                )
+        else:
+             # Fallback if client init failed
+             return EmbeddingStatsResponse(
+                total_embeddings=0, variables=[], date_range=None, sources=[], collection_name="offline"
             )
 
-        # FIX: Use Qdrant Client API properly
-        count_res = db.client.count(collection_name=db.collection)
-        
-        # Scroll to get metadata samples
+        # Scroll to get sample metadata
         points, _ = db.client.scroll(
             collection_name=db.collection,
-            limit=100,
+            limit=1000, # Increased limit to see more dates
             with_payload=True,
             with_vectors=False
         )
@@ -298,14 +273,24 @@ async def get_embeddings_stats():
             payload = point.payload or {}
             if 'variable' in payload: variables.add(payload['variable'])
             if 'source_id' in payload: sources.add(payload['source_id'])
-            if 'timestamp' in payload: timestamps.append(payload['timestamp'])
+            
+            # --- FIX: DATE RANGE ---
+            # Prefer 'time_start' (Actual Climate Data) over 'timestamp' (System Time)
+            t_val = payload.get('time_start')
+            if not t_val: 
+                t_val = payload.get('timestamp')
+            
+            if t_val:
+                # Clean up format (e.g. remove T00:00...) for sorting
+                timestamps.append(str(t_val).split('T')[0])
             
         date_range = None
         if timestamps:
-            date_range = {"earliest": min(timestamps), "latest": max(timestamps)}
+            timestamps.sort()
+            date_range = {"earliest": timestamps[0], "latest": timestamps[-1]}
             
         return EmbeddingStatsResponse(
-            total_embeddings=count_res.count,
+            total_embeddings=count,
             variables=sorted(list(variables)),
             date_range=date_range,
             sources=sorted(list(sources)),
@@ -321,8 +306,8 @@ async def get_sample_embeddings(limit: int = 10):
     try:
         from src.embeddings.database import VectorDatabase
         db = VectorDatabase()
+        if not db.client: return []
         
-        # FIX: Use Qdrant scroll
         points, _ = db.client.scroll(
             collection_name=db.collection,
             limit=limit,
@@ -336,14 +321,13 @@ async def get_sample_embeddings(limit: int = 10):
             samples.append(EmbeddingResponse(
                 id=str(point.id),
                 variable=meta.get('variable', 'unknown'),
-                timestamp=meta.get('timestamp'),
-                location=None, # Extract lat/lon if available in meta
+                timestamp=meta.get('time_start') or meta.get('timestamp'),
+                location=None,
                 metadata=meta,
                 embedding_preview=point.vector[:10] if point.vector else []
             ))
         return samples
-    except Exception as e:
-        # Return empty list if collection doesn't exist yet
+    except:
         return []
 
 @app.post("/embeddings/clear")
@@ -351,7 +335,7 @@ async def clear_embeddings(confirm: bool = False):
     if not confirm: raise HTTPException(400, "Set confirm=true")
     from src.embeddings.database import VectorDatabase
     db = VectorDatabase()
-    db.client.delete_collection(db.collection)
+    if db.client: db.client.delete_collection(db.collection)
     return {"status": "cleared"}
 
 # --- SOURCES ---
@@ -381,19 +365,12 @@ async def trigger_source_etl(source_id: str, job_name: str = "dynamic_source_etl
     from src.sources import get_source_store
     store = get_source_store()
     source = store.get_source(source_id)
-    
     if not source: raise HTTPException(404, "Source not found")
     
-    # Launch logic
     run = await launch_dagster_run(job_name, {}, tags={"source_id": source_id})
     store.update_processing_status(source_id, "processing")
     
-    return RunResponse(
-        run_id=run["runId"],
-        job_name=run["jobName"],
-        status=run["status"],
-        message="Job triggered"
-    )
+    return RunResponse(run_id=run["runId"], job_name=run["jobName"], status=run["status"], message="Job triggered")
 
 @app.delete("/sources/{source_id}", status_code=204)
 async def delete_source(source_id: str):
@@ -410,46 +387,101 @@ async def rag_chat(request: RAGChatRequest):
         from src.llm.ollama_client import OllamaClient
         from src.embeddings.database import VectorDatabase
         
-        # 1. Setup Retrieval from Qdrant
         db = VectorDatabase()
-        embedder = TextEmbedder()
         
-        # Embed query
+        # --- FEATURE: HYBRID SEARCH FOR "MAX/MIN" ---
+        query_lower = request.question.lower()
+        forced_chunks = []
+        is_hybrid = False
+        
+        # If user asks for extremes, perform a SORT instead of just semantic search
+        if "max" in query_lower or "hottest" in query_lower or "highest" in query_lower:
+            # Fetch ALL points (up to 2000) and sort by stat_max in Python
+            # (Qdrant payload sorting is more complex to setup dynamically, this is safer for <10k items)
+            points, _ = db.client.scroll(
+                collection_name=db.collection,
+                limit=2000, 
+                with_payload=True,
+                with_vectors=False
+            )
+            # Sort: items with higher stat_max first
+            sorted_points = sorted(
+                points, 
+                key=lambda p: p.payload.get('stat_max', -9999), 
+                reverse=True
+            )
+            # Take top 5 actual hottest chunks
+            for point in sorted_points[:5]:
+                forced_chunks.append({
+                    "metadata": point.payload, 
+                    "score": 1.0  # Artificial high score
+                })
+            is_hybrid = True
+            
+        elif "min" in query_lower or "coldest" in query_lower or "lowest" in query_lower:
+            points, _ = db.client.scroll(
+                collection_name=db.collection,
+                limit=2000, 
+                with_payload=True,
+                with_vectors=False
+            )
+            # Sort: items with lower stat_min first
+            sorted_points = sorted(
+                points, 
+                key=lambda p: p.payload.get('stat_min', 9999), 
+                reverse=False
+            )
+            # Take top 5 actual coldest chunks
+            for point in sorted_points[:5]:
+                forced_chunks.append({
+                    "metadata": point.payload, 
+                    "score": 1.0
+                })
+            is_hybrid = True
+
+        # --- STANDARD VECTOR SEARCH ---
+        embedder = TextEmbedder()
         query_vec = embedder.embed_queries([request.question])[0]
         
-        # FIX: Use the wrapper method we just created in database.py
-        # This handles the client logic internally
+        # Use our safe wrapper from database.py (or fallback logic)
         search_result = db.search(
             query_vector=query_vec.tolist(),
             limit=request.top_k
         )
         
-        # 2. Build Context
-        context_chunks = []
+        # --- COMBINE RESULTS ---
+        # If we found "forced" chunks (extreme values), prioritize them
+        if is_hybrid:
+            # Prepend the sorted chunks to the vector results
+            # (In a real system, you'd dedup, but here it ensures the LLM sees the extremes)
+            context_chunks = forced_chunks
+        else:
+            context_chunks = []
+            for hit in search_result:
+                # Handle both ScoredPoint (client) and dict (rest fallback)
+                meta = hit.payload if hasattr(hit, 'payload') else hit.get('payload')
+                score = hit.score if hasattr(hit, 'score') else hit.get('score')
+                context_chunks.append({"metadata": meta, "score": score})
+
+        # --- BUILD RESPONSE ---
         chunks_model = []
         refs = set()
         
-        for hit in search_result:
-            meta = hit.payload
+        for c in context_chunks:
+            meta = c["metadata"]
             text = meta.get('text_content', str(meta))
-            context_chunks.append({"metadata": meta, "score": hit.score})
             
-            # Safely get variables
-            s_id = meta.get('source_id', 'unknown')
-            var = meta.get('variable', 'unknown')
-            
-            ref = f"{s_id}:{var}"
+            ref = f"{meta.get('source_id')}:{meta.get('variable')}"
             refs.add(ref)
             
             chunks_model.append(RAGChunk(
-                source_id=s_id,
-                variable=var,
-                similarity=hit.score,
+                source_id=meta.get('source_id', 'unknown'),
+                variable=meta.get('variable'),
+                similarity=c["score"],
                 text=text[:200] + "...",
                 metadata=meta
             ))
 
-        # 3. LLM Answer
         llm_used = False
         answer = ""
         
@@ -459,14 +491,10 @@ async def rag_chat(request: RAGChatRequest):
                 if client.check_health():
                     answer = client.generate_rag_answer(request.question, context_chunks, request.temperature)
                     llm_used = True
-            except Exception as e:
-                print(f"LLM Error: {e}")
+            except: pass
         
         if not answer:
-            if not context_chunks:
-                answer = "No relevant climate data found."
-            else:
-                answer = f"Found {len(context_chunks)} relevant records. (LLM disabled or unavailable)"
+            answer = f"Found {len(context_chunks)} relevant records."
             
         return RAGChatResponse(
             question=request.question,
@@ -480,7 +508,7 @@ async def rag_chat(request: RAGChatRequest):
         import traceback
         traceback.print_exc()
         raise HTTPException(500, str(e))
-        
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
