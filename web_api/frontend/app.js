@@ -50,6 +50,7 @@ sourceForm?.addEventListener('submit', async (event) => {
         variables: parseCSV(formData.get('variables') || ''),
         tags: parseCSV(formData.get('tags') || ''),
         description: formData.get('description')?.trim() || null,
+        is_active: formData.get('is_active') === 'on',
     };
 
     if (!payload.variables.length) delete payload.variables;

@@ -83,6 +83,10 @@
                     <label>Description
                         <textarea name="description" rows="2" placeholder="Short note about this source"></textarea>
                     </label>
+                    <label style="display: flex; align-items: center; gap: 0.5rem;">
+                        <input type="checkbox" name="is_active" checked />
+                        <span>Active (enable ETL processing)</span>
+                    </label>
                     <div class="actions">
                         <button type="submit">Create Source</button>
                         <span id="sourceFormMessage" class="hint"></span>
