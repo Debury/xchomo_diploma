@@ -206,7 +206,7 @@ def load_raster_auto(
     metadata: Dict[str, Any] = {"format": fmt, "path": str(path)}
 
     if fmt in {"netcdf", "hdf5", "grib"}:
-        engine_map = {"netcdf": None, "hdf5": "h5netcdf", "grib": "cfgrib"}
+        engine_map = {"netcdf": "h5netcdf", "hdf5": "h5netcdf", "grib": "cfgrib"}
         chunk_hint = _coerce_chunk_dict(chunks, ["y", "x"], path)
         try:
             ds = xr.open_dataset(
