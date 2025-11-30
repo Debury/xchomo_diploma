@@ -11,15 +11,23 @@ from typing import Any, Dict
 from dagster import ConfigurableResource
 from pydantic import Field
 
-# --- CRITICAL FIX: Ensure '/app' (root) is in sys.path ---
-# This allows 'from src.utils...' to work even if Dagster runs from a different folder
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+# ==============================================================================
+# CRITICAL FIX: Add Project Root to Sys Path
+# This ensures 'src' can be imported even if running from a subdirectory
+# ==============================================================================
+PROJECT_ROOT = Path(__file__).resolve().parents[1]  # Points to /app
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-# Now these imports will work
-from src.utils.config_loader import ConfigLoader
-from src.utils.logger import setup_logger
+# Now these imports will work because Python knows to look in /app
+try:
+    from src.utils.config_loader import ConfigLoader
+    from src.utils.logger import setup_logger
+except ImportError as e:
+    # Fallback debug print if it still fails
+    print(f"Failed to import src.utils: {e}")
+    print(f"Current sys.path: {sys.path}")
+    raise e
 
 
 class ConfigLoaderResource(ConfigurableResource):
@@ -35,12 +43,12 @@ class ConfigLoaderResource(ConfigurableResource):
     def load(self) -> Dict[str, Any]:
         """Load and return the pipeline configuration."""
         config_file = Path(self.config_path)
+        
         # Handle relative paths in Docker
         if not config_file.is_absolute():
             config_file = PROJECT_ROOT / self.config_path
 
         if not config_file.exists():
-            # Fallback just in case
             return {}
         
         loader = ConfigLoader(str(config_file))
@@ -62,12 +70,12 @@ class LoggerResource(ConfigurableResource):
     log_file: str = Field(default="logs/dagster_pipeline.log", description="Path to log file")
     
     def _get_logger(self) -> logging.Logger:
-        logger = setup_logger(
+        # Use the setup_logger from src.utils
+        return setup_logger(
             name="dagster_climate_pipeline",
             log_file=self.log_file,
             level=self.log_level
         )
-        return logger
     
     def info(self, message: str, *args, **kwargs):
         self._get_logger().info(message, *args, **kwargs)
@@ -99,5 +107,10 @@ class DataPathResource(ConfigurableResource):
     
     def get_processed_path(self) -> Path:
         path = Path(self.processed_data_dir)
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+    
+    def get_embeddings_path(self) -> Path:
+        path = Path(self.embeddings_dir)
         path.mkdir(parents=True, exist_ok=True)
         return path
