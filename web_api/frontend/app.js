@@ -50,8 +50,10 @@ sourceForm?.addEventListener('submit', async (event) => {
         variables: parseCSV(formData.get('variables') || ''),
         tags: parseCSV(formData.get('tags') || ''),
         description: formData.get('description')?.trim() || null,
-        is_active: formData.get('is_active') === 'on',
+        is_active: true,  // Always create as active (checkbox value: formData.get('is_active') === 'on')
     };
+    
+    console.log('Creating source with is_active:', payload.is_active);
 
     if (!payload.variables.length) delete payload.variables;
     if (!payload.tags.length) delete payload.tags;
