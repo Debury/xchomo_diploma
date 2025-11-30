@@ -257,23 +257,22 @@ def load_raster_auto(
                             height = min(window_size, nrows - row)
                             width = min(window_size, ncols - col)
                             window = Window(col, row, width, height)
-                            data = src.read(window=window, out_dtype="float32")
-                            if nodata is not None:
-                                data = np.where(data == nodata, np.nan, data)
-                            bounds = rasterio.windows.bounds(window, transform)
-                            meta = {
-                                "lon_min": bounds.left,
-                                "lon_max": bounds.right,
-                                "lat_min": bounds.bottom,
-                                "lat_max": bounds.top,
-                                "row": row,
-                                "col": col,
-                                "height": height,
-                                "width": width,
-                            }
-                            yield data, meta
-
-        return RasterLoadResult(dataset=None, chunk_iterator=_geo_generator(), source_path=path, metadata=metadata)
+                        data = src.read(window=window, out_dtype="float32")
+                        if nodata is not None:
+                            data = np.where(data == nodata, np.nan, data)
+                        bounds = rasterio.windows.bounds(window, transform)
+                        # bounds is (left, bottom, right, top) tuple
+                        meta = {
+                            "lon_min": bounds[0],
+                            "lon_max": bounds[2],
+                            "lat_min": bounds[1],
+                            "lat_max": bounds[3],
+                            "row": row,
+                            "col": col,
+                            "height": height,
+                            "width": width,
+                        }
+                        yield data, meta        return RasterLoadResult(dataset=None, chunk_iterator=_geo_generator(), source_path=path, metadata=metadata)
 
     if fmt == "csv":
         chunk_rows = station_chunksize or (50_000 if path.stat().st_size > 5 * 1024 * 1024 else None)

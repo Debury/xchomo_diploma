@@ -36,7 +36,8 @@ def _build_netcdf(tmp_path: Path) -> Path:
     )
     ds = xr.Dataset({"air": data})
     path = tmp_path / "sample.nc"
-    ds.to_netcdf(path)
+    # Use NETCDF3_CLASSIC format to avoid HDF5 issues in Docker
+    ds.to_netcdf(path, format="NETCDF3_CLASSIC")
     return path
 
 
