@@ -143,7 +143,7 @@ vectors = gen.generate_embeddings(texts)
 # Store in Qdrant (collection auto-created in __init__ with vector_size=1024)
 db = VectorDatabase(collection_name=\"test_embeddings\", vector_size=1024)
 db.clear_collection()  # Clear any existing data
-db.add_embeddings(vectors=vectors, ids=[\"1\", \"2\", \"3\"], metadatas=[{\"text\": t} for t in texts])
+db.add_embeddings(ids=[\"1\", \"2\", \"3\"], embeddings=vectors, documents=texts, metadatas=[{\"text\": t} for t in texts])
 print(f\"✓ Stored {len(texts)} vectors in Qdrant\")
 '"
 
