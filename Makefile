@@ -81,13 +81,41 @@ test-coverage: ## Run tests with coverage report
 	$(PYTEST) $(TEST_DIR) --cov=$(SRC_DIR) --cov-report=html --cov-report=term
 	@echo "$(GREEN)✓ Coverage report generated in htmlcov/$(NC)"
 
-test-integration: ## Run integration tests only
-	@echo "$(BLUE)Running integration tests...$(NC)"
-	$(PYTEST) $(TEST_DIR)/test_integration.py -v
-	@echo "$(GREEN)✓ Integration tests complete$(NC)"
+test-formats: ## Test all supported data formats (NetCDF, GeoTIFF, CSV, ZIP)
+	@echo "$(BLUE)Testing all data formats...$(NC)"
+	@bash test_formats_server.sh
+	@echo "$(GREEN)✓ Format tests complete$(NC)"
+
+test-raster: ## Run raster pipeline tests
+	@echo "$(BLUE)Running raster pipeline tests...$(NC)"
+	$(PYTEST) $(TEST_DIR)/test_raster_pipeline_flow.py -v
+	@echo "$(GREEN)✓ Raster tests complete$(NC)"
+
+test-rag: ## Run RAG component tests
+	@echo "$(BLUE)Running RAG tests...$(NC)"
+	$(PYTEST) $(TEST_DIR)/test_rag_components.py -v
+	@echo "$(GREEN)✓ RAG tests complete$(NC)"
+
+test-embeddings: ## Run embedding tests (Qdrant integration)
+	@echo "$(BLUE)Running embedding tests...$(NC)"
+	$(PYTEST) $(TEST_DIR)/test_embeddings.py -v
+	@echo "$(GREEN)✓ Embedding tests complete$(NC)"
+
+test-dagster: ## Run Dagster tests
+	@echo "$(BLUE)Running Dagster tests...$(NC)"
+	$(PYTEST) $(TEST_DIR)/test_dagster.py -v
+	@echo "$(GREEN)✓ Dagster tests complete$(NC)"
+
+test-api: ## Run API tests
+	@echo "$(BLUE)Running API tests...$(NC)"
+	$(PYTEST) $(TEST_DIR)/test_web_api.py -v
+	@echo "$(GREEN)✓ API tests complete$(NC)"
 
 test-watch: ## Run tests in watch mode
 	$(PYTEST) $(TEST_DIR) -v --looponfail
+
+test-all: test-raster test-rag test-embeddings test-dagster test-api ## Run all test suites
+	@echo "$(GREEN)✓ All test suites complete$(NC)"
 
 ##@ Code Quality
 
@@ -204,11 +232,22 @@ list-sources: ## List configured data sources via API
 
 check-qdrant: ## Check Qdrant status
 	@echo "$(BLUE)Checking Qdrant vector database...$(NC)"
-	@curl -s http://localhost:6333/collections || echo "$(YELLOW)⚠ Qdrant not running$(NC)"
+	@curl -s http://localhost:6333/health || echo "$(YELLOW)⚠ Qdrant not running$(NC)"
 
 check-ollama: ## Check Ollama LLM status
 	@echo "$(BLUE)Checking Ollama...$(NC)"
 	@curl -s http://localhost:11434/api/tags || echo "$(YELLOW)⚠ Ollama not running$(NC)"
+
+verify-services: check-qdrant check-ollama api-health ## Verify all services are running
+	@echo "$(GREEN)✓ Service verification complete$(NC)"
+
+show-collections: ## Show Qdrant collections
+	@echo "$(BLUE)Qdrant collections:$(NC)"
+	@curl -s http://localhost:6333/collections | $(PYTHON) -m json.tool
+
+show-models: ## Show Ollama models
+	@echo "$(BLUE)Ollama models:$(NC)"
+	@curl -s http://localhost:11434/api/tags | $(PYTHON) -m json.tool
 
 ##@ Phase 4: Orchestration & Web UI
 
