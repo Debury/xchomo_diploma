@@ -187,28 +187,29 @@ class RAGChatResponse(BaseModel):
 
 class SourceResponse(BaseModel):
     """Response with source information"""
-    id: int
+    # FIX: Made fields optional that might not be present in the backend store
+    id: Optional[int] = None
     source_id: str
     url: str
-    format: str
-    variables: Optional[List[str]]
-    time_range: Optional[Dict[str, str]]
-    spatial_bbox: Optional[List[float]]
-    transformations: Optional[List[str]]
-    aggregation_method: Optional[str]
-    output_resolution: Optional[float]
-    embedding_model: Optional[str]
-    chunk_size: Optional[int]
-    collection_name: Optional[str]
-    description: Optional[str]
-    tags: Optional[List[str]]
+    format: Optional[str] = None
+    variables: Optional[List[str]] = None
+    time_range: Optional[Dict[str, str]] = None
+    spatial_bbox: Optional[List[float]] = None
+    transformations: Optional[List[str]] = None
+    aggregation_method: Optional[str] = None
+    output_resolution: Optional[float] = None
+    embedding_model: Optional[str] = None
+    chunk_size: Optional[int] = None
+    collection_name: Optional[str] = None
+    description: Optional[str] = None
+    tags: Optional[List[str]] = None
     is_active: bool
-    last_processed: Optional[str]
+    last_processed: Optional[str] = None
     processing_status: str
-    error_message: Optional[str]
-    created_at: str
-    updated_at: str
-    created_by: Optional[str]
+    error_message: Optional[str] = None
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+    created_by: Optional[str] = None
 
 
 # ====================================================================================
@@ -586,15 +587,21 @@ async def create_source(source: SourceCreate):
         if store.get_source(source.source_id):
             raise HTTPException(status_code=400, detail=f"Source '{source.source_id}' already exists")
         
+        # FIX: Use the new location for format detection
         if not source.format:
-            from dagster_project.ops.dynamic_source_ops import detect_format_from_url
+            from src.climate_embeddings.loaders.detect_format import detect_format_from_url
             source.format = detect_format_from_url(source.url)
         
-        created_source = store.create_source(source.dict())
+        # Create source
+        source_data = source.dict()
+        created_source = store.create_source(source_data)
+        
         return created_source.to_dict()
     except HTTPException:
         raise
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/sources", response_model=List[SourceResponse])
