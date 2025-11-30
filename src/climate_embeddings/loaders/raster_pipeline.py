@@ -13,6 +13,7 @@ Features
 from __future__ import annotations
 
 import json
+import logging
 import math
 import os
 from dataclasses import dataclass
@@ -26,6 +27,8 @@ import dask.array as da
 from dask.array.core import slices_from_chunks
 import rasterio
 from rasterio.windows import Window
+
+logger = logging.getLogger(__name__)
 
 # Optional imports for specific engines
 try:  # pragma: no cover
