@@ -1,6 +1,6 @@
 """Configuration module."""
 
-from climate_embeddings.config.defaults import *
+from .defaults import *
 
 __all__ = [
     "DEFAULT_TEXT_MODEL",

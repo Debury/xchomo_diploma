@@ -34,7 +34,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 import numpy as np
 
-from climate_embeddings.index.vector_index import VectorIndex, SearchResult
+from ..index.vector_index import VectorIndex, SearchResult
 
 # LLM client import - compatible with existing src/llm structure
 try:

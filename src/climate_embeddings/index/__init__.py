@@ -1,6 +1,6 @@
-"""Vector index and similarity search."""
+"""Vector index for similarity search."""
 
-from climate_embeddings.index.vector_index import VectorIndex, SearchResult
+from .vector_index import VectorIndex, SearchResult
 
 __all__ = [
     "VectorIndex",

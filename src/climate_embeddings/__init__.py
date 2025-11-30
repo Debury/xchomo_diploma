@@ -10,10 +10,10 @@ A comprehensive system for:
 
 __version__ = "1.0.0"
 
-from climate_embeddings.loaders import load_raster_auto, raster_to_embeddings, detect_format
-from climate_embeddings.embeddings import get_text_embedder, TextEmbedder
-from climate_embeddings.index import VectorIndex, SearchResult
-from climate_embeddings.rag import RAGPipeline, build_index_from_embeddings
+from .loaders import load_raster_auto, raster_to_embeddings, detect_format
+from .embeddings import get_text_embedder, TextEmbedder
+from .index import VectorIndex, SearchResult
+from .rag import RAGPipeline, build_index_from_embeddings
 
 __all__ = [
     "load_raster_auto",

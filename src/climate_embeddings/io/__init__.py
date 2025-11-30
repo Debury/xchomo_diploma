@@ -1,5 +1,5 @@
 """IO utilities for saving embeddings and metadata."""
 
-from climate_embeddings.io.metadata import *
+from .metadata import *
 
 __all__ = []
