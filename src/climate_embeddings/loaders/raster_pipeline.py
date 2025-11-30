@@ -3,10 +3,11 @@ import zipfile
 import tempfile
 from pathlib import Path
 from dataclasses import dataclass, field
-from typing import Any, Dict, Iterator, Union
+from typing import Any, Dict, Iterator, Union, Optional
 import numpy as np
 import xarray as xr
 import dask.array as da
+import rasterio
 
 logger = logging.getLogger(__name__)
 
@@ -14,8 +15,6 @@ logger = logging.getLogger(__name__)
 class RasterChunk:
     """
     Represents a specific slice of Space and Time.
-    If 'data' is 128x128 pixels, this represents the state of that region
-    at a specific timestamp (not an average over time).
     """
     data: np.ndarray
     metadata: Dict[str, Any]
@@ -26,23 +25,39 @@ class RasterLoadResult:
     source_path: Path
     metadata: Dict[str, Any] = field(default_factory=dict)
 
-# --- PUBLIC API ---
+# ==============================================================================
+# PUBLIC API
+# ==============================================================================
+
 def load_raster_auto(path: Union[str, Path], **kwargs) -> RasterLoadResult:
-    """Main entry point used by Dagster."""
+    """
+    Main entry point. Automatically selects the correct loader based on extension.
+    """
     path = Path(path)
+    suffix = path.suffix.lower()
     
-    if path.suffix == ".zip":
+    logger.info(f"Selecting loader for: {path.name} (Suffix: {suffix})")
+    
+    if suffix == ".zip":
         iterator = _load_zip(path, **kwargs)
+    elif suffix in {'.tif', '.tiff'}:
+        iterator = _load_geotiff(path, **kwargs)
+    elif suffix in {'.nc', '.nc4', '.hdf', '.h5'}:
+        iterator = _load_netcdf(path, **kwargs)
     else:
-        iterator = _load_single_file(path, **kwargs)
+        # Fallback: Try NetCDF loader for unknown extensions (e.g. .dat)
+        logger.warning(f"Unknown extension '{suffix}', attempting NetCDF load...")
+        iterator = _load_netcdf(path, **kwargs)
         
-    return RasterLoadResult(chunk_iterator=iterator, source_path=path, metadata={"format": path.suffix})
+    return RasterLoadResult(
+        chunk_iterator=iterator, 
+        source_path=path, 
+        metadata={"format": suffix}
+    )
 
 def raster_to_embeddings(source: RasterLoadResult, **kwargs) -> list:
     """
     Converts raw pixel grids into dense statistical vectors.
-    Because we now slice Time=1, these stats represent the exact values 
-    for a specific time step, not a yearly average.
     """
     results = []
     if not source.chunk_iterator: return []
@@ -53,38 +68,58 @@ def raster_to_embeddings(source: RasterLoadResult, **kwargs) -> list:
         valid = data[np.isfinite(data)]
         
         if valid.size == 0:
-            # Empty ocean/mask tile, skip or return zeros
             continue
             
-        # These 8 numbers describe the distribution of the variable 
-        # within this specific tile at this specific time.
+        # 8-dim stats vector
         stats = np.array([
-            np.mean(valid), 
-            np.std(valid), 
-            np.min(valid), 
-            np.max(valid),
-            np.percentile(valid, 10), 
-            np.percentile(valid, 50), 
-            np.percentile(valid, 90), 
-            0.0 # Trend placeholder (0 for single timestep)
+            float(np.mean(valid)), 
+            float(np.std(valid)), 
+            float(np.min(valid)), 
+            float(np.max(valid)),
+            float(np.percentile(valid, 10)), 
+            float(np.percentile(valid, 50)), 
+            float(np.percentile(valid, 90)), 
+            0.0 # Trend placeholder
         ], dtype="float32")
         
         results.append({"vector": stats.tolist(), "metadata": chunk.metadata})
     return results
 
-# --- INTERNAL HELPERS ---
-def _load_zip(path, **kwargs):
-    with tempfile.TemporaryDirectory() as tmpdir:
-        with zipfile.ZipFile(path, 'r') as zf:
-            zf.extractall(tmpdir)
-        for f in Path(tmpdir).rglob("*"):
-            if f.suffix in {'.nc', '.tif', '.grib', '.csv', '.nc4'}:
-                yield from _load_single_file(f, **kwargs)
+# ==============================================================================
+# INTERNAL LOADERS
+# ==============================================================================
 
-def _load_single_file(path: Path, **kwargs) -> Iterator[RasterChunk]:
+def _load_zip(path, **kwargs):
+    """Extracts ZIP and recurses on supported files."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        try:
+            with zipfile.ZipFile(path, 'r') as zf:
+                zf.extractall(tmpdir)
+            
+            # Recursively find files
+            found = False
+            for f in Path(tmpdir).rglob("*"):
+                # Ignore MacOS metadata
+                if f.name.startswith("__MACOSX") or f.name.startswith("."): 
+                    continue
+                    
+                if f.suffix.lower() in {'.nc', '.nc4', '.h5'}:
+                    found = True
+                    yield from _load_netcdf(f, **kwargs)
+                elif f.suffix.lower() in {'.tif', '.tiff'}:
+                    found = True
+                    yield from _load_geotiff(f, **kwargs)
+            
+            if not found:
+                logger.warning(f"No supported files found inside zip: {path.name}")
+                
+        except zipfile.BadZipFile:
+            logger.error(f"Invalid ZIP file: {path}")
+
+def _load_netcdf(path: Path, **kwargs) -> Iterator[RasterChunk]:
     """
-    Loads a file and slices it into granular Spatiotemporal Chunks.
-    CRITICAL CHANGE: We now slice Time=1 to preserve daily/hourly detail.
+    Loader for NetCDF/HDF5 (Time-Aware).
+    Enforces Time=1 chunking for granular RAG answers.
     """
     try:
         # Open dataset lazily
@@ -96,54 +131,89 @@ def _load_single_file(path: Path, **kwargs) -> Iterator[RasterChunk]:
         for var in numeric_vars:
             da_var = ds[var]
             
-            # --- THE FIX FOR DETAILED ANSWERS ---
-            # We enforce that any dimension named "time" has a chunk size of 1.
-            # This ensures we generate a separate vector for every single time step.
-            chunking_plan = {}
+            # --- CHUNKING STRATEGY ---
+            chunking = {}
             for dim in da_var.dims:
-                dim_name = str(dim).lower()
-                if "time" in dim_name or "date" in dim_name:
-                    # ONE chunk per time step -> High Resolution
-                    chunking_plan[dim] = 1 
-                elif "lat" in dim_name or "y" in dim_name:
-                    # Spatial chunking (keep reasonably small for location queries)
-                    chunking_plan[dim] = 100 
-                elif "lon" in dim_name or "x" in dim_name:
-                    chunking_plan[dim] = 100
+                d = str(dim).lower()
+                if "time" in d or "date" in d:
+                    # CRITICAL: One chunk per time step -> High Resolution
+                    chunking[dim] = 1 
+                elif "lat" in d or "y" in d or "lon" in d or "x" in d:
+                    chunking[dim] = 100 # Spatial chunks
                 else:
-                    # Unknown dim (e.g. depth), keep whole
-                    chunking_plan[dim] = -1 
+                    chunking[dim] = -1
 
-            # Apply the chunking plan
-            da_chunked = da_var.chunk(chunking_plan)
+            try:
+                da_chunked = da_var.chunk(chunking)
+            except Exception:
+                # Fallback if dask chunking fails
+                da_chunked = da.from_array(da_var, chunks=chunking)
             
-            # Use Dask's logic to iterate over every block in the grid
+            # Iterate
             for slices in da.core.slices_from_chunks(da_chunked.chunks):
-                # 1. Extract Metadata (Timestamp, Lat/Lon Box)
-                meta = {"variable": str(var), "source": str(path)}
+                meta = {"variable": str(var), "source": str(path.name)}
                 
+                # Extract coords (Timestamp)
                 for dim, sl in zip(da_var.dims, slices):
                     if dim in da_var.coords:
                         vals = da_var.coords[dim][sl].values
                         if len(vals) > 0:
-                            # If time chunk is 1, start==end, which effectively gives us the exact timestamp
+                            # Start==End when chunksize is 1, giving exact timestamp
                             meta[f"{dim}_start"] = str(vals.min())
-                            meta[f"{dim}_end"] = str(vals.max())
+                            # Clean up numpy datetime string for prettier metadata
+                            if "T" in meta[f"{dim}_start"]:
+                                meta["time_start"] = meta[f"{dim}_start"]
 
-                # 2. Compute the actual data for this slice
                 try:
-                    # Bring just this small 100x100x1 block into memory
                     data = da_chunked[slices].compute().values
-                    
-                    # Handle NaNs (e.g. land mask) without crashing
-                    if np.isnan(data).all():
-                        continue 
-                        
+                    if np.isnan(data).all(): continue
                     yield RasterChunk(data=data, metadata=meta)
-                    
                 except Exception as e:
-                    logger.warning(f"Error reading chunk {slices}: {e}")
                     continue
                     
     except Exception as e:
-        logger.error(f"Failed to open {path}: {e}")
+        logger.error(f"NetCDF Load Error {path}: {e}")
+
+def _load_geotiff(path: Path, **kwargs) -> Iterator[RasterChunk]:
+    """Loader for GeoTIFFs (Spatial Only)."""
+    try:
+        with rasterio.open(path) as src:
+            # Iterate over 256x256 windows
+            # Use smaller windows if image is small
+            w = 256
+            if src.width < 512 or src.height < 512:
+                w = 64
+                
+            for ji, window in src.block_windows(1):
+                # Read band 1 by default
+                try:
+                    data = src.read(1, window=window)
+                except Exception:
+                    continue
+                
+                # Convert to float for stats
+                data = data.astype('float32')
+                
+                # Handle NoData
+                if src.nodata is not None:
+                    data = np.where(data == src.nodata, np.nan, data)
+                
+                # Skip empty
+                if np.isnan(data).all():
+                    continue
+
+                bounds = src.window_bounds(window)
+                meta = {
+                    "variable": "band_1",
+                    "source": str(path.name),
+                    "lat_min": bounds[1],
+                    "lat_max": bounds[3],
+                    "lon_min": bounds[0],
+                    "lon_max": bounds[2],
+                    "time_start": "static_image",
+                }
+                
+                yield RasterChunk(data=data, metadata=meta)
+                
+    except Exception as e:
+        logger.error(f"GeoTIFF Load Error {path}: {e}")

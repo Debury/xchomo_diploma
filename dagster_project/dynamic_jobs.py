@@ -6,6 +6,7 @@ Uses climate_embeddings package for all format handling.
 """
 
 import sys
+import time
 from pathlib import Path
 import requests
 import traceback
@@ -44,8 +45,26 @@ def process_all_sources(context: OpExecutionContext) -> List[Dict[str, Any]]:
     
     # 1. Initialize Resources
     store = get_source_store()
-    sources = store.get_all_sources(active_only=True)
-    logger.info(f"Found {len(sources)} active source(s)")
+    
+    # --- FIX 1: Filter Logic ---
+    # Check if a specific source_id was passed in the run tags
+    target_source_id = context.run.tags.get("source_id")
+    
+    if target_source_id:
+        logger.info(f"Targeting SINGLE source: {target_source_id}")
+        # Get just the one source
+        specific_source = store.get_source(target_source_id)
+        if specific_source and specific_source.is_active:
+            sources = [specific_source]
+        else:
+            logger.error(f"Source {target_source_id} not found or inactive.")
+            return []
+    else:
+        # Fallback to processing EVERYTHING (e.g. scheduled runs)
+        logger.info("Targeting ALL active sources")
+        sources = store.get_all_sources(active_only=True)
+
+    logger.info(f"Processing {len(sources)} source(s)")
     
     if not sources:
         return []
@@ -69,7 +88,7 @@ def process_all_sources(context: OpExecutionContext) -> List[Dict[str, Any]]:
         try:
             store.update_processing_status(source_id, "processing")
 
-            # --- STEP 1: DOWNLOAD (FIXED HEARTBEAT) ---
+            # --- STEP 1: DOWNLOAD (With User-Agent Fix) ---
             format_hint = source.format or detect_format_from_url(source.url)
             output_dir = data_paths.get_raw_path()
             output_dir.mkdir(parents=True, exist_ok=True)
@@ -80,31 +99,33 @@ def process_all_sources(context: OpExecutionContext) -> List[Dict[str, Any]]:
             filename = f"{source_id}_{timestamp}.{ext}"
             filepath = output_dir / filename
 
+            # Fake User-Agent to prevent 403 Forbidden on data sites
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+            }
+
             if not filepath.exists():
                 logger.info(f"[1/4] Downloading {source.url}...")
                 
-                # Use stream with a generous timeout
-                response = requests.get(source.url, stream=True, timeout=600)
-                response.raise_for_status()
-                
-                total_size = int(response.headers.get('content-length', 0))
-                downloaded_size = 0
-                chunk_size = 1024 * 1024  # 1MB chunks (faster I/O)
-                
-                with open(filepath, 'wb') as f:
-                    for chunk in response.iter_content(chunk_size=chunk_size):
-                        if chunk:
-                            f.write(chunk)
-                            downloaded_size += len(chunk)
-                            
-                            # LOG PROGRESS every ~5MB to keep Dagster Heartbeat alive
-                            if downloaded_size % (5 * 1024 * 1024) < chunk_size:
-                                mb_down = downloaded_size / 1024 / 1024
-                                if total_size:
-                                    mb_total = total_size / 1024 / 1024
-                                    logger.info(f"Downloading... {mb_down:.1f} / {mb_total:.1f} MB")
-                                else:
+                with requests.get(source.url, headers=headers, stream=True, timeout=(10, 600)) as response:
+                    response.raise_for_status()
+                    
+                    total_size = int(response.headers.get('content-length', 0))
+                    downloaded_size = 0
+                    last_log_time = time.time()
+                    
+                    with open(filepath, 'wb') as f:
+                        for chunk in response.iter_content(chunk_size=8192):
+                            if chunk:
+                                f.write(chunk)
+                                downloaded_size += len(chunk)
+                                
+                                # Heartbeat log
+                                current_time = time.time()
+                                if current_time - last_log_time > 5:
+                                    mb_down = downloaded_size / 1024 / 1024
                                     logger.info(f"Downloading... {mb_down:.1f} MB")
+                                    last_log_time = current_time
                                     
                 logger.info(f"✓ Downloaded to {filepath.name}")
             else:
@@ -142,14 +163,15 @@ def process_all_sources(context: OpExecutionContext) -> List[Dict[str, Any]]:
             total_chunks = len(stat_embeddings)
             logger.info(f"✓ Generated {total_chunks} chunks")
 
-            # --- STEP 4: BATCHED SEMANTIC EMBEDDING & STORAGE ---
-            logger.info(f"[4/4] Semantic Embedding & Storage (Batched)...")
+            # --- STEP 4: BATCHED STORAGE ---
+            logger.info(f"[4/4] Semantic Embedding & Storage...")
 
             BATCH_SIZE = 50 
             
             for i in range(0, total_chunks, BATCH_SIZE):
                 batch_slice = stat_embeddings[i : i + BATCH_SIZE]
-                logger.info(f"Processing batch {i} to {min(i + BATCH_SIZE, total_chunks)} of {total_chunks}...")
+                if i % 100 == 0:
+                    logger.info(f"Processing batch {i}/{total_chunks}...")
                 
                 # 1. Generate text
                 batch_texts = []
@@ -160,22 +182,19 @@ def process_all_sources(context: OpExecutionContext) -> List[Dict[str, Any]]:
                     
                     parts = [f"Climate variable: {variable}"]
                     if "lat_min" in meta:
-                        parts.append(f"Location: Lat {meta['lat_min']:.1f} to {meta['lat_max']:.1f}, Lon {meta['lon_min']:.1f} to {meta['lon_max']:.1f}")
+                        parts.append(f"Lat {meta['lat_min']:.1f} to {meta['lat_max']:.1f}")
                     if "time_start" in meta:
                         parts.append(f"Time: {meta['time_start']}")
                     if len(vec) >= 4:
-                        parts.append(f"Statistics: Mean={vec[0]:.2f}, Min={vec[2]:.2f}, Max={vec[3]:.2f}")
+                        parts.append(f"Stats: Mean={vec[0]:.2f}, Max={vec[3]:.2f}")
                     
                     batch_texts.append(" | ".join(parts))
 
                 # 2. Embed
                 batch_vectors = text_embedder.embed_documents(batch_texts)
                 
-                # 3. Prepare payload
-                ids = []
-                embeddings = []
-                metadatas = []
-                documents = []
+                # 3. Upload
+                ids, embeddings, metadatas, documents = [], [], [], []
                 
                 for j, (sem_vec, stat_item, desc) in enumerate(zip(batch_vectors, batch_slice, batch_texts)):
                     global_idx = i + j
@@ -193,16 +212,11 @@ def process_all_sources(context: OpExecutionContext) -> List[Dict[str, Any]]:
                         "timestamp": timestamp,
                         "stat_mean": float(stats_vec[0]) if len(stats_vec) > 0 else 0.0,
                         "stat_max": float(stats_vec[3]) if len(stats_vec) > 3 else 0.0,
+                        "stat_min": float(stats_vec[2]) if len(stats_vec) > 2 else 0.0,
                     }
                     metadatas.append(payload)
 
-                # 4. Upload
-                vector_db.add_embeddings(
-                    ids=ids,
-                    embeddings=embeddings,
-                    metadatas=metadatas,
-                    documents=documents
-                )
+                vector_db.add_embeddings(ids, embeddings, metadatas, documents)
 
             logger.info(f"✓ All {total_chunks} stored successfully.")
 
