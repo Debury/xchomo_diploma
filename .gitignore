@@ -221,6 +221,7 @@ embeddings/
 .embeddings/
 embeddings_cache/
 !/src/embeddings/
+!/src/climate_embeddings/embeddings/
 *.embedding
 *.vec
 
