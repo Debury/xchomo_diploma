@@ -2,7 +2,8 @@
 # Test script for verifying all format support on external server
 # Usage: bash test_formats_server.sh
 
-set -e  # Exit on error
+# Don't exit on error - we want to count all failures
+set +e
 
 echo "🧪 Climate Embeddings Format Testing Suite"
 echo "=========================================="

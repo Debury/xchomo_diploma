@@ -169,11 +169,11 @@ docker-run: ## Run pipeline in Docker container
 	docker run --rm -v "%CD%\data:/app/data" -v "%CD%\.env:/app/.env" climate-etl-pipeline
 	@echo "$(GREEN)✓ Docker run complete$(NC)"
 
-docker compose-up: ## Start services with docker compose
+docker-compose-up: ## Start services with docker compose
 	docker compose up -d
 	@echo "$(GREEN)✓ Services started$(NC)"
 
-docker compose-down: ## Stop services with docker compose
+docker-compose-down: ## Stop services with docker compose
 	docker compose down
 	@echo "$(GREEN)✓ Services stopped$(NC)"
 
