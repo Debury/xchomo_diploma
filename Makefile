@@ -49,25 +49,25 @@ setup: ## Set up environment and directories
 	@if not exist ".env" copy ".env.example" ".env" && echo "$(YELLOW)⚠ Created .env file - please edit with your credentials$(NC)"
 	@echo "$(GREEN)✓ Environment setup complete$(NC)"
 
-##@ Data Pipeline
+##@ Data Pipeline (via Dagster/API)
 
-download: ## Download ERA5 climate data
-	@echo "$(BLUE)Downloading ERA5 data...$(NC)"
-	$(PYTHON) -m src.data_acquisition.era5_downloader
-	@echo "$(GREEN)✓ Download complete$(NC)"
+run-etl: ## Trigger ETL job via API (requires API running)
+	@echo "$(BLUE)Triggering ETL job via API...$(NC)"
+	@curl -X POST http://localhost:8000/jobs/dynamic_source_etl_job/run -H "Content-Type: application/json" -d "{}" || echo "$(YELLOW)⚠ API not running. Start with 'make api' first$(NC)"
+	@echo "$(GREEN)✓ ETL job triggered$(NC)"
 
-transform: ## Run data transformation pipeline
-	@echo "$(BLUE)Running transformation pipeline...$(NC)"
-	$(PYTHON) -m src.data_transformation.pipeline $(DATA_RAW)/test_era5_data.nc -o $(DATA_PROCESSED)
-	@echo "$(GREEN)✓ Transformation complete$(NC)"
+run-embeddings: ## Generate embeddings from raster data
+	@echo "$(BLUE)Running embedding generation...$(NC)"
+	@curl -X POST http://localhost:8000/jobs/embedding_job/run -H "Content-Type: application/json" -d "{}" || echo "$(YELLOW)⚠ API not running. Start with 'make api' first$(NC)"
+	@echo "$(GREEN)✓ Embedding job triggered$(NC)"
 
-visualize: ## Visualize processed data
-	@echo "$(BLUE)Generating visualizations...$(NC)"
-	$(PYTHON) -m src.data_acquisition.visualizer $(DATA_PROCESSED)/test_era5_data.nc
-	@echo "$(GREEN)✓ Visualization complete$(NC)"
+cli-generate: ## Generate embeddings using CLI (climate_embeddings)
+	@echo "$(BLUE)Generating embeddings with CLI...$(NC)"
+	$(PYTHON) -m climate_embeddings.cli.main generate --help
+	@echo "$(YELLOW)Usage: python -m climate_embeddings.cli.main generate <file>$(NC)"
 
-run-all: setup download transform ## Run complete pipeline (download + transform)
-	@echo "$(GREEN)✓ Complete pipeline executed successfully$(NC)"
+run-all: docker-compose-up ## Start all services with docker-compose
+	@echo "$(GREEN)✓ All services started$(NC)"
 
 ##@ Testing
 
@@ -198,15 +198,17 @@ notebook: ## Start Jupyter notebook server
 
 ##@ Quick Commands
 
-quick-test: ## Quick test with sample data
-	@echo "$(BLUE)Running quick test...$(NC)"
-	$(PYTHON) -m src.data_transformation.pipeline data/raw/test_era5_data.nc
-	@echo "$(GREEN)✓ Quick test complete$(NC)"
+list-sources: ## List configured data sources via API
+	@echo "$(BLUE)Listing data sources...$(NC)"
+	@curl -s http://localhost:8000/sources | $(PYTHON) -m json.tool || echo "$(YELLOW)⚠ API not running$(NC)"
 
-quick-viz: ## Quick visualization of latest processed data
-	@echo "$(BLUE)Creating quick visualization...$(NC)"
-	$(PYTHON) -m src.data_acquisition.visualizer $(DATA_PROCESSED)/test_era5_data.nc
-	@echo "$(GREEN)✓ Visualization generated$(NC)"
+check-qdrant: ## Check Qdrant status
+	@echo "$(BLUE)Checking Qdrant vector database...$(NC)"
+	@curl -s http://localhost:6333/collections || echo "$(YELLOW)⚠ Qdrant not running$(NC)"
+
+check-ollama: ## Check Ollama LLM status
+	@echo "$(BLUE)Checking Ollama...$(NC)"
+	@curl -s http://localhost:11434/api/tags || echo "$(YELLOW)⚠ Ollama not running$(NC)"
 
 ##@ Phase 4: Orchestration & Web UI
 
@@ -271,8 +273,7 @@ verify-phase4: ## Verify Phase 4 implementation
 	@echo ""
 	@echo "Checking ops:"
 	@if exist "dagster_project\ops\__init__.py" (echo "  [✓] ops\__init__.py") else (echo "  [✗] ops\__init__.py")
-	@if exist "dagster_project\ops\data_acquisition_ops.py" (echo "  [✓] ops\data_acquisition_ops.py") else (echo "  [✗] ops\data_acquisition_ops.py")
-	@if exist "dagster_project\ops\transformation_ops.py" (echo "  [✓] ops\transformation_ops.py") else (echo "  [✗] ops\transformation_ops.py")
+	@if exist "dagster_project\ops\dynamic_source_ops.py" (echo "  [✓] ops\dynamic_source_ops.py") else (echo "  [✗] ops\dynamic_source_ops.py")
 	@if exist "dagster_project\ops\embedding_ops.py" (echo "  [✓] ops\embedding_ops.py") else (echo "  [✗] ops\embedding_ops.py")
 	@echo ""
 	@echo "Checking Web API:"
@@ -297,11 +298,15 @@ api-list-jobs: ## List available Dagster jobs via API
 	@echo "$(BLUE)Listing jobs...$(NC)"
 	@curl -s http://localhost:8000/jobs | $(PYTHON) -m json.tool
 
-trigger-etl: ## Trigger daily ETL job via API
-	@echo "$(BLUE)Triggering daily_etl_job...$(NC)"
-	@curl -X POST http://localhost:8000/jobs/daily_etl_job/run -H "Content-Type: application/json" -d "{}"
+trigger-etl: ## Trigger dynamic source ETL job via API
+	@echo "$(BLUE)Triggering dynamic_source_etl_job...$(NC)"
+	@curl -X POST http://localhost:8000/jobs/dynamic_source_etl_job/run -H "Content-Type: application/json" -d "{}"
 
 trigger-embeddings: ## Trigger embedding job via API
 	@echo "$(BLUE)Triggering embedding_job...$(NC)"
 	@curl -X POST http://localhost:8000/jobs/embedding_job/run -H "Content-Type: application/json" -d "{}"
+
+rag-query: ## Query RAG system via API (example)
+	@echo "$(BLUE)Querying RAG system...$(NC)"
+	@echo "$(YELLOW)Example: curl -X POST http://localhost:8000/rag/query -H 'Content-Type: application/json' -d '{\"query\":\"What is the temperature trend?\",\"top_k\":5}'$(NC)"
 

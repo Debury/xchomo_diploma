@@ -11,7 +11,8 @@ import pandas as pd
 import pytest
 import xarray as xr
 
-from src.embeddings.raster_pipeline import load_raster_auto, raster_to_embeddings
+# NEW: Use climate_embeddings package
+from climate_embeddings.loaders import load_raster_auto, raster_to_embeddings
 
 
 @dataclass

@@ -1,18 +1,31 @@
-"""Embedding utilities bridging the climate pipeline with the vector store."""
+"""
+Embedding utilities - now uses climate_embeddings package.
+
+Keep only Qdrant-specific modules here (database, generator, search).
+All raster processing and text embeddings moved to climate_embeddings/.
+"""
 
 from .generator import EmbeddingGenerator
 from .database import VectorDatabase
 from .search import SemanticSearcher, semantic_search
-from .pipeline import EmbeddingPipeline
-from .metadata import MetadataExtractor
-from .text_generator import TextGenerator
+
+# Re-export from climate_embeddings for convenience
+from climate_embeddings.embeddings import TextEmbedder, get_text_embedder
+from climate_embeddings.index import VectorIndex, SearchResult
+from climate_embeddings.loaders import load_raster_auto, raster_to_embeddings, load_from_zip
 
 __all__ = [
+    # Qdrant-specific (kept here)
     "EmbeddingGenerator",
     "VectorDatabase",
     "SemanticSearcher",
     "semantic_search",
-    "EmbeddingPipeline",
-    "MetadataExtractor",
-    "TextGenerator",
+    # Re-exported from climate_embeddings
+    "TextEmbedder",
+    "get_text_embedder",
+    "VectorIndex",
+    "SearchResult",
+    "load_raster_auto",
+    "raster_to_embeddings",
+    "load_from_zip",
 ]

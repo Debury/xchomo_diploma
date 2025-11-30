@@ -96,9 +96,16 @@ def generate_embeddings(
                 "metadata": {"message": "No files to process"}
             }
         
+        logger.info(f"Found {len(exported_files)} exported files to process")
+        for idx, file_info in enumerate(exported_files, 1):
+            logger.info(f"  File {idx}: {file_info.get('path')} (format: {file_info.get('format')})")
+        
         # Initialize embedding pipeline
         processed_dir = data_paths.get_processed_path()
         embeddings_dir = data_paths.get_embeddings_path()
+        
+        logger.info(f"Processed directory: {processed_dir}")
+        logger.info(f"Embeddings directory: {embeddings_dir}")
         
         pipeline_config = config_loader.load()
         
