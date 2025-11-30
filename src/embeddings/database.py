@@ -1,5 +1,6 @@
 import os
 import logging
+import requests
 from typing import List, Dict, Any, Optional
 from qdrant_client import QdrantClient
 from qdrant_client.http.models import Distance, VectorParams, ScoredPoint
@@ -8,43 +9,63 @@ logger = logging.getLogger(__name__)
 
 class VectorDatabase:
     def __init__(self):
-        host = os.getenv("QDRANT_HOST", "localhost")
-        port = int(os.getenv("QDRANT_REST_PORT", 6333))
+        self.host = os.getenv("QDRANT_HOST", "localhost")
+        self.port = int(os.getenv("QDRANT_REST_PORT", 6333))
+        self.base_url = f"http://{self.host}:{self.port}"
         
         # Initialize client
         try:
-            self.client = QdrantClient(host=host, port=port)
+            self.client = QdrantClient(host=self.host, port=self.port)
+            logger.info(f"Qdrant Client initialized: {self.client}")
         except Exception as e:
-            logger.error(f"Failed to connect to Qdrant: {e}")
+            logger.error(f"Failed to connect to Qdrant client: {e}")
             self.client = None
             
         self.collection = "climate_rag"
         self._ensure_collection()
 
     def _ensure_collection(self):
-        if not self.client: return
+        # Try via client first
+        if self.client:
+            try:
+                if not self.client.collection_exists(self.collection):
+                    self.client.create_collection(
+                        collection_name=self.collection,
+                        vectors_config=VectorParams(size=1024, distance=Distance.COSINE)
+                    )
+                return
+            except Exception as e:
+                logger.warning(f"Client collection check failed ({e}), trying REST...")
+
+        # Fallback: Create via REST if client fails
         try:
-            if not self.client.collection_exists(self.collection):
-                self.client.create_collection(
-                    collection_name=self.collection,
-                    vectors_config=VectorParams(size=1024, distance=Distance.COSINE)
-                )
+            url = f"{self.base_url}/collections/{self.collection}"
+            resp = requests.get(url)
+            if resp.status_code != 200:
+                # Create
+                payload = {
+                    "vectors": {
+                        "size": 1024,
+                        "distance": "Cosine"
+                    }
+                }
+                requests.put(url, json=payload)
+                logger.info("Created collection via REST")
         except Exception as e:
-            logger.warning(f"Could not check/create collection: {e}")
+            logger.error(f"REST collection creation failed: {e}")
 
     def add_embeddings(self, ids: List[str], embeddings: List[List[float]], metadatas: List[Dict], documents: List[str]):
-        if not self.client: return
+        if not self.client:
+            logger.error("No client available for upsert")
+            return
         
         points = []
         for i, (uid, vec, meta, doc) in enumerate(zip(ids, embeddings, metadatas, documents)):
-            # Ensure payload is robust
             payload = meta.copy()
             payload["text_content"] = doc
             
-            # Qdrant requires integer or UUID ids for best performance, 
-            # but string ids are supported if formatted as UUIDs. 
-            # We'll use a deterministic hash for simplicity here.
-            point_id = hash(uid) % (2**63 - 1) 
+            # Deterministic integer ID
+            point_id = hash(uid) % (2**63 - 1)
             
             points.append({
                 "id": point_id, 
@@ -54,33 +75,54 @@ class VectorDatabase:
         
         try:
             self.client.upsert(collection_name=self.collection, points=points)
-            logger.info(f"Upserted {len(points)} points to {self.collection}")
+            logger.info(f"Upserted {len(points)} points")
         except Exception as e:
-            logger.error(f"Failed to upsert embeddings: {e}")
+            logger.error(f"Upsert failed: {e}")
             raise e
 
-    def search(self, query_vector: List[float], limit: int = 5) -> List[ScoredPoint]:
+    def search(self, query_vector: List[float], limit: int = 5) -> List[Any]:
         """
-        Encapsulated search method.
+        Search using Client, falling back to direct REST API if client methods are missing.
         """
-        if not self.client: return []
+        # Strategy 1: Python Client
+        if self.client:
+            try:
+                # Try standard search
+                return self.client.search(
+                    collection_name=self.collection,
+                    query_vector=query_vector,
+                    limit=limit
+                )
+            except (AttributeError, TypeError, Exception) as e:
+                logger.warning(f"Client search failed ({e}). Falling back to REST API.")
+
+        # Strategy 2: Direct REST API (Fail-safe)
+        return self._search_via_rest(query_vector, limit)
+
+    def _search_via_rest(self, query_vector: List[float], limit: int) -> List[Any]:
+        """Manual search via HTTP requests."""
+        url = f"{self.base_url}/collections/{self.collection}/points/search"
+        payload = {
+            "vector": query_vector,
+            "limit": limit,
+            "with_payload": True
+        }
         
         try:
-            # Standard search
-            return self.client.search(
-                collection_name=self.collection,
-                query_vector=query_vector,
-                limit=limit
-            )
-        except AttributeError:
-            # Fallback if 'search' is missing (very rare edge case)
-            # Try newer query API or verify client type
-            logger.warning("Client missing 'search', attempting 'search_batch'")
-            results = self.client.search_batch(
-                collection_name=self.collection,
-                requests=[{"vector": query_vector, "limit": limit}]
-            )
-            return results[0] if results else []
+            response = requests.post(url, json=payload, timeout=5)
+            response.raise_for_status()
+            result = response.json().get("result", [])
+            
+            # Convert dict result to object-like structure for compatibility
+            # The API expects objects with .score and .payload attributes
+            class ScoredResult:
+                def __init__(self, item):
+                    self.id = item.get("id")
+                    self.score = item.get("score")
+                    self.payload = item.get("payload")
+            
+            return [ScoredResult(item) for item in result]
+            
         except Exception as e:
-            logger.error(f"Search failed: {e}")
+            logger.error(f"REST search failed: {e}")
             return []
