@@ -50,8 +50,14 @@ run_test "Create NetCDF sample" "docker compose exec -T web-api python -c '
 import numpy as np
 import xarray as xr
 from pathlib import Path
+import os
 
 Path(\"data/raw\").mkdir(parents=True, exist_ok=True)
+
+# Remove existing file to avoid corruption
+nc_path = \"data/raw/test_climate.nc\"
+if os.path.exists(nc_path):
+    os.remove(nc_path)
 
 ds = xr.Dataset({
     \"temperature\": ([\"time\", \"lat\", \"lon\"], np.random.randn(10, 5, 5) * 10 + 15),
@@ -61,8 +67,11 @@ ds = xr.Dataset({
     \"lat\": np.linspace(45, 50, 5),
     \"lon\": np.linspace(10, 15, 5)
 })
-ds.to_netcdf(\"data/raw/test_climate.nc\")
-ds.close()  # Close file properly
+
+# Use explicit mode and close properly
+ds.to_netcdf(nc_path, mode=\"w\", format=\"NETCDF4\", engine=\"netcdf4\")
+ds.close()
+del ds  # Force cleanup
 print(\"✓ Created test_climate.nc\")
 '"
 
