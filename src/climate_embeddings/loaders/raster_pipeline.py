@@ -26,8 +26,18 @@ SUPPORTED_EXTENSIONS = {
 
 @dataclass
 class RasterChunk:
-    """Standardized output for the pipeline."""
+    """Standardized output for the streaming loader."""
     data: np.ndarray  # float32
+    metadata: Dict[str, Any]
+
+
+@dataclass
+class RasterLoadResult:
+    """High-level object returned by load_raster_auto for compatibility."""
+
+    dataset: Optional[xr.Dataset]
+    chunk_iterator: Optional[Iterator[Tuple[np.ndarray, Dict[str, Any]]]]
+    source_path: Path
     metadata: Dict[str, Any]
 
 class RasterLoader:
@@ -217,3 +227,145 @@ def load_data_source(path: Union[str, Path], **kwargs) -> Iterator[RasterChunk]:
     else:
         loader = RasterLoader(path)
         yield from loader.load_chunks(**kwargs)
+
+
+def _dataset_to_chunks(ds: xr.Dataset, **kwargs) -> Iterator[Tuple[np.ndarray, Dict[str, Any]]]:
+    """Fallback for xarray datasets to match RasterLoadResult contract."""
+
+    variables = kwargs.get("variables")
+    if variables:
+        data_vars = [var for var in ds.data_vars if var in variables]
+    else:
+        data_vars = list(ds.data_vars)
+
+    for var in data_vars:
+        data = ds[var].data
+        chunks = getattr(data, "chunks", None)
+        if chunks is None:
+            data = da.from_array(data, chunks="auto")
+            chunks = data.chunks
+        for slices in da.core.slices_from_chunks(chunks):
+            block = data[slices].compute()
+            np_block = np.asarray(block, dtype=np.float32)
+            meta = {
+                "variable": var,
+                "dims": ds[var].dims,
+            }
+            yield np_block, meta
+
+
+def _normalize_chunk(chunk: np.ndarray, method: str = "zscore") -> np.ndarray:
+    arr = np.asarray(chunk, dtype=np.float32)
+    arr = np.nan_to_num(arr, nan=0.0)
+    if method == "zscore":
+        mean = float(arr.mean())
+        std = float(arr.std()) or 1.0
+        arr = (arr - mean) / std
+    elif method == "minmax":
+        min_v = float(arr.min())
+        max_v = float(arr.max())
+        if max_v - min_v:
+            arr = (arr - min_v) / (max_v - min_v)
+    return np.nan_to_num(arr, nan=0.0)
+
+
+def _vectorize_chunk(chunk: np.ndarray, pooling: str = "mean") -> np.ndarray:
+    arr = np.nan_to_num(chunk, nan=0.0)
+    if pooling == "mean":
+        return np.array([arr.mean()], dtype=np.float32)
+    if pooling == "stats":
+        return np.array(
+            [arr.mean(), arr.std(), arr.min(), arr.max()], dtype=np.float32
+        )
+    # default: flatten with cap
+    flat = arr.flatten()
+    if flat.size > 4096:
+        flat = flat[:4096]
+    return flat.astype(np.float32)
+
+
+def load_raster_auto(
+    path: Union[str, Path],
+    *,
+    chunks: Union[str, Dict[str, int]] = "auto",
+    convert_to_zarr: bool = False,  # kept for signature compatibility
+    time_slice: Optional[Tuple[str, str]] = None,
+    bbox: Optional[Tuple[float, float, float, float]] = None,
+    variables: Optional[List[str]] = None,
+    station_chunksize: Optional[int] = None,
+    **kwargs,
+) -> RasterLoadResult:
+    """Public API expected by rest of the system (thin wrapper over RasterLoader)."""
+
+    path = Path(path)
+    loader = RasterLoader(path)
+    metadata = {
+        "format": loader.format,
+        "path": str(path),
+    }
+
+    def _iterator():
+        for chunk in loader.load_chunks(
+            time_slice=time_slice,
+            variables=variables,
+            bbox=bbox,
+            station_chunksize=station_chunksize,
+            chunks=chunks,
+            **kwargs,
+        ):
+            yield chunk.data, dict(chunk.metadata)
+
+    return RasterLoadResult(
+        dataset=None,
+        chunk_iterator=_iterator(),
+        source_path=path,
+        metadata=metadata,
+    )
+
+
+def raster_to_embeddings(
+    source: RasterLoadResult,
+    *,
+    normalization: str = "zscore",
+    spatial_pooling: str = "mean",
+) -> List[Dict[str, Any]]:
+    """Convert loaded chunks into embedding dicts (vector + metadata)."""
+
+    if source.chunk_iterator is not None:
+        iterator = source.chunk_iterator
+    elif source.dataset is not None:
+        iterator = _dataset_to_chunks(source.dataset)
+    else:
+        raise RuntimeError("RasterLoadResult must contain dataset or chunk iterator")
+
+    embeddings: List[Dict[str, Any]] = []
+    for chunk, meta in iterator:
+        normalized = _normalize_chunk(chunk, normalization)
+        vector = _vectorize_chunk(normalized, spatial_pooling)
+        record_meta = {**source.metadata, **meta}
+        embeddings.append({"vector": vector.tolist(), "metadata": record_meta})
+    return embeddings
+
+
+def load_from_zip(
+    path: Union[str, Path],
+    **kwargs,
+) -> List[RasterLoadResult]:
+    """Extract supported files from ZIP and return RasterLoadResult per file."""
+
+    path = Path(path)
+    results: List[RasterLoadResult] = []
+    with zipfile.ZipFile(path, "r") as zf:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmpdir_path = Path(tmpdir)
+            zf.extractall(tmpdir_path)
+            for extracted in tmpdir_path.rglob("*"):
+                if not extracted.is_file():
+                    continue
+                if extracted.suffix.lower() not in SUPPORTED_EXTENSIONS:
+                    continue
+                result = load_raster_auto(extracted, **kwargs)
+                result.metadata["zip_source"] = str(path)
+                result.metadata["inner_path"] = str(extracted.relative_to(tmpdir_path))
+                results.append(result)
+    return results
