@@ -96,6 +96,7 @@ async function loadSources() {
                 <td>
                     <div class="table-actions">
                         <button data-trigger="${source.source_id}">Trigger ETL</button>
+                        <button class="ghost" data-edit="${source.source_id}">Edit</button>
                         <button class="ghost danger" data-delete="${source.source_id}">Delete</button>
                     </div>
                 </td>
@@ -127,6 +128,47 @@ sourcesTable?.addEventListener('click', async (event) => {
             target.textContent = 'Retry';
             target.disabled = false;
             alert(`Failed to trigger ETL: ${err.message}`);
+        }
+    } else if (target instanceof HTMLButtonElement && target.dataset.edit) {
+        const sourceId = target.dataset.edit;
+        try {
+            // Fetch current source data
+            const res = await fetch(`/sources?active_only=false`, { headers });
+            const sources = await res.json();
+            const source = sources.find(s => s.source_id === sourceId);
+            if (!source) {
+                alert(`Source ${sourceId} not found`);
+                return;
+            }
+            
+            // Simple prompt to toggle active status
+            const newActive = !source.active;
+            const confirmMsg = newActive 
+                ? `Activate source ${sourceId}?` 
+                : `Deactivate source ${sourceId}?`;
+            
+            if (!confirm(confirmMsg)) {
+                return;
+            }
+            
+            // Update source
+            const updateRes = await fetch(`/sources/${sourceId}`, {
+                method: 'PUT',
+                headers,
+                body: JSON.stringify({
+                    active: newActive
+                })
+            });
+            
+            if (!updateRes.ok) {
+                const detail = await updateRes.json().catch(() => ({}));
+                throw new Error(detail.detail || updateRes.statusText);
+            }
+            
+            await loadSources();
+            alert(`Source ${sourceId} ${newActive ? 'activated' : 'deactivated'}`);
+        } catch (err) {
+            alert(`Failed to edit source: ${err.message}`);
         }
     } else if (target instanceof HTMLButtonElement && target.dataset.delete) {
         const sourceId = target.dataset.delete;
