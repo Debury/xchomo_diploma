@@ -1,10 +1,20 @@
+"""
+Dynamic Source-Driven ETL Jobs for Phase 5
+
+Complete pipeline: Download → Process → Generate Embeddings → Store in Qdrant
+Uses climate_embeddings package for all format handling.
+"""
+
 import sys
 from pathlib import Path
-from datetime import datetime
 import requests
 import traceback
+from datetime import datetime
 
-# PATH MAGIC: Ensure Docker finds /app/src
+# --- CRITICAL FIX: Ensure typing imports are present ---
+from typing import Dict, Any, List, Optional
+
+# --- PATH SETUP: Ensure we can import from src ---
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.append(str(PROJECT_ROOT))
@@ -12,11 +22,19 @@ if str(PROJECT_ROOT) not in sys.path:
 from dagster import job, op, Out, OpExecutionContext
 from dagster_project.resources import ConfigLoaderResource, LoggerResource, DataPathResource
 
-# Clean Imports from the new structure
-from src.climate_embeddings.loaders import load_raster_auto, raster_to_embeddings, detect_format_from_url
-from src.climate_embeddings.embeddings import TextEmbedder
+# ==============================================================================
+# IMPORTS FROM NEW CLIMATE_EMBEDDINGS PACKAGE
+# ==============================================================================
+from src.climate_embeddings.loaders.raster_pipeline import load_raster_auto, raster_to_embeddings
+from src.climate_embeddings.loaders.detect_format import detect_format_from_url
+from src.climate_embeddings.embeddings.text_models import TextEmbedder
+
+# ==============================================================================
+# IMPORTS FROM EXISTING SRC
+# ==============================================================================
 from src.embeddings.database import VectorDatabase
 from src.sources import get_source_store
+
 
 @op(
     description="Complete pipeline: download → process → embeddings → Qdrant (memory-safe)",
@@ -25,6 +43,14 @@ from src.sources import get_source_store
     required_resource_keys={"logger", "data_paths"}
 )
 def process_all_sources(context: OpExecutionContext) -> List[Dict[str, Any]]:
+    """
+    Process all active sources:
+    1. Download file
+    2. Stream chunks via RasterPipeline
+    3. Generate Statistical Embeddings (mean, max, etc.)
+    4. Generate Semantic Embeddings (Text description of stats)
+    5. Store in Qdrant
+    """
     logger = context.resources.logger
     data_paths = context.resources.data_paths
     
@@ -32,7 +58,8 @@ def process_all_sources(context: OpExecutionContext) -> List[Dict[str, Any]]:
     logger.info("DYNAMIC SOURCE ETL - Complete Pipeline")
     logger.info("=" * 80)
     
-    # Init Store
+    # 1. Initialize Resources
+    # Ensure we get the persistent store (requires src/sources.py to be the shelve version)
     store = get_source_store()
     sources = store.get_all_sources(active_only=True)
     logger.info(f"Found {len(sources)} active source(s)")
@@ -40,94 +67,147 @@ def process_all_sources(context: OpExecutionContext) -> List[Dict[str, Any]]:
     if not sources:
         return []
 
-    # Initialize models
-    logger.info("Initializing Embedder (BGE-Large)...")
+    # Initialize heavy models once
+    logger.info("Initializing Text Embedder (BGE-Large)...")
     text_embedder = TextEmbedder()
+    
+    logger.info("Connecting to Vector Database...")
     vector_db = VectorDatabase()
 
     results = []
 
+    # 2. Iterate Sources
     for source in sources:
         source_id = source.source_id
-        logger.info(f"\nSOURCE: {source_id}")
+        logger.info(f"\n{'='*70}")
+        logger.info(f"SOURCE: {source_id}")
+        logger.info(f"{'='*70}")
         
         try:
-            # Set status to processing
             store.update_processing_status(source_id, "processing")
 
-            # 1. Download
+            # --- STEP 1: DOWNLOAD ---
             format_hint = source.format or detect_format_from_url(source.url)
+            logger.info(f"Format hint: {format_hint} | URL: {source.url[:60]}...")
+            
             output_dir = data_paths.get_raw_path()
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            ext = {'netcdf': 'nc', 'geotiff': 'tif'}.get(format_hint, 'dat')
-            filepath = output_dir / f"{source_id}_{timestamp}.{ext}"
+            output_dir.mkdir(parents=True, exist_ok=True)
 
-            # Only download if not exists or force
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            # Simple extension mapping
+            ext_map = {'netcdf': 'nc', 'geotiff': 'tif', 'csv': 'csv', 'grib': 'grib', 'zarr': 'zarr', 'zip': 'zip'}
+            ext = ext_map.get(format_hint, 'dat')
+            filename = f"{source_id}_{timestamp}.{ext}"
+            filepath = output_dir / filename
+
+            # Only download if it doesn't exist to save bandwidth during testing
             if not filepath.exists():
-                logger.info(f"Downloading {source.url}...")
+                logger.info(f"[1/4] Downloading {source.url}...")
                 response = requests.get(source.url, stream=True, timeout=120)
                 response.raise_for_status()
+
                 with open(filepath, 'wb') as f:
                     for chunk in response.iter_content(chunk_size=8192):
                         f.write(chunk)
+                logger.info(f"✓ Downloaded to {filepath.name}")
             else:
-                logger.info("File already exists, skipping download.")
+                logger.info(f"[1/4] File exists: {filepath.name}")
 
-            # 2. Load & Embed Stats
-            logger.info("Loading & Chunking...")
+            # --- STEP 2: LOAD & CHUNK ---
+            logger.info(f"[2/4] Loading with Raster Pipeline...")
+            
+            # This uses the fixed, memory-safe logic
             raster_result = load_raster_auto(
                 filepath,
                 chunks="auto",
-                variables=source.variables,
-                bbox=tuple(source.spatial_bbox) if source.spatial_bbox else None
+                variables=source.variables if source.variables else None,
+                bbox=tuple(source.spatial_bbox) if source.spatial_bbox and len(source.spatial_bbox) == 4 else None,
             )
             
+            detected_format = raster_result.metadata.get("format", "unknown")
+            logger.info(f"✓ Detected format: {detected_format}")
+
+            # --- STEP 3: STATISTICAL EMBEDDINGS ---
+            logger.info(f"[3/4] Generating Statistical Embeddings...")
+            
+            # Converts raw pixels -> [mean, std, min, max...] vectors
             stat_embeddings = raster_to_embeddings(
                 raster_result,
-                normalization="zscore"
+                normalization="zscore",
+                spatial_pooling=True,
+                seed=42,
             )
             
             if not stat_embeddings:
-                logger.warning(f"No data generated for {source_id}")
-                store.update_processing_status(source_id, "failed", error_message="No valid data found in file")
+                logger.warning(f"No valid data found in {source_id}")
+                store.update_processing_status(source_id, "failed", error_message="No numeric data found")
                 results.append({"source_id": source_id, "status": "empty"})
                 continue
-
-            # 3. Generate Semantic Vectors & Store
-            logger.info(f"Embedding {len(stat_embeddings)} chunks...")
             
-            text_descriptions = []
-            for item in stat_embeddings:
-                meta = item["metadata"]
-                v = item["vector"]
-                desc = f"Variable: {meta.get('variable')} | Time: {meta.get('time_start')} | Stats: Mean={v[0]:.2f}, Max={v[3]:.2f}"
-                text_descriptions.append(desc)
+            logger.info(f"✓ Generated {len(stat_embeddings)} chunks")
 
+            # --- STEP 4: SEMANTIC EMBEDDINGS & STORAGE ---
+            logger.info(f"[4/4] Semantic Embedding & Storage...")
+
+            # Create text descriptions for the LLM to search against
+            text_descriptions = []
+            valid_stats = []
+            
+            for stat_emb in stat_embeddings:
+                meta = stat_emb["metadata"]
+                vec = stat_emb["vector"]
+                
+                # Construct a sentence describing this chunk
+                variable = meta.get("variable", "unknown_var")
+                parts = [f"Climate variable: {variable}"]
+                
+                if "lat_min" in meta:
+                    parts.append(f"Location: Lat {meta['lat_min']:.1f} to {meta['lat_max']:.1f}, Lon {meta['lon_min']:.1f} to {meta['lon_max']:.1f}")
+                if "time_start" in meta:
+                    parts.append(f"Time: {meta['time_start']}")
+                
+                # Add the stats to the text so the LLM "sees" the values
+                # vec = [mean, std, min, max, ...]
+                if len(vec) >= 4:
+                    parts.append(f"Statistics: Mean={vec[0]:.2f}, Min={vec[2]:.2f}, Max={vec[3]:.2f}")
+                
+                text = " | ".join(parts)
+                text_descriptions.append(text)
+                valid_stats.append(stat_emb)
+
+            # Generate vectors for these descriptions (Batch Process)
+            # This uses the BGE/GTE model you configured
             semantic_vectors = text_embedder.embed_documents(text_descriptions)
             
+            # Prepare for Qdrant
             ids = []
             embeddings = []
             metadatas = []
             documents = []
             
-            for i, (sem_vec, stat_item, desc) in enumerate(zip(semantic_vectors, stat_embeddings, text_descriptions)):
-                uid = f"{source_id}_{timestamp}_{i}"
-                ids.append(uid)
+            for i, (desc, sem_vec, stat_item) in enumerate(zip(text_descriptions, semantic_vectors, valid_stats)):
+                unique_id = f"{source_id}_{timestamp}_{i}"
+                stats_vec = stat_item["vector"]
+                
+                ids.append(unique_id)
                 embeddings.append(sem_vec.tolist())
                 documents.append(desc)
                 
-                # Convert stats to python floats
-                v = stat_item["vector"]
-                full_meta = {
+                # Flatten metadata + stats for Qdrant payload
+                # IMPORTANT: Convert numpy floats to native python floats for JSON serialization
+                payload = {
                     **stat_item["metadata"],
                     "source_id": source_id,
+                    "format": detected_format,
                     "timestamp": timestamp,
-                    # Flatten essential stats for filtering
-                    "stat_mean": float(v[0]),
-                    "stat_max": float(v[3]),
+                    "stat_mean": float(stats_vec[0]) if len(stats_vec) > 0 else 0.0,
+                    "stat_std": float(stats_vec[1]) if len(stats_vec) > 1 else 0.0,
+                    "stat_min": float(stats_vec[2]) if len(stats_vec) > 2 else 0.0,
+                    "stat_max": float(stats_vec[3]) if len(stats_vec) > 3 else 0.0,
                 }
-                metadatas.append(full_meta)
+                metadatas.append(payload)
 
+            # Batch Upsert
             vector_db.add_embeddings(
                 ids=ids,
                 embeddings=embeddings,
@@ -135,17 +215,47 @@ def process_all_sources(context: OpExecutionContext) -> List[Dict[str, Any]]:
                 documents=documents
             )
             
-            # --- CRITICAL: Update status to COMPLETED ---
-            logger.info(f"Updating status for {source_id} to COMPLETED")
+            logger.info(f"✓ Stored {len(ids)} vectors in Qdrant")
+
+            # --- FINALIZE ---
             store.update_processing_status(source_id, "completed")
-            
-            results.append({"source_id": source_id, "status": "success", "count": len(ids)})
+            result = {
+                "source_id": source_id,
+                "status": "success",
+                "chunks": len(ids),
+                "file": str(filepath)
+            }
+            results.append(result)
             
         except Exception as e:
-            logger.error(f"Failed {source_id}: {e}")
+            logger.error(f"✗ FAILED {source_id}: {e}")
             logger.error(traceback.format_exc())
-            # Update status to FAILED
             store.update_processing_status(source_id, "failed", error_message=str(e))
             results.append({"source_id": source_id, "status": "failed", "error": str(e)})
 
+    logger.info("=" * 80)
     return results
+
+
+@job(
+    description="Dynamic ETL: all active sources → download → process → embeddings → Qdrant",
+    resource_defs={
+        "config_loader": ConfigLoaderResource(config_path="config/pipeline_config.yaml"),
+        "logger": LoggerResource(log_file="logs/dagster_dynamic_etl.log", log_level="INFO"),
+        "data_paths": DataPathResource(
+            raw_data_dir="data/raw",
+            processed_data_dir="data/processed",
+            embeddings_dir="qdrant_db" 
+        )
+    },
+    tags={"pipeline": "dynamic_etl", "phase": "5"}
+)
+def dynamic_source_etl_job():
+    """
+    🚀 Complete Dynamic Source ETL Pipeline
+    """
+    process_all_sources()
+
+
+# Make the job available to Dagster repository
+__all__ = ["dynamic_source_etl_job"]
