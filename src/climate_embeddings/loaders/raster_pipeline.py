@@ -5,6 +5,7 @@ import zipfile
 import tempfile
 import shutil
 from pathlib import Path
+from dataclasses import dataclass
 from typing import Any, Dict, Iterator, List, Optional, Tuple, Union
 
 import numpy as np
