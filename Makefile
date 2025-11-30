@@ -66,7 +66,7 @@ cli-generate: ## Generate embeddings using CLI (climate_embeddings)
 	$(PYTHON) -m climate_embeddings.cli.main generate --help
 	@echo "$(YELLOW)Usage: python -m climate_embeddings.cli.main generate <file>$(NC)"
 
-run-all: docker-compose-up ## Start all services with docker-compose
+run-all: docker compose-up ## Start all services with docker compose
 	@echo "$(GREEN)✓ All services started$(NC)"
 
 ##@ Testing
@@ -169,12 +169,12 @@ docker-run: ## Run pipeline in Docker container
 	docker run --rm -v "%CD%\data:/app/data" -v "%CD%\.env:/app/.env" climate-etl-pipeline
 	@echo "$(GREEN)✓ Docker run complete$(NC)"
 
-docker-compose-up: ## Start services with docker-compose
-	docker-compose up -d
+docker compose-up: ## Start services with docker compose
+	docker compose up -d
 	@echo "$(GREEN)✓ Services started$(NC)"
 
-docker-compose-down: ## Stop services with docker-compose
-	docker-compose down
+docker compose-down: ## Stop services with docker compose
+	docker compose down
 	@echo "$(GREEN)✓ Services stopped$(NC)"
 
 ##@ Documentation
@@ -279,7 +279,7 @@ api: ## Start FastAPI web service (port 8000)
 
 dagster-all: ## Start all Dagster services (Docker Compose)
 	@echo "$(BLUE)Starting all Dagster services...$(NC)"
-	docker-compose up -d dagster-postgres dagster-daemon dagit web-api
+	docker compose up -d dagster-postgres dagster-daemon dagit web-api
 	@echo "$(GREEN)✓ Services started:$(NC)"
 	@echo "  - Dagit UI: http://localhost:3000"
 	@echo "  - API Service: http://localhost:8000"
@@ -287,13 +287,13 @@ dagster-all: ## Start all Dagster services (Docker Compose)
 
 dagster-stop: ## Stop all Dagster services
 	@echo "$(BLUE)Stopping Dagster services...$(NC)"
-	docker-compose stop dagster-postgres dagster-daemon dagit web-api
+	docker compose stop dagster-postgres dagster-daemon dagit web-api
 	@echo "$(GREEN)✓ Services stopped$(NC)"
 
 dagster-logs: ## Show Dagster service logs
-	docker-compose logs -f dagit dagster-daemon web-api
+	docker compose logs -f dagit dagster-daemon web-api
 
-test-dagster: ## Run Phase 4 tests (Dagster + API)
+test-phase4: ## Run Phase 4 tests (Dagster + API) - ALIAS for test-dagster
 	@echo "$(BLUE)Running Phase 4 tests...$(NC)"
 	$(PYTEST) $(TEST_DIR)/test_dagster.py $(TEST_DIR)/test_web_api.py -v
 	@echo "$(GREEN)✓ Phase 4 tests complete$(NC)"
