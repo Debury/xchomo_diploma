@@ -69,7 +69,7 @@ def process_all_sources(context: OpExecutionContext) -> List[Dict[str, Any]]:
         try:
             store.update_processing_status(source_id, "processing")
 
-            # --- STEP 1: DOWNLOAD ---
+            # --- STEP 1: DOWNLOAD (FIXED HEARTBEAT) ---
             format_hint = source.format or detect_format_from_url(source.url)
             output_dir = data_paths.get_raw_path()
             output_dir.mkdir(parents=True, exist_ok=True)
@@ -82,13 +82,30 @@ def process_all_sources(context: OpExecutionContext) -> List[Dict[str, Any]]:
 
             if not filepath.exists():
                 logger.info(f"[1/4] Downloading {source.url}...")
-                # Increased timeout for large files
-                response = requests.get(source.url, stream=True, timeout=300)
+                
+                # Use stream with a generous timeout
+                response = requests.get(source.url, stream=True, timeout=600)
                 response.raise_for_status()
-
+                
+                total_size = int(response.headers.get('content-length', 0))
+                downloaded_size = 0
+                chunk_size = 1024 * 1024  # 1MB chunks (faster I/O)
+                
                 with open(filepath, 'wb') as f:
-                    for chunk in response.iter_content(chunk_size=8192):
-                        f.write(chunk)
+                    for chunk in response.iter_content(chunk_size=chunk_size):
+                        if chunk:
+                            f.write(chunk)
+                            downloaded_size += len(chunk)
+                            
+                            # LOG PROGRESS every ~5MB to keep Dagster Heartbeat alive
+                            if downloaded_size % (5 * 1024 * 1024) < chunk_size:
+                                mb_down = downloaded_size / 1024 / 1024
+                                if total_size:
+                                    mb_total = total_size / 1024 / 1024
+                                    logger.info(f"Downloading... {mb_down:.1f} / {mb_total:.1f} MB")
+                                else:
+                                    logger.info(f"Downloading... {mb_down:.1f} MB")
+                                    
                 logger.info(f"✓ Downloaded to {filepath.name}")
             else:
                 logger.info(f"[1/4] File exists: {filepath.name}")
@@ -126,16 +143,15 @@ def process_all_sources(context: OpExecutionContext) -> List[Dict[str, Any]]:
             logger.info(f"✓ Generated {total_chunks} chunks")
 
             # --- STEP 4: BATCHED SEMANTIC EMBEDDING & STORAGE ---
-            # FIX: Process in batches to prevent Dagster heartbeat timeouts
             logger.info(f"[4/4] Semantic Embedding & Storage (Batched)...")
 
-            BATCH_SIZE = 50  # Process 50 days/chunks at a time
+            BATCH_SIZE = 50 
             
             for i in range(0, total_chunks, BATCH_SIZE):
                 batch_slice = stat_embeddings[i : i + BATCH_SIZE]
                 logger.info(f"Processing batch {i} to {min(i + BATCH_SIZE, total_chunks)} of {total_chunks}...")
                 
-                # 1. Generate text for this batch
+                # 1. Generate text
                 batch_texts = []
                 for item in batch_slice:
                     meta = item["metadata"]
@@ -152,17 +168,16 @@ def process_all_sources(context: OpExecutionContext) -> List[Dict[str, Any]]:
                     
                     batch_texts.append(" | ".join(parts))
 
-                # 2. Embed this batch (Heavy CPU work, but now short enough to not timeout)
+                # 2. Embed
                 batch_vectors = text_embedder.embed_documents(batch_texts)
                 
-                # 3. Prepare upload payload
+                # 3. Prepare payload
                 ids = []
                 embeddings = []
                 metadatas = []
                 documents = []
                 
                 for j, (sem_vec, stat_item, desc) in enumerate(zip(batch_vectors, batch_slice, batch_texts)):
-                    # Unique ID based on batch index
                     global_idx = i + j
                     uid = f"{source_id}_{timestamp}_{global_idx}"
                     
@@ -181,7 +196,7 @@ def process_all_sources(context: OpExecutionContext) -> List[Dict[str, Any]]:
                     }
                     metadatas.append(payload)
 
-                # 4. Upload batch to Qdrant
+                # 4. Upload
                 vector_db.add_embeddings(
                     ids=ids,
                     embeddings=embeddings,
@@ -191,7 +206,6 @@ def process_all_sources(context: OpExecutionContext) -> List[Dict[str, Any]]:
 
             logger.info(f"✓ All {total_chunks} stored successfully.")
 
-            # --- FINALIZE ---
             store.update_processing_status(source_id, "completed")
             result = {
                 "source_id": source_id,
@@ -230,5 +244,4 @@ def dynamic_source_etl_job():
     process_all_sources()
 
 
-# Make the job available to Dagster repository
 __all__ = ["dynamic_source_etl_job"]
