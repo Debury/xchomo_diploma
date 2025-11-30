@@ -138,7 +138,7 @@ from src.embeddings.generator import EmbeddingGenerator
 # Generate embeddings with correct model name
 gen = EmbeddingGenerator(model_name=\"BAAI/bge-large-en-v1.5\")
 texts = [\"climate\", \"temperature\", \"precipitation\"]
-vectors = gen.embed_batch(texts)
+vectors = gen.generate_embeddings(texts)
 
 # Store in Qdrant
 db = VectorDatabase(collection_name=\"test_embeddings\")
