@@ -16,12 +16,13 @@ if SRC_PATH.exists() and str(SRC_PATH) not in sys.path:
 
 from dagster import Definitions
 
-from dagster_project.jobs import (
-    daily_etl_job,
-    embedding_job,
-    complete_pipeline_job,
-    validation_job
-)
+# Legacy jobs commented out - they depend on non-existent ops
+# from dagster_project.jobs import (
+#     daily_etl_job,
+#     embedding_job,
+#     complete_pipeline_job,
+#     validation_job
+# )
 from dagster_project.dynamic_jobs import (
     dynamic_source_etl_job
 )
@@ -46,11 +47,7 @@ from dagster_project.resources import (
 
 climate_etl_repository = Definitions(
     jobs=[
-        daily_etl_job,
-        embedding_job,
-        complete_pipeline_job,
-        validation_job,
-        dynamic_source_etl_job  # Phase 5: Dynamic source-driven ETL
+        dynamic_source_etl_job  # Phase 5: Dynamic source-driven ETL (only active job)
     ],
     schedules=[
         daily_etl_schedule,
