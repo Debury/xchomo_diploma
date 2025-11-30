@@ -1,371 +1,100 @@
-# climate_embeddings/loaders/raster_pipeline.py
 import logging
-import math
 import zipfile
 import tempfile
-import shutil
 from pathlib import Path
-from dataclasses import dataclass
-from typing import Any, Dict, Iterator, List, Optional, Tuple, Union
-
+from dataclasses import dataclass, field
+from typing import Any, Dict, Iterator, Optional, Union
 import numpy as np
-import pandas as pd
 import xarray as xr
 import dask.array as da
 import rasterio
-from rasterio.windows import Window
 
 logger = logging.getLogger(__name__)
 
-# --- CONFIG ---
-SUPPORTED_EXTENSIONS = {
-    ".nc": "netcdf", ".nc4": "netcdf", ".grib": "grib", ".grb2": "grib",
-    ".h5": "hdf5", ".tif": "geotiff", ".tiff": "geotiff",
-    ".asc": "ascii", ".csv": "csv", ".zarr": "zarr"
-}
-
 @dataclass
 class RasterChunk:
-    """Standardized output for the streaming loader."""
-    data: np.ndarray  # float32
+    data: np.ndarray
     metadata: Dict[str, Any]
-
 
 @dataclass
 class RasterLoadResult:
-    """High-level object returned by load_raster_auto for compatibility."""
-
-    dataset: Optional[xr.Dataset]
-    chunk_iterator: Optional[Iterator[Tuple[np.ndarray, Dict[str, Any]]]]
+    chunk_iterator: Iterator[RasterChunk]
     source_path: Path
-    metadata: Dict[str, Any]
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
-class RasterLoader:
-    def __init__(self, path: Union[str, Path]):
-        self.path = Path(path)
-        self.format = self._detect_format()
-
-    def _detect_format(self) -> str:
-        suffix = self.path.suffix.lower()
-        if suffix in SUPPORTED_EXTENSIONS:
-            return SUPPORTED_EXTENSIONS[suffix]
-        return "unknown"
-
-    def load_chunks(self, **kwargs) -> Iterator[RasterChunk]:
-        """Dispatcher for specific loaders."""
-        if self.format == "netcdf":
-            yield from self._load_xarray_engine("h5netcdf", **kwargs)
-        elif self.format == "grib":
-            yield from self._load_xarray_engine("cfgrib", **kwargs)
-        elif self.format == "geotiff":
-            yield from self._load_rasterio(**kwargs)
-        elif self.format == "csv":
-            yield from self._load_csv(**kwargs)
-        else:
-            raise ValueError(f"Unsupported format {self.format} for {self.path}")
-
-    def _load_xarray_engine(self, engine: str, time_slice=None, variables=None, **kwargs) -> Iterator[RasterChunk]:
-        # 1. Lazy Open
-        try:
-            ds = xr.open_dataset(self.path, engine=engine, chunks="auto", decode_coords="all")
-        except Exception:
-            # Fallback for complex GRIBs or memory issues
-            ds = xr.open_dataset(self.path, engine=engine, chunks={"time": 1, "y": 256, "x": 256})
-
-        # 2. Filter Variables
-        if variables:
-            ds = ds[variables]
-
-        # 3. Filter Time (Lazy Slicing)
-        if time_slice and "time" in ds.coords:
-            ds = ds.sel(time=slice(*time_slice))
-
-        # 4. Iterate over Spatial Chunks (The Fix)
-        # We chunk spatially, keeping full time dimension in one block if possible
-        # so we can interpolate efficiently.
-        
-        # Ensure we have numeric variables only
-        data_vars = [v for v in ds.data_vars if np.issubdtype(ds[v].dtype, np.number)]
-        
-        for var_name in data_vars:
-            da_var = ds[var_name]
-            
-            # Create a localized generator of chunks using dask slices
-            # We enforce that 'time' is NOT chunked, but Y and X are.
-            spatial_chunks = {"time": -1, "y": 128, "x": 128} 
-            
-            # Handle cases where dims might be named differently (lat/lon)
-            dims = da_var.dims
-            chunk_plan = {}
-            for d in dims:
-                if "time" in d.lower():
-                    chunk_plan[d] = -1 # Keep time contiguous
-                else:
-                    chunk_plan[d] = 128 # Spatially chunk
-            
-            da_chunked = da_var.chunk(chunk_plan)
-            
-            # Iterate blocks
-            # slices_from_chunks returns slices for every block in the dask array
-            for slices in da.core.slices_from_chunks(da_chunked.chunks):
-                # slices is a tuple of slice objects, e.g., (slice(0,100), slice(0,128), slice(0,128))
-                
-                # Extract Metadata from coordinates BEFORE compute
-                meta = self._extract_metadata(da_var, slices)
-                meta["variable"] = var_name
-                meta["source"] = str(self.path)
-
-                # COMPUTE: Bring this specific 3D block into memory
-                # This is safe because 128x128 * time is usually small enough for RAM
-                block_data = da_chunked[slices].compute()
-                
-                # Convert to numpy and Handle NaNs (The Fix!)
-                # We do interpolation here on the numpy array, not the dask array.
-                np_data = block_data.values if hasattr(block_data, "values") else block_data
-                
-                if kwargs.get("interpolate", True):
-                    np_data = self._numpy_interpolate_na(np_data)
-
-                yield RasterChunk(data=np_data, metadata=meta)
-
-    def _numpy_interpolate_na(self, arr: np.ndarray) -> np.ndarray:
-        """Fast interpolation on in-memory numpy array along axis 0 (time)."""
-        # If 2D (no time), just fillna
-        if arr.ndim < 3:
-            mask = np.isnan(arr)
-            arr[mask] = 0  # Or mean
-            return arr
-            
-        # For 3D (time, y, x), we can use pandas for interpolation or simple forward fill
-        # A quick approximation is filling with the mean of the chunk to avoid slow python loops
-        # Or proper interpolation:
-        import bottleneck as bn # Optional optimization
-        
-        # Simple approach: Replace NaN with nanmean of the spatial chunk
-        # This is much faster than time-series interpolation for massive rasters
-        # For strict time interpolation, we'd need to reshape and iterate.
-        
-        mean_val = np.nanmean(arr)
-        if np.isnan(mean_val): mean_val = 0.0
-        
-        # In-place fill
-        inds = np.where(np.isnan(arr))
-        arr[inds] = mean_val
-        return arr
-
-    def _extract_metadata(self, da_var, slices):
-        """Extract spatial/temporal bounds from coords based on slices."""
-        meta = {}
-        # Mapping slices to dimensions
-        for dim, sl in zip(da_var.dims, slices):
-            if dim in da_var.coords:
-                coord_vals = da_var.coords[dim][sl].values
-                if len(coord_vals) > 0:
-                    if np.issubdtype(coord_vals.dtype, np.number):
-                        meta[f"{dim}_min"] = float(coord_vals.min())
-                        meta[f"{dim}_max"] = float(coord_vals.max())
-                    elif np.issubdtype(coord_vals.dtype, np.datetime64) or "time" in str(coord_vals.dtype):
-                        meta[f"{dim}_start"] = str(coord_vals.min())
-                        meta[f"{dim}_end"] = str(coord_vals.max())
-        return meta
-
-    def _load_rasterio(self, **kwargs) -> Iterator[RasterChunk]:
-        with rasterio.open(self.path) as src:
-            # 256x256 windows
-            for ji, window in src.block_windows(1):
-                data = src.read(window=window)
-                bounds = src.window_bounds(window)
-                meta = {
-                    "source": str(self.path),
-                    "driver": "rasterio",
-                    "lon_min": bounds[0], "lat_min": bounds[1],
-                    "lon_max": bounds[2], "lat_max": bounds[3]
-                }
-                # Handle nodata
-                if src.nodata is not None:
-                    data = np.where(data == src.nodata, np.nan, data)
-                
-                yield RasterChunk(data=data, metadata=meta)
-
-    def _load_csv(self, **kwargs) -> Iterator[RasterChunk]:
-        # Simple station data loader
-        df = pd.read_csv(self.path)
-        # Assume standard columns exist or infer them
-        numeric_cols = df.select_dtypes(include=np.number).columns
-        
-        for col in numeric_cols:
-            data = df[col].values
-            meta = {
-                "source": str(self.path),
-                "variable": col,
-                "rows": len(df)
-            }
-            yield RasterChunk(data=data, metadata=meta)
-
-# ZIP HANDLER
-def load_data_source(path: Union[str, Path], **kwargs) -> Iterator[RasterChunk]:
-    """Universal entry point. Handles ZIPs recursively."""
+# --- PUBLIC API ---
+def load_raster_auto(path: Union[str, Path], **kwargs) -> RasterLoadResult:
+    """Main entry point used by Dagster."""
     path = Path(path)
     
     if path.suffix == ".zip":
-        with tempfile.TemporaryDirectory() as tmpdir:
-            try:
-                with zipfile.ZipFile(path, 'r') as zf:
-                    zf.extractall(tmpdir)
-                    
-                # Recurse into extracted files
-                tmp_path = Path(tmpdir)
-                for f in tmp_path.rglob("*"):
-                    if f.suffix in SUPPORTED_EXTENSIONS:
-                        loader = RasterLoader(f)
-                        for chunk in loader.load_chunks(**kwargs):
-                            # Annotate metadata with original zip source
-                            chunk.metadata["zip_source"] = str(path)
-                            yield chunk
-            except Exception as e:
-                logger.error(f"Failed to process zip {path}: {e}")
+        iterator = _load_zip(path, **kwargs)
     else:
-        loader = RasterLoader(path)
-        yield from loader.load_chunks(**kwargs)
+        iterator = _load_single_file(path, **kwargs)
+        
+    return RasterLoadResult(chunk_iterator=iterator, source_path=path, metadata={"format": path.suffix})
 
-
-def _dataset_to_chunks(ds: xr.Dataset, **kwargs) -> Iterator[Tuple[np.ndarray, Dict[str, Any]]]:
-    """Fallback for xarray datasets to match RasterLoadResult contract."""
-
-    variables = kwargs.get("variables")
-    if variables:
-        data_vars = [var for var in ds.data_vars if var in variables]
-    else:
-        data_vars = list(ds.data_vars)
-
-    for var in data_vars:
-        data = ds[var].data
-        chunks = getattr(data, "chunks", None)
-        if chunks is None:
-            data = da.from_array(data, chunks="auto")
-            chunks = data.chunks
-        for slices in da.core.slices_from_chunks(chunks):
-            block = data[slices].compute()
-            np_block = np.asarray(block, dtype=np.float32)
-            meta = {
-                "variable": var,
-                "dims": ds[var].dims,
-            }
-            yield np_block, meta
-
-
-def _normalize_chunk(chunk: np.ndarray, method: str = "zscore") -> np.ndarray:
-    arr = np.asarray(chunk, dtype=np.float32)
-    arr = np.nan_to_num(arr, nan=0.0)
-    if method == "zscore":
-        mean = float(arr.mean())
-        std = float(arr.std()) or 1.0
-        arr = (arr - mean) / std
-    elif method == "minmax":
-        min_v = float(arr.min())
-        max_v = float(arr.max())
-        if max_v - min_v:
-            arr = (arr - min_v) / (max_v - min_v)
-    return np.nan_to_num(arr, nan=0.0)
-
-
-def _vectorize_chunk(chunk: np.ndarray, pooling: str = "mean") -> np.ndarray:
-    arr = np.nan_to_num(chunk, nan=0.0)
-    if pooling == "mean":
-        return np.array([arr.mean()], dtype=np.float32)
-    if pooling == "stats":
-        return np.array(
-            [arr.mean(), arr.std(), arr.min(), arr.max()], dtype=np.float32
-        )
-    # default: flatten with cap
-    flat = arr.flatten()
-    if flat.size > 4096:
-        flat = flat[:4096]
-    return flat.astype(np.float32)
-
-
-def load_raster_auto(
-    path: Union[str, Path],
-    *,
-    chunks: Union[str, Dict[str, int]] = "auto",
-    convert_to_zarr: bool = False,  # kept for signature compatibility
-    time_slice: Optional[Tuple[str, str]] = None,
-    bbox: Optional[Tuple[float, float, float, float]] = None,
-    variables: Optional[List[str]] = None,
-    station_chunksize: Optional[int] = None,
-    **kwargs,
-) -> RasterLoadResult:
-    """Public API expected by rest of the system (thin wrapper over RasterLoader)."""
-
-    path = Path(path)
-    loader = RasterLoader(path)
-    metadata = {
-        "format": loader.format,
-        "path": str(path),
-    }
-
-    def _iterator():
-        for chunk in loader.load_chunks(
-            time_slice=time_slice,
-            variables=variables,
-            bbox=bbox,
-            station_chunksize=station_chunksize,
-            chunks=chunks,
-            **kwargs,
-        ):
-            yield chunk.data, dict(chunk.metadata)
-
-    return RasterLoadResult(
-        dataset=None,
-        chunk_iterator=_iterator(),
-        source_path=path,
-        metadata=metadata,
-    )
-
-
-def raster_to_embeddings(
-    source: RasterLoadResult,
-    *,
-    normalization: str = "zscore",
-    spatial_pooling: str = "mean",
-) -> List[Dict[str, Any]]:
-    """Convert loaded chunks into embedding dicts (vector + metadata)."""
-
-    if source.chunk_iterator is not None:
-        iterator = source.chunk_iterator
-    elif source.dataset is not None:
-        iterator = _dataset_to_chunks(source.dataset)
-    else:
-        raise RuntimeError("RasterLoadResult must contain dataset or chunk iterator")
-
-    embeddings: List[Dict[str, Any]] = []
-    for chunk, meta in iterator:
-        normalized = _normalize_chunk(chunk, normalization)
-        vector = _vectorize_chunk(normalized, spatial_pooling)
-        record_meta = {**source.metadata, **meta}
-        embeddings.append({"vector": vector.tolist(), "metadata": record_meta})
-    return embeddings
-
-
-def load_from_zip(
-    path: Union[str, Path],
-    **kwargs,
-) -> List[RasterLoadResult]:
-    """Extract supported files from ZIP and return RasterLoadResult per file."""
-
-    path = Path(path)
-    results: List[RasterLoadResult] = []
-    with zipfile.ZipFile(path, "r") as zf:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tmpdir_path = Path(tmpdir)
-            zf.extractall(tmpdir_path)
-            for extracted in tmpdir_path.rglob("*"):
-                if not extracted.is_file():
-                    continue
-                if extracted.suffix.lower() not in SUPPORTED_EXTENSIONS:
-                    continue
-                result = load_raster_auto(extracted, **kwargs)
-                result.metadata["zip_source"] = str(path)
-                result.metadata["inner_path"] = str(extracted.relative_to(tmpdir_path))
-                results.append(result)
+def raster_to_embeddings(source: RasterLoadResult, **kwargs) -> list:
+    """Converts pixel chunks into stats vectors."""
+    results = []
+    if not source.chunk_iterator: return []
+    
+    for chunk in source.chunk_iterator:
+        data = chunk.data
+        valid = data[np.isfinite(data)]
+        if valid.size == 0:
+            stats = np.zeros(8, dtype="float32")
+        else:
+            # [mean, std, min, max, p10, p50, p90, trend_placeholder]
+            stats = np.array([
+                np.mean(valid), np.std(valid), np.min(valid), np.max(valid),
+                np.percentile(valid, 10), np.percentile(valid, 50), np.percentile(valid, 90), 0.0
+            ], dtype="float32")
+        
+        results.append({"vector": stats.tolist(), "metadata": chunk.metadata})
     return results
+
+# --- INTERNAL HELPERS ---
+def _load_zip(path, **kwargs):
+    # Simplified zip streaming logic
+    with tempfile.TemporaryDirectory() as tmpdir:
+        with zipfile.ZipFile(path, 'r') as zf:
+            zf.extractall(tmpdir)
+        for f in Path(tmpdir).rglob("*"):
+            if f.suffix in {'.nc', '.tif', '.grib', '.csv'}:
+                yield from _load_single_file(f, **kwargs)
+
+def _load_single_file(path: Path, **kwargs) -> Iterator[RasterChunk]:
+    # xarray loader logic
+    try:
+        ds = xr.open_dataset(path, chunks="auto")
+        # Filter for numeric vars only
+        numeric_vars = [v for v in ds.data_vars if np.issubdtype(ds[v].dtype, np.number)]
+        
+        for var in numeric_vars:
+            da_var = ds[var]
+            # Chunk spatially (Time: All, Y: 128, X: 128)
+            chunking = {d: 128 for d in da_var.dims if "time" not in str(d).lower()}
+            da_chunked = da_var.chunk(chunking)
+            
+            for slices in da.core.slices_from_chunks(da_chunked.chunks):
+                # Metadata extraction
+                meta = {"variable": str(var), "source": str(path)}
+                for dim, sl in zip(da_var.dims, slices):
+                    if dim in da_var.coords:
+                        vals = da_var.coords[dim][sl].values
+                        if len(vals) > 0:
+                            meta[f"{dim}_start"] = str(vals.min())
+                            meta[f"{dim}_end"] = str(vals.max())
+
+                # Compute
+                try:
+                    data = da_chunked[slices].compute().values
+                    # Fast NaN fill
+                    if np.isnan(data).any():
+                        data[np.isnan(data)] = np.nanmean(data)
+                    yield RasterChunk(data=data, metadata=meta)
+                except Exception as e:
+                    logger.warning(f"Chunk error: {e}")
+    except Exception as e:
+        logger.error(f"Failed to open {path}: {e}")
