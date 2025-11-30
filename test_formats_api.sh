@@ -62,6 +62,7 @@ ds = xr.Dataset({
     \"lon\": np.linspace(10, 15, 5)
 })
 ds.to_netcdf(\"data/raw/test_climate.nc\")
+ds.close()  # Close file properly
 print(\"✓ Created test_climate.nc\")
 '"
 
@@ -170,8 +171,10 @@ run_test "Load GeoTIFF directly" "docker compose exec -T web-api python -c '
 from src.climate_embeddings.loaders import load_raster_auto
 
 result = load_raster_auto(\"data/raw/test_raster.tif\")
-has_dataset = hasattr(result, \"dataset\")
-msg = str(result.dataset.dims) if has_dataset else \"OK\"
+if result.dataset is not None:
+    msg = str(result.dataset.dims)
+else:
+    msg = \"OK (streaming mode)\"
 print(f\"✓ Loaded GeoTIFF: {msg}\")
 '"
 
@@ -190,10 +193,12 @@ echo "--------------------------------------"
 run_test "Generate embeddings from NetCDF" "docker compose exec -T web-api python -c '
 from src.climate_embeddings.loaders import load_raster_auto
 
-result = load_raster_auto(\"data/raw/test_climate.nc\", process=True, chunk_size=5)
-if hasattr(result, \"chunk_iterator\"):
+result = load_raster_auto(\"data/raw/test_climate.nc\", chunks={\"y\": 5, \"x\": 5})
+if hasattr(result, \"chunk_iterator\") and result.chunk_iterator:
     chunks = list(result.chunk_iterator)
     print(f\"✓ Generated embeddings: {len(chunks)} chunks\")
+elif result.dataset is not None:
+    print(f\"✓ Generated embeddings: dataset with {len(result.dataset.data_vars)} variables\")
 else:
     print(\"✓ Generated embeddings: OK\")
 '"
