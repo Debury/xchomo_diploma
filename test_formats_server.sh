@@ -48,10 +48,10 @@ run_test "API health" "curl -s http://localhost:8000/health"
 echo ""
 echo "📦 Step 2: Testing Python imports..."
 echo "--------------------------------------"
-run_test "Import climate_embeddings" "docker compose exec -T web-api python -c 'import climate_embeddings; print(\"OK\")'"
-run_test "Import loaders" "docker compose exec -T web-api python -c 'from climate_embeddings.loaders import load_raster_auto; print(\"OK\")'"
-run_test "Import embeddings" "docker compose exec -T web-api python -c 'from climate_embeddings.embeddings import get_text_embedder; print(\"OK\")'"
-run_test "Import RAG" "docker compose exec -T web-api python -c 'from climate_embeddings.rag import RAGPipeline; print(\"OK\")'"
+run_test "Import climate_embeddings" "docker compose exec -T web-api python -c 'import src.climate_embeddings; print(\"OK\")'"
+run_test "Import loaders" "docker compose exec -T web-api python -c 'from src.climate_embeddings.loaders import load_raster_auto; print(\"OK\")'"
+run_test "Import embeddings" "docker compose exec -T web-api python -c 'from src.climate_embeddings.embeddings import get_text_embedder; print(\"OK\")'"
+run_test "Import RAG" "docker compose exec -T web-api python -c 'from src.climate_embeddings.rag import RAGPipeline; print(\"OK\")'"
 
 # Create test data directory
 echo ""
@@ -84,7 +84,7 @@ EOF
 
 docker compose exec -T web-api python data/test_formats/test_netcdf.py
 run_test "Load NetCDF" "docker compose exec -T web-api python -c '
-from climate_embeddings.loaders import load_raster_auto
+from src.climate_embeddings.loaders import load_raster_auto
 result = load_raster_auto(\"data/test_formats/test.nc\")
 print(f\"Loaded {len(result.embeddings)} embeddings\")
 assert len(result.embeddings) > 0
@@ -117,7 +117,7 @@ EOF
 
 docker compose exec -T web-api python data/test_formats/test_geotiff.py
 run_test "Load GeoTIFF" "docker compose exec -T web-api python -c '
-from climate_embeddings.loaders import load_raster_auto
+from src.climate_embeddings.loaders import load_raster_auto
 result = load_raster_auto(\"data/test_formats/test.tif\")
 print(f\"Loaded {len(result.embeddings)} embeddings\")
 assert len(result.embeddings) > 0
@@ -137,7 +137,7 @@ latitude,longitude,temperature,precipitation,timestamp
 EOF
 
 run_test "Load CSV" "docker compose exec -T web-api python -c '
-from climate_embeddings.loaders import load_raster_auto
+from src.climate_embeddings.loaders import load_raster_auto
 result = load_raster_auto(\"data/test_formats/test.csv\")
 print(f\"Loaded {len(result.embeddings)} embeddings\")
 assert len(result.embeddings) > 0
@@ -148,8 +148,8 @@ echo ""
 echo "🗂️  Step 7: Testing ZIP archive..."
 echo "--------------------------------------"
 run_test "Create ZIP with NetCDF" "cd data/test_formats && zip -q test_archive.zip test.nc test.tif"
-run_test "Load from ZIP" "docker compose exec -T web-api python -c '
-from climate_embeddings.loaders.raster_pipeline import load_from_zip
+run_test "Load ZIP" "docker compose exec -T web-api python -c '
+from src.climate_embeddings.loaders.raster_pipeline import load_from_zip
 results = load_from_zip(\"data/test_formats/test_archive.zip\")
 print(f\"Loaded {len(results)} files from ZIP\")
 assert len(results) > 0
@@ -160,7 +160,7 @@ echo ""
 echo "📝 Step 8: Testing text embeddings..."
 echo "--------------------------------------"
 run_test "BGE embeddings" "docker compose exec -T web-api python -c '
-from climate_embeddings.embeddings import get_text_embedder
+from src.climate_embeddings.embeddings import get_text_embedder
 embedder = get_text_embedder(\"bge-large\")
 emb = embedder.encode(\"temperature data from climate model\")
 print(f\"Embedding shape: {emb.shape}\")
@@ -168,7 +168,7 @@ assert emb.shape[0] == 1024  # BGE dimension
 '"
 
 run_test "GTE embeddings" "docker compose exec -T web-api python -c '
-from climate_embeddings.embeddings import get_text_embedder
+from src.climate_embeddings.embeddings import get_text_embedder
 embedder = get_text_embedder(\"gte-large\")
 emb = embedder.encode(\"precipitation data\")
 print(f\"Embedding shape: {emb.shape}\")
@@ -181,7 +181,7 @@ echo "🔍 Step 9: Testing vector index..."
 echo "--------------------------------------"
 run_test "Vector index operations" "docker compose exec -T web-api python -c '
 import numpy as np
-from climate_embeddings.index import VectorIndex
+from src.climate_embeddings.index import VectorIndex
 
 # Create index
 index = VectorIndex(dimension=128, metric=\"cosine\")
@@ -205,8 +205,8 @@ echo "🤖 Step 10: Testing RAG pipeline..."
 echo "--------------------------------------"
 run_test "RAG pipeline setup" "docker compose exec -T web-api python -c '
 import numpy as np
-from climate_embeddings.rag import RAGPipeline
-from climate_embeddings.index import VectorIndex
+from src.climate_embeddings.rag import RAGPipeline
+from src.climate_embeddings.index import VectorIndex
 
 # Create index with data
 index = VectorIndex(dimension=1024, metric=\"cosine\")
