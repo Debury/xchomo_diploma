@@ -161,7 +161,7 @@ sourcesTable?.addEventListener('click', async (event) => {
                 method: 'PUT',
                 headers,
                 body: JSON.stringify({
-                    active: newActive
+                    is_active: newActive
                 })
             });
             
