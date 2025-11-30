@@ -60,7 +60,7 @@ echo "--------------------------------------"
 run_test "BGE text embedding" "docker compose exec -T web-api python -c '
 from src.climate_embeddings.embeddings import get_text_embedder
 embedder = get_text_embedder(\"bge-large\", device=\"cpu\")
-vec = embedder.embed(\"Climate change impacts temperature\")
+vec = embedder.encode(\"Climate change impacts temperature\")
 print(f\"Embedding shape: {vec.shape}\")
 assert vec.shape == (1024,)
 '"
@@ -89,6 +89,7 @@ echo "--------------------------------------"
 run_test "RAG pipeline init" "docker compose exec -T web-api python -c '
 from src.climate_embeddings.rag import RAGPipeline
 from src.climate_embeddings.index import VectorIndex
+from src.climate_embeddings.embeddings import get_text_embedder
 import numpy as np
 
 # Create index
@@ -103,11 +104,17 @@ metadata = [
 ]
 index.add_batch(vectors, metadata)
 
+# Create embedder function
+embedder = get_text_embedder(\"bge-large\", device=\"cpu\")
+embedder_fn = lambda q: embedder.encode(q)
+
 # Create RAG (without LLM for now)
+from src.llm.ollama_client import OllamaClient
+llm = OllamaClient(base_url=\"http://ollama:11434\", model=\"llama3.2:3b\")
 rag = RAGPipeline(
     index=index,
-    embedder_name=\"bge-large\",
-    llm_model=None
+    text_embedder=embedder_fn,
+    llm_client=llm
 )
 print(\"✓ RAG pipeline initialized\")
 '"
@@ -128,8 +135,8 @@ import numpy as np
 from src.embeddings.database import VectorDatabase
 from src.embeddings.generator import EmbeddingGenerator
 
-# Generate embeddings
-gen = EmbeddingGenerator(model_name=\"bge-large\")
+# Generate embeddings with correct model name
+gen = EmbeddingGenerator(model_name=\"BAAI/bge-large-en-v1.5\")
 texts = [\"climate\", \"temperature\", \"precipitation\"]
 vectors = gen.embed_batch(texts)
 
