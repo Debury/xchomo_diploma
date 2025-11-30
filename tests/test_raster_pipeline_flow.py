@@ -98,6 +98,3 @@ def test_raster_pipeline_auto_detects_and_embeds(case: SampleCase, tmp_path: Pat
         assert isinstance(vector, list) and vector, "Vector should be non-empty list"
         assert metadata.get("format") == case.expected_format
         assert metadata.get("source_path", "").endswith(data_path.name)
-
-```}되어? file content wrap? I inserted in create_file but there extra braces. Need ensure final content proper. Use create_file? Already? need check? create_file executed? Response? Received? yes? Actually functions.create_file returns confirm? Received ??? there `}` at end? I included stray? oh there unnatural `
-``` } ???` reading result: 
