@@ -1457,6 +1457,68 @@ async def shutdown_event():
 
 
 # ====================================================================================
+# SAMPLE DATA ENDPOINTS
+# ====================================================================================
+
+@app.get("/samples/{filename}")
+async def get_sample_file(filename: str):
+    """
+    Serve sample data files for testing.
+    
+    Available samples:
+    - test_climate.nc - NetCDF climate data
+    - test_raster.tif - GeoTIFF raster data
+    - test_stations.csv - CSV station data
+    """
+    samples_dir = Path("/app/data/raw")
+    file_path = samples_dir / filename
+    
+    if not file_path.exists():
+        raise HTTPException(
+            status_code=404,
+            detail=f"Sample file '{filename}' not found"
+        )
+    
+    # Determine media type
+    media_types = {
+        ".nc": "application/x-netcdf",
+        ".tif": "image/tiff",
+        ".tiff": "image/tiff",
+        ".csv": "text/csv",
+    }
+    suffix = file_path.suffix.lower()
+    media_type = media_types.get(suffix, "application/octet-stream")
+    
+    return FileResponse(
+        path=str(file_path),
+        media_type=media_type,
+        filename=filename
+    )
+
+
+@app.get("/samples")
+async def list_sample_files():
+    """
+    List available sample data files.
+    """
+    samples_dir = Path("/app/data/raw")
+    if not samples_dir.exists():
+        return {"samples": []}
+    
+    samples = []
+    for file_path in samples_dir.glob("test_*"):
+        if file_path.is_file():
+            samples.append({
+                "filename": file_path.name,
+                "url": f"http://web-api:8000/samples/{file_path.name}",
+                "size": file_path.stat().st_size,
+                "format": file_path.suffix[1:] if file_path.suffix else "unknown"
+            })
+    
+    return {"samples": samples}
+
+
+# ====================================================================================
 # MAIN (for running with uvicorn)
 # ====================================================================================
 
