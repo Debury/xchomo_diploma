@@ -382,6 +382,11 @@ def raster_to_embeddings(
     if source.dataset is not None:
         ds = source.dataset
         for variable, data_array in ds.data_vars.items():
+            # Skip non-numeric variables (e.g., time coordinates with cftime objects)
+            if data_array.dtype == object or not np.issubdtype(data_array.dtype, np.number):
+                logger.info(f"Skipping non-numeric variable '{variable}' (dtype: {data_array.dtype})")
+                continue
+                
             prepared = _prepare_data_array(
                 data_array,
                 target_units.get(variable) if target_units else None,
