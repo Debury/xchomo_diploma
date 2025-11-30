@@ -117,6 +117,7 @@ services:
       - ./web_api:/app/web_api
       - ./dagster_project:/app/dagster_project
       - ./src:/app/src
+      - ./tests:/app/tests
       - ./.env:/app/.env:ro
       - ./data:/app/data
     environment:
