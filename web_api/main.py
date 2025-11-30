@@ -173,6 +173,8 @@ class RAGChunk(BaseModel):
 class RAGChatRequest(BaseModel):
     question: str = Field(..., description="Natural language climate question", min_length=3)
     top_k: int = Field(3, ge=1, le=10, description="How many chunks to retrieve")
+    use_llm: bool = Field(True, description="Use LLM for answer generation (requires Ollama)")
+    temperature: float = Field(0.3, ge=0.0, le=1.0, description="LLM temperature for response generation")
 
 
 class RAGChatResponse(BaseModel):
@@ -180,6 +182,7 @@ class RAGChatResponse(BaseModel):
     answer: str
     references: List[str]
     chunks: List[RAGChunk]
+    llm_used: bool = Field(False, description="Whether LLM was used for answer generation")
 
 
 class SourceResponse(BaseModel):
@@ -1354,7 +1357,12 @@ async def search_embeddings(
 
 @app.post("/rag/chat", response_model=RAGChatResponse)
 async def rag_chat(request: RAGChatRequest):
-    """Run a lightweight RAG flow over the stored embeddings."""
+    """
+    Run a RAG flow over the stored embeddings with optional LLM answer generation.
+    
+    When use_llm=True (default), uses Ollama to generate intelligent answers.
+    When use_llm=False, falls back to template-based summarization.
+    """
     try:
         from src.embeddings.search import SemanticSearcher
 
@@ -1363,7 +1371,42 @@ async def rag_chat(request: RAGChatRequest):
         if not hits:
             raise HTTPException(status_code=404, detail="No relevant context found in embeddings store")
 
-        answer, references = summarize_hits(hits)
+        llm_used = False
+        
+        # Try LLM-powered answer generation
+        if request.use_llm:
+            try:
+                from src.llm import OllamaClient
+                
+                llm = OllamaClient()
+                if await llm.check_health():
+                    answer = await llm.generate_rag_answer(
+                        question=request.question,
+                        context_chunks=hits,
+                        temperature=request.temperature,
+                    )
+                    llm_used = True
+                else:
+                    # Fallback to template
+                    answer, _ = summarize_hits(hits)
+                    answer += " (Note: Ollama LLM not available, using template summary)"
+            except Exception as llm_error:
+                # Log and fallback
+                print(f"LLM error, falling back to template: {llm_error}")
+                answer, _ = summarize_hits(hits)
+        else:
+            answer, _ = summarize_hits(hits)
+        
+        # Extract references from metadata
+        references = []
+        seen = set()
+        for hit in hits:
+            metadata = hit.get('metadata') or {}
+            ref = f"{metadata.get('source_id', 'source')}:{metadata.get('variable', 'var')}"
+            if ref not in seen:
+                seen.add(ref)
+                references.append(ref)
+        
         chunks = [
             RAGChunk(
                 source_id=(hit.get('metadata') or {}).get('source_id', 'source'),
@@ -1380,6 +1423,7 @@ async def rag_chat(request: RAGChatRequest):
             answer=answer,
             references=references,
             chunks=chunks,
+            llm_used=llm_used,
         )
 
     except HTTPException:

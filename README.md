@@ -166,6 +166,9 @@ make visualize       # Visualize results
 # Run tests
 make test
 
+# Verify raster auto-detection & embeddings across formats
+pytest tests/test_raster_pipeline_flow.py -vv
+
 # Clean outputs
 make clean
 ```
