@@ -84,6 +84,8 @@ async function loadSources() {
         }
         sourcesTable.innerHTML = '';
         data.forEach((source) => {
+            const activeStatus = source.active ? 'active' : 'inactive';
+            const activeClass = source.active ? 'completed' : 'failed';
             const row = document.createElement('tr');
             row.innerHTML = `
                 <td>
@@ -91,11 +93,14 @@ async function loadSources() {
                     <div class="hint">${source.description || ''}</div>
                 </td>
                 <td>${source.format}</td>
-                <td><span class="status-pill ${source.processing_status}">${source.processing_status}</span></td>
+                <td>
+                    <span class="status-pill ${activeClass}">${activeStatus}</span>
+                    <div class="hint">Processing: ${source.processing_status}</div>
+                </td>
                 <td>${fmtDate(source.last_processed)}</td>
                 <td>
                     <div class="table-actions">
-                        <button data-trigger="${source.source_id}">Trigger ETL</button>
+                        <button data-trigger="${source.source_id}" ${!source.active ? 'disabled title="Activate source first"' : ''}>Trigger ETL</button>
                         <button class="ghost" data-edit="${source.source_id}">Edit</button>
                         <button class="ghost danger" data-delete="${source.source_id}">Delete</button>
                     </div>
