@@ -1,28 +1,15 @@
-"""
-Climate Embeddings Package
+# src/climate_embeddings/__init__.py
 
-A comprehensive system for:
-- Loading climate rasters in multiple formats (NetCDF, GRIB, GeoTIFF, HDF5, CSV, ZIP)
-- Generating embeddings with powerful text models (BGE, GTE)
-- Building vector indices for similarity search
-- RAG (Retrieval-Augmented Generation) for climate Q&A
-"""
-
-__version__ = "1.0.0"
-
-from .loaders import load_raster_auto, raster_to_embeddings, detect_format
-from .embeddings import get_text_embedder, TextEmbedder
-from .index import VectorIndex, SearchResult
-from .rag import RAGPipeline, build_index_from_embeddings
+from .loaders import (
+    load_raster_auto, 
+    raster_to_embeddings, 
+    detect_format,
+    detect_format_from_url
+)
 
 __all__ = [
-    "load_raster_auto",
-    "raster_to_embeddings",
+    "load_raster_auto", 
+    "raster_to_embeddings", 
     "detect_format",
-    "get_text_embedder",
-    "TextEmbedder",
-    "VectorIndex",
-    "SearchResult",
-    "RAGPipeline",
-    "build_index_from_embeddings",
+    "detect_format_from_url"
 ]
