@@ -172,7 +172,11 @@ def _prepare_data_array(
         da_prepared = _ensure_monotonic_coord(da_prepared, coord_name)
     if fill_method == "interpolate" and "time" in da_prepared.coords:
         da_prepared = da_prepared.interpolate_na(dim="time")
-    da_prepared = da_prepared.where(np.isfinite(da_prepared))
+    
+    # Only apply isfinite for numeric dtypes (skip object dtype)
+    if da_prepared.dtype != object:
+        da_prepared = da_prepared.where(np.isfinite(da_prepared))
+    
     return da_prepared
 
 
