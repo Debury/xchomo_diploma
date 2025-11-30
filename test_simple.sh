@@ -140,10 +140,10 @@ gen = EmbeddingGenerator(model_name=\"BAAI/bge-large-en-v1.5\")
 texts = [\"climate\", \"temperature\", \"precipitation\"]
 vectors = gen.generate_embeddings(texts)
 
-# Store in Qdrant
-db = VectorDatabase(collection_name=\"test_embeddings\")
-db.recreate_collection(dimension=1024)
-db.add_vectors(vectors=vectors, ids=[\"1\", \"2\", \"3\"], payloads=[{\"text\": t} for t in texts])
+# Store in Qdrant (collection auto-created in __init__ with vector_size=1024)
+db = VectorDatabase(collection_name=\"test_embeddings\", vector_size=1024)
+db.clear_collection()  # Clear any existing data
+db.add_embeddings(vectors=vectors, ids=[\"1\", \"2\", \"3\"], metadatas=[{\"text\": t} for t in texts])
 print(f\"✓ Stored {len(texts)} vectors in Qdrant\")
 '"
 
