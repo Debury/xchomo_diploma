@@ -149,6 +149,14 @@ clean: ## Clean generated files and caches
 	@for /d /r . %%d in (*.egg-info) do @if exist "%%d" rmdir /S /Q "%%d"
 	@echo "$(GREEN)✓ Cleanup complete$(NC)"
 
+clean-docker: ## Clean all Docker images, containers, volumes (use with caution!)
+	@echo "$(BLUE)Cleaning Docker resources...$(NC)"
+	@bash cleanup_docker.sh
+	@echo "$(GREEN)✓ Docker cleaned$(NC)"
+
+clean-rebuild: clean-docker docker-build docker-compose-up ## Clean Docker and rebuild everything
+	@echo "$(GREEN)✓ Clean rebuild complete$(NC)"
+
 clean-data: ## Clean all data (raw + processed) - USE WITH CAUTION
 	@echo "$(YELLOW)⚠ WARNING: This will delete all data files$(NC)"
 	@choice /C YN /M "Are you sure you want to continue?"
