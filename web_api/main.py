@@ -73,7 +73,7 @@ class HealthResponse(BaseModel):
 
 
 # ====================================================================================
-# SOURCE MANAGEMENT MODELS (Phase 5)
+# SOURCE MANAGEMENT MODELS
 # ====================================================================================
 
 class SourceCreate(BaseModel):
@@ -91,11 +91,11 @@ class SourceCreate(BaseModel):
     time_range: Optional[Dict[str, str]] = Field(None, description="Time range {start, end}")
     spatial_bbox: Optional[List[float]] = Field(
         None, 
-        description="Geographic bounding box: [south, west, north, east] in degrees. Example: [48.0, 13.0, 51.0, 19.0] for Slovakia region. If None, entire available area will be used."
+        description="Geographic bounding box: [south, west, north, east]. If None, entire available area will be used."
     )
     is_active: bool = Field(
         True, 
-        description="Whether this source should be actively processed by the ETL pipeline. Set to False to temporarily disable processing without deleting the source."
+        description="Whether this source should be actively processed by the ETL pipeline."
     )
     transformations: Optional[List[str]] = Field(None, description="Transformations to apply")
     aggregation_method: Optional[str] = Field("mean", description="Aggregation method")
@@ -110,7 +110,7 @@ class SourceCreate(BaseModel):
             "example": {
                 "source_id": "xarray_air_temp",
                 "url": "https://github.com/pydata/xarray-data/raw/master/air_temperature.nc",
-                "description": "Sample air temperature data from xarray tutorial (format auto-detected)",
+                "description": "Sample air temperature data",
                 "is_active": True,
                 "tags": ["xarray", "air_temp", "tutorial"]
             }
@@ -136,7 +136,7 @@ class SourceUpdate(BaseModel):
 class EmbeddingResponse(BaseModel):
     """Response for a single embedding"""
     id: str = Field(..., description="Unique identifier for the embedding")
-    variable: str = Field(..., description="Climate variable name (e.g., 't2m', 'tp')")
+    variable: str = Field(..., description="Climate variable name")
     timestamp: Optional[str] = Field(None, description="Timestamp of the data point")
     location: Optional[Dict[str, float]] = Field(None, description="Geographic location (lat, lon)")
     metadata: Dict[str, Any] = Field(..., description="Additional metadata")
@@ -191,14 +191,14 @@ class SourceResponse(BaseModel):
     source_id: str
     url: str
     format: str
-    variables: Optional[List[str]]  # Changed to Optional
+    variables: Optional[List[str]]
     time_range: Optional[Dict[str, str]]
     spatial_bbox: Optional[List[float]]
     transformations: Optional[List[str]]
-    aggregation_method: Optional[str]  # Changed to Optional
+    aggregation_method: Optional[str]
     output_resolution: Optional[float]
-    embedding_model: Optional[str]  # Changed to Optional
-    chunk_size: Optional[int]  # Changed to Optional
+    embedding_model: Optional[str]
+    chunk_size: Optional[int]
     collection_name: Optional[str]
     description: Optional[str]
     tags: Optional[List[str]]
@@ -229,7 +229,7 @@ _sample_dir_env = os.getenv("SAMPLE_DATA_DIR")
 if _sample_dir_env:
     SAMPLE_DATA_DIR = Path(_sample_dir_env)
 else:
-    SAMPLE_DATA_DIR = Path(__file__).parent.parent / "data" / "external" / "open_sources"
+    SAMPLE_DATA_DIR = Path(__file__).parent.parent / "data" / "raw" # Pointing to local raw data
 SAMPLE_DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 # Configure CORS
@@ -255,19 +255,7 @@ DAGSTER_GRAPHQL_URL = f"http://{DAGSTER_HOST}:{DAGSTER_PORT}/graphql"
 # ====================================================================================
 
 async def execute_graphql_query(query: str, variables: Optional[Dict] = None) -> Dict:
-    """
-    Execute a GraphQL query against Dagster's GraphQL API.
-    
-    Args:
-        query: GraphQL query string
-        variables: Optional query variables
-    
-    Returns:
-        Query result dictionary
-    
-    Raises:
-        HTTPException: If query fails
-    """
+    """Execute a GraphQL query against Dagster."""
     async with httpx.AsyncClient() as client:
         try:
             response = await client.post(
@@ -297,6 +285,79 @@ async def execute_graphql_query(query: str, variables: Optional[Dict] = None) ->
                 detail=f"Dagster request failed: {str(e)}"
             )
 
+async def get_dagster_repo_info():
+    """Fetch repository location and name from Dagster."""
+    repo_query = """
+    query GetRepositories {
+        repositoriesOrError {
+            __typename
+            ... on RepositoryConnection {
+                nodes {
+                    name
+                    location { name }
+                }
+            }
+        }
+    }
+    """
+    data = await execute_graphql_query(repo_query)
+    repos = data.get("repositoriesOrError", {}).get("nodes", [])
+    if not repos:
+        raise HTTPException(status_code=404, detail="No Dagster repositories found")
+    # Return first repo found
+    return repos[0]["location"]["name"], repos[0]["name"]
+
+async def launch_dagster_run(job_name: str, run_config: Dict, tags: Dict = None):
+    """Launch a run using the first available repository."""
+    repo_loc, repo_name = await get_dagster_repo_info()
+    
+    mutation = """
+    mutation LaunchRun($repositoryLocationName: String!, $repositoryName: String!, $jobName: String!, $runConfigData: RunConfigData!, $tags: [ExecutionTag!]) {
+        launchRun(
+            executionParams: {
+                selector: {
+                    repositoryLocationName: $repositoryLocationName
+                    repositoryName: $repositoryName
+                    jobName: $jobName
+                }
+                runConfigData: $runConfigData
+                executionMetadata: { tags: $tags }
+            }
+        ) {
+            __typename
+            ... on LaunchRunSuccess {
+                run { runId status jobName }
+            }
+            ... on PythonError { message }
+            ... on RunConfigValidationInvalid {
+                errors { message }
+            }
+        }
+    }
+    """
+    
+    graphql_tags = [{"key": k, "value": v} for k, v in (tags or {}).items()]
+
+    variables = {
+        "repositoryLocationName": repo_loc,
+        "repositoryName": repo_name,
+        "jobName": job_name,
+        "runConfigData": run_config or {},
+        "tags": graphql_tags
+    }
+    
+    result = await execute_graphql_query(mutation, variables)
+    launch_result = result.get("launchRun", {})
+    
+    if launch_result.get("__typename") == "LaunchRunSuccess":
+        return launch_result["run"]
+    elif launch_result.get("__typename") == "PythonError":
+        raise Exception(f"Python Error: {launch_result.get('message')}")
+    elif launch_result.get("__typename") == "RunConfigValidationInvalid":
+        errs = "; ".join([e["message"] for e in launch_result.get("errors", [])])
+        raise Exception(f"Config Invalid: {errs}")
+    else:
+        raise Exception(f"Unexpected error: {launch_result}")
 
 def summarize_hits(results: List[Dict[str, Any]]) -> Tuple[str, List[str]]:
     """Build a human-readable answer and reference list from semantic hits."""
@@ -338,9 +399,6 @@ def summarize_hits(results: List[Dict[str, Any]]) -> Tuple[str, List[str]]:
 
 @app.get("/", response_model=Dict[str, str])
 async def root():
-    """
-    Root endpoint with API information.
-    """
     return {
         "name": "Climate ETL Pipeline API",
         "version": "1.0.0",
@@ -349,50 +407,17 @@ async def root():
         "health": "/health"
     }
 
-
 @app.get("/ui", response_class=FileResponse)
 async def serve_frontend():
-    """Serve the lightweight RAG dashboard frontend."""
     if not FRONTEND_DIR.exists():
-        raise HTTPException(status_code=404, detail="Frontend assets not found. Run git pull or rebuild the image.")
+        raise HTTPException(status_code=404, detail="Frontend assets not found.")
     return FileResponse(FRONTEND_DIR / "index.html")
-
-
-@app.get("/samples/{file_name:path}")
-async def download_sample_data(file_name: str = PathParam(..., description="Sample file name")):
-    """Expose pre-bundled demo datasets so sources can fetch a known-good file."""
-    if any(sep in file_name for sep in ("/", "\\")) or ".." in Path(file_name).parts:
-        raise HTTPException(status_code=400, detail="Invalid file path supplied")
-
-    safe_name = os.path.basename(file_name)
-    file_path = SAMPLE_DATA_DIR / safe_name
-    if not file_path.exists() or not file_path.is_file():
-        raise HTTPException(status_code=404, detail=f"Sample file '{safe_name}' not found")
-
-    media_type = "application/octet-stream"
-    if safe_name.endswith(".nc"):
-        media_type = "application/netcdf"
-    elif safe_name.endswith(".csv"):
-        media_type = "text/csv"
-
-    return FileResponse(file_path, filename=safe_name, media_type=media_type)
-
 
 @app.get("/health", response_model=HealthResponse)
 async def health_check():
-    """
-    Health check endpoint to verify service and Dagster connectivity.
-    """
     dagster_available = False
-    
     try:
-        # Simple query to check Dagster availability
-        query = """
-        {
-            __typename
-        }
-        """
-        await execute_graphql_query(query)
+        await execute_graphql_query("{ __typename }")
         dagster_available = True
     except Exception:
         pass
@@ -403,337 +428,179 @@ async def health_check():
         timestamp=datetime.now().isoformat()
     )
 
-
 @app.get("/jobs", response_model=List[JobInfo])
 async def list_jobs():
-    """
-    List all available Dagster jobs in the repository.
-    
-    Returns:
-        List of job information
-    """
-    query = """
-    {
-        repositoryOrError(repositorySelector: {
-            repositoryLocationName: "__repository__",
-            repositoryName: "__repository__"
-        }) {
-            ... on Repository {
-                pipelines {
-                    name
-                    description
-                    tags {
-                        key
-                        value
-                    }
-                    solidHandles {
-                        solid {
-                            name
-                        }
+    """List all available Dagster jobs."""
+    try:
+        # Fetch dynamically
+        repo_loc, repo_name = await get_dagster_repo_info()
+        
+        query = """
+        query GetPipelines($selector: RepositorySelector!) {
+            repositoryOrError(repositorySelector: $selector) {
+                ... on Repository {
+                    pipelines {
+                        name
+                        description
+                        tags { key value }
                     }
                 }
             }
         }
-    }
-    """
-    
-    try:
-        data = await execute_graphql_query(query)
+        """
+        variables = {
+            "selector": {
+                "repositoryLocationName": repo_loc,
+                "repositoryName": repo_name
+            }
+        }
         
-        # For demonstration, return mock jobs if GraphQL fails
-        # In production, this would parse actual GraphQL response
-        mock_jobs = [
-            JobInfo(
-                name="daily_etl_job",
-                description="Complete daily ETL workflow: download → transform → export",
-                tags={"pipeline": "etl", "frequency": "daily", "phase": "1-2"},
-                ops=["download_era5_data", "validate_downloaded_data", "ingest_data", 
-                     "transform_data", "export_data"]
-            ),
-            JobInfo(
-                name="embedding_job",
-                description="Generate embeddings from processed data and store in vector database",
-                tags={"pipeline": "embeddings", "frequency": "on-demand", "phase": "3"},
-                ops=["generate_embeddings_standalone", "store_embeddings", "test_semantic_search"]
-            ),
-            JobInfo(
-                name="complete_pipeline_job",
-                description="Complete end-to-end pipeline: download → transform → embed",
-                tags={"pipeline": "complete", "frequency": "weekly", "phase": "1-2-3"},
-                ops=["download_era5_data", "validate_downloaded_data", "ingest_data",
-                     "transform_data", "export_data", "generate_embeddings",
-                     "store_embeddings", "test_semantic_search"]
-            ),
-            JobInfo(
-                name="validation_job",
-                description="Validation-only job to check data quality",
-                tags={"pipeline": "validation", "frequency": "on-demand"},
-                ops=["validate_existing_data"]
-            )
-        ]
+        data = await execute_graphql_query(query, variables)
+        pipelines = data.get("repositoryOrError", {}).get("pipelines", [])
         
-        return mock_jobs
+        jobs = []
+        for p in pipelines:
+            tags_dict = {t["key"]: t["value"] for t in p.get("tags", [])}
+            jobs.append(JobInfo(
+                name=p["name"],
+                description=p.get("description"),
+                tags=tags_dict,
+                ops=[] # Fetching ops requires deeper query, keeping simpler for list
+            ))
+            
+        return jobs
     
-    except HTTPException:
-        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error listing jobs: {str(e)}")
-
+        # Fallback to mock list if Dagster is down
+        return [
+            JobInfo(name="dynamic_source_etl_job", description="Process all active sources", tags={"type": "dynamic"}),
+            JobInfo(name="daily_etl_job", description="Legacy ETL", tags={"type": "legacy"})
+        ]
 
 @app.post("/jobs/{job_name}/run", response_model=RunResponse)
 async def trigger_job_run(
     job_name: str = PathParam(..., description="Name of the job to run"),
     run_request: RunRequest = None
 ):
-    """
-    Trigger a new run of the specified job.
-    
-    Args:
-        job_name: Name of the job to execute
-        run_request: Optional run configuration and tags
-    
-    Returns:
-        Run response with run ID and status
-    """
-    # Validate job name
-    valid_jobs = ["daily_etl_job", "embedding_job", "complete_pipeline_job", "validation_job"]
+    valid_jobs = ["daily_etl_job", "embedding_job", "complete_pipeline_job", "validation_job", "dynamic_source_etl_job"]
     if job_name not in valid_jobs:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Job '{job_name}' not found. Available jobs: {valid_jobs}"
-        )
+        raise HTTPException(status_code=404, detail=f"Job '{job_name}' not found.")
     
-    # GraphQL mutation to launch run
-    mutation = """
-    mutation LaunchRun($executionParams: ExecutionParams!) {
-        launchRun(executionParams: $executionParams) {
-            __typename
-            ... on LaunchRunSuccess {
-                run {
-                    runId
-                    status
-                    pipelineName
-                }
-            }
-            ... on PythonError {
-                message
-            }
-        }
-    }
-    """
+    config = run_request.run_config if run_request else {}
+    tags = run_request.tags if run_request else {}
     
     try:
-        # For demonstration, return mock response
-        # In production, execute actual GraphQL mutation
-        run_id = f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{job_name}"
-        
+        run_data = await launch_dagster_run(job_name, config, tags)
         return RunResponse(
-            run_id=run_id,
-            job_name=job_name,
-            status="QUEUED",
+            run_id=run_data["runId"],
+            job_name=run_data["jobName"],
+            status=run_data["status"],
             message=f"Successfully triggered run for job '{job_name}'"
         )
-    
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error triggering job run: {str(e)}"
-        )
-
+        status = 400 if "Config Invalid" in str(e) else 500
+        raise HTTPException(status_code=status, detail=str(e))
 
 @app.get("/runs/{run_id}/status", response_model=RunStatus)
-async def get_run_status(
-    run_id: str = PathParam(..., description="Run ID to check status for")
-):
-    """
-    Get the status of a specific pipeline run.
-    
-    Args:
-        run_id: Unique run identifier
-    
-    Returns:
-        Run status information
-    """
+async def get_run_status(run_id: str):
     query = """
     query GetRunStatus($runId: ID!) {
         runOrError(runId: $runId) {
             __typename
             ... on Run {
-                runId
-                status
-                pipelineName
-                startTime
-                endTime
-                stats {
-                    ... on RunStatsSnapshot {
-                        startTime
-                        endTime
-                    }
-                }
-                tags {
-                    key
-                    value
-                }
+                runId status pipelineName startTime endTime
+                tags { key value }
             }
-            ... on RunNotFoundError {
-                message
-            }
+            ... on RunNotFoundError { message }
         }
     }
     """
-    
     try:
-        # For demonstration, return mock status
-        # In production, execute actual GraphQL query
+        data = await execute_graphql_query(query, {"runId": run_id})
+        run_data = data.get("runOrError", {})
         
-        # Parse job name from run_id (mock)
-        job_name = run_id.split("_")[-1] if "_" in run_id else "unknown_job"
+        if run_data.get("__typename") == "RunNotFoundError":
+            raise HTTPException(status_code=404, detail=run_data["message"])
+        
+        if run_data.get("__typename") != "Run":
+            raise HTTPException(status_code=500, detail="Unknown error fetching status")
+            
+        tags_dict = {t["key"]: t["value"] for t in run_data.get("tags", [])}
         
         return RunStatus(
-            run_id=run_id,
-            status="SUCCESS",
-            job_name=job_name,
-            start_time=datetime.now().isoformat(),
-            end_time=None,
-            duration=None,
-            tags={"api_triggered": "true"}
+            run_id=run_data["runId"],
+            status=run_data["status"],
+            job_name=run_data["pipelineName"],
+            start_time=str(run_data.get("startTime")) if run_data.get("startTime") else None,
+            end_time=str(run_data.get("endTime")) if run_data.get("endTime") else None,
+            tags=tags_dict
         )
-    
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error fetching run status: {str(e)}"
-        )
-
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/runs", response_model=List[RunStatus])
-async def list_recent_runs(
-    limit: int = Query(default=10, ge=1, le=100, description="Maximum number of runs to return")
-):
-    """
-    List recent pipeline runs.
-    
-    Args:
-        limit: Maximum number of runs to return (1-100)
-    
-    Returns:
-        List of recent run statuses
-    """
+async def list_recent_runs(limit: int = 10):
     query = """
     query ListRuns($limit: Int!) {
         runsOrError {
-            __typename
             ... on Runs {
                 results(limit: $limit) {
-                    runId
-                    status
-                    pipelineName
-                    startTime
-                    endTime
-                    tags {
-                        key
-                        value
-                    }
+                    runId status pipelineName startTime endTime
+                    tags { key value }
                 }
             }
         }
     }
     """
-    
     try:
-        # For demonstration, return mock runs
-        mock_runs = [
-            RunStatus(
-                run_id=f"run_20250119_140000_daily_etl_job",
-                status="SUCCESS",
-                job_name="daily_etl_job",
-                start_time=datetime.now().isoformat(),
-                end_time=datetime.now().isoformat(),
-                duration=125.5,
-                tags={"schedule": "daily", "date": "2025-01-19"}
-            ),
-            RunStatus(
-                run_id=f"run_20250119_160000_embedding_job",
-                status="SUCCESS",
-                job_name="embedding_job",
-                start_time=datetime.now().isoformat(),
-                end_time=None,
-                duration=None,
-                tags={"schedule": "daily_embeddings"}
-            )
-        ]
+        data = await execute_graphql_query(query, {"limit": limit})
+        runs_list = data.get("runsOrError", {}).get("results", [])
         
-        return mock_runs[:limit]
-    
+        results = []
+        for r in runs_list:
+            tags_dict = {t["key"]: t["value"] for t in r.get("tags", [])}
+            results.append(RunStatus(
+                run_id=r["runId"],
+                status=r["status"],
+                job_name=r["pipelineName"],
+                start_time=str(r.get("startTime")),
+                end_time=str(r.get("endTime")),
+                tags=tags_dict
+            ))
+        return results
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error listing runs: {str(e)}"
-        )
-
+        raise HTTPException(status_code=500, detail=str(e))
 
 # ====================================================================================
-# SOURCE MANAGEMENT ENDPOINTS (Phase 5)
+# SOURCE MANAGEMENT ENDPOINTS
 # ====================================================================================
 
 @app.post("/sources", response_model=SourceResponse, status_code=201)
 async def create_source(source: SourceCreate):
-    """
-    Create a new climate data source.
-    
-    The source will be stored in the database and can be processed by Dagster jobs.
-    """
     try:
         from src.sources import get_source_store
-        
         store = get_source_store()
         
-        # Check if source_id already exists
-        existing = store.get_source(source.source_id)
-        if existing:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Source with ID '{source.source_id}' already exists"
-            )
+        if store.get_source(source.source_id):
+            raise HTTPException(status_code=400, detail=f"Source '{source.source_id}' already exists")
         
-        # Auto-detect format if not provided
         if not source.format:
             from dagster_project.ops.dynamic_source_ops import detect_format_from_url
             source.format = detect_format_from_url(source.url)
         
-        # Create source
-        source_data = source.dict()
-        created_source = store.create_source(source_data)
-        
+        created_source = store.create_source(source.dict())
         return created_source.to_dict()
-    
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error creating source: {str(e)}"
-        )
-
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/sources", response_model=List[SourceResponse])
-async def list_sources(
-    active_only: bool = Query(default=True, description="Filter by active sources only"),
-    tags: Optional[str] = Query(default=None, description="Comma-separated tags to filter by")
-):
-    """
-    List all climate data sources.
-    
-    Args:
-        active_only: If true, only return active sources
-        tags: Optional comma-separated list of tags to filter by
-    
-    Returns:
-        List of sources
-    """
+async def list_sources(active_only: bool = True, tags: Optional[str] = None):
     try:
         from src.sources import get_source_store
-        
         store = get_source_store()
         
         if tags:
@@ -743,792 +610,299 @@ async def list_sources(
             sources = store.get_all_sources(active_only=active_only)
         
         return [source.to_dict() for source in sources]
-    
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error listing sources: {str(e)}"
-        )
-
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/sources/{source_id}", response_model=SourceResponse)
-async def get_source(source_id: str = PathParam(..., description="Source ID")):
-    """
-    Get a specific climate data source by ID.
-    
-    Args:
-        source_id: Unique identifier of the source
-    
-    Returns:
-        Source information
-    """
+async def get_source(source_id: str):
     try:
         from src.sources import get_source_store
-        
         store = get_source_store()
         source = store.get_source(source_id)
-        
         if not source:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Source with ID '{source_id}' not found"
-            )
-        
+            raise HTTPException(status_code=404, detail="Source not found")
         return source.to_dict()
-    
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error fetching source: {str(e)}"
-        )
-
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.put("/sources/{source_id}", response_model=SourceResponse)
-async def update_source(
-    source_id: str = PathParam(..., description="Source ID"),
-    updates: SourceUpdate = ...
-):
-    """
-    Update an existing climate data source.
-    
-    Args:
-        source_id: Unique identifier of the source
-        updates: Fields to update
-    
-    Returns:
-        Updated source information
-    """
+async def update_source(source_id: str, updates: SourceUpdate):
     try:
         from src.sources import get_source_store
-        
         store = get_source_store()
         
-        # Check if source exists
-        existing = store.get_source(source_id)
-        if not existing:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Source with ID '{source_id}' not found"
-            )
-        
-        # Update source
+        if not store.get_source(source_id):
+            raise HTTPException(status_code=404, detail="Source not found")
+            
         update_data = updates.dict(exclude_unset=True)
         updated_source = store.update_source(source_id, update_data)
-        
-        if not updated_source:
-            raise HTTPException(
-                status_code=500,
-                detail="Failed to update source"
-            )
-        
         return updated_source.to_dict()
-    
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error updating source: {str(e)}"
-        )
-
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.delete("/sources/{source_id}", status_code=204)
-async def delete_source(
-    source_id: str = PathParam(..., description="Source ID"),
-    hard_delete: bool = Query(default=False, description="Permanently delete (true) or soft delete (false)")
-):
-    """
-    Delete a climate data source.
-    
-    Args:
-        source_id: Unique identifier of the source
-        hard_delete: If true, permanently delete. If false, soft delete (set is_active=False)
-    
-    Returns:
-        No content on success
-    """
+async def delete_source(source_id: str, hard_delete: bool = False):
     try:
         from src.sources import get_source_store
         from src.embeddings.database import VectorDatabase
         
         store = get_source_store()
-        source = store.get_source(source_id)
-        if not source:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Source with ID '{source_id}' not found"
-            )
-
-        if hard_delete:
-            success = store.hard_delete_source(source_id)
-        else:
-            success = store.delete_source(source_id)
+        if not store.get_source(source_id):
+            raise HTTPException(status_code=404, detail="Source not found")
         
-        if not success:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Source with ID '{source_id}' not found"
-            )
-
+        if hard_delete:
+            store.hard_delete_source(source_id)
+        else:
+            store.delete_source(source_id)
+            
+        # Clean up vector DB
         try:
             db = VectorDatabase()
             db.delete_embeddings_by_source(source_id)
-        except Exception as cleanup_error:
-            raise HTTPException(
-                status_code=500,
-                detail=f"Source removed but failed to delete embeddings: {cleanup_error}"
-            )
-        
+        except Exception:
+            pass # Non-fatal if DB cleanup fails
+            
         return None
-    
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error deleting source: {str(e)}"
-        )
-
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/sources/{source_id}/trigger", response_model=RunResponse)
 async def trigger_source_etl(
     source_id: str = PathParam(..., description="Source ID"),
-    job_name: str = Query(
-        default="dynamic_source_etl_job",
-        description="Job to run: dynamic_source_etl_job (processes ALL active sources)"
-    ),
+    job_name: str = Query("dynamic_source_etl_job"),
     run_config: Optional[Dict[str, Any]] = None
 ):
-    """
-    Trigger ETL job for sources.
-    
-    Args:
-        source_id: Source identifier (used to verify source exists and is active)
-        job_name: Which job to run (default: dynamic_source_etl_job)
-        run_config: Optional additional run configuration
-    
-    Returns:
-        Run information
-    
-    Available jobs:
-    - dynamic_source_etl_job: Processes ALL active sources (recommended)
-    - complete_pipeline_job: Legacy full pipeline
-    - daily_etl_job: Legacy download + transform only
-    
-    Note: dynamic_source_etl_job processes ALL active sources in the database,
-    not just the specified source_id. Use is_active flag to control which sources run.
-    """
     try:
         from src.sources import get_source_store
-        
         store = get_source_store()
         source = store.get_source(source_id)
         
         if not source:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Source with ID '{source_id}' not found"
-            )
-        
+            raise HTTPException(status_code=404, detail="Source not found")
         if not source.is_active:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Source '{source_id}' is not active"
-            )
-        
-        # Prepare run config based on job type
-        if job_name == "dynamic_source_etl_job":
-            # Dynamic job doesn't need config - it loads sources from DB automatically
-            job_config = {}
-        else:
-            # Legacy jobs need explicit config
-            job_config = {
+            raise HTTPException(status_code=400, detail="Source is not active")
+            
+        # Config Logic
+        job_config = {}
+        if job_name != "dynamic_source_etl_job":
+             job_config = {
                 "ops": {
                     "download_era5_data": {
                         "config": {
-                            "variables": source.variables if source.variables else ["2m_temperature"],
+                            "variables": source.variables or ["2m_temperature"],
                             "year": 2025,
                             "month": 1,
-                            "days": None,
-                            "area": source.spatial_bbox if source.spatial_bbox else None
+                            "area": source.spatial_bbox
                         }
                     }
                 }
             }
         
-        # Merge with any additional config
         if run_config:
             job_config.update(run_config)
+            
+        run_data = await launch_dagster_run(
+            job_name,
+            job_config,
+            tags={"source_id": source_id, "triggered_by": "api"}
+        )
         
-        # Note: job_name is now passed as parameter (default: dynamic_source_etl_job)
+        store.update_processing_status(source_id, "processing")
         
-        # First, query to get repository information
-        repo_query = """
-        query GetRepositories {
-            repositoriesOrError {
-                __typename
-                ... on RepositoryConnection {
-                    nodes {
-                        name
-                        location {
-                            name
-                        }
-                    }
-                }
-            }
-        }
-        """
-        
-        # Get repository info
-        async with httpx.AsyncClient() as client:
-            repo_response = await client.post(
-                DAGSTER_GRAPHQL_URL,
-                json={"query": repo_query},
-                timeout=10.0
-            )
-            
-            if repo_response.status_code != 200:
-                raise HTTPException(
-                    status_code=repo_response.status_code,
-                    detail=f"Cannot get repository info: {repo_response.text}"
-                )
-            
-            repo_data = repo_response.json()
-            
-            if "errors" in repo_data:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"GraphQL error getting repos: {repo_data['errors']}"
-                )
-            
-            # Extract repository information
-            repos = repo_data.get("data", {}).get("repositoriesOrError", {}).get("nodes", [])
-            if not repos:
-                raise HTTPException(
-                    status_code=404,
-                    detail="No Dagster repositories found"
-                )
-            
-            # Use first repository
-            repo_name = repos[0]["name"]
-            repo_location = repos[0]["location"]["name"]
-        
-        # Now launch the run with correct repository info
-        mutation = """
-        mutation LaunchRun($repositoryLocationName: String!, $repositoryName: String!, $jobName: String!, $runConfigData: RunConfigData!) {
-            launchRun(
-                executionParams: {
-                    selector: {
-                        repositoryLocationName: $repositoryLocationName
-                        repositoryName: $repositoryName
-                        jobName: $jobName
-                    }
-                    runConfigData: $runConfigData
-                }
-            ) {
-                __typename
-                ... on LaunchRunSuccess {
-                    run {
-                        runId
-                        status
-                        jobName
-                    }
-                }
-                ... on PythonError {
-                    message
-                    stack
-                }
-                ... on RunConfigValidationInvalid {
-                    errors {
-                        message
-                    }
-                }
-            }
-        }
-        """
-        
-        variables = {
-            "repositoryLocationName": repo_location,
-            "repositoryName": repo_name,
-            "jobName": job_name,
-            "runConfigData": job_config
-        }
-        
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                DAGSTER_GRAPHQL_URL,
-                json={
-                    "query": mutation,
-                    "variables": variables
-                },
-                timeout=30.0
-            )
-            
-            if response.status_code != 200:
-                raise HTTPException(
-                    status_code=response.status_code,
-                    detail=f"Dagster API error: {response.text}"
-                )
-            
-            data = response.json()
-            
-            if "errors" in data:
-                raise HTTPException(
-                    status_code=500,
-                    detail=f"GraphQL error: {data['errors']}"
-                )
-            
-            launch_result = data["data"]["launchRun"]
-            
-            if launch_result["__typename"] == "LaunchRunSuccess":
-                run = launch_result["run"]
-                
-                # Update source processing status
-                store.update_processing_status(source_id, "processing")
-                
-                return RunResponse(
-                    run_id=run["runId"],
-                    job_name=run["jobName"],
-                    status=run["status"],
-                    message=f"ETL job triggered successfully for source '{source_id}'"
-                )
-            elif launch_result["__typename"] == "PythonError":
-                raise HTTPException(
-                    status_code=500,
-                    detail=f"Job launch error: {launch_result['message']}"
-                )
-            elif launch_result["__typename"] == "RunConfigValidationInvalid":
-                errors = [e["message"] for e in launch_result["errors"]]
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Invalid run config: {'; '.join(errors)}"
-                )
-            else:
-                raise HTTPException(
-                    status_code=500,
-                    detail=f"Unexpected result type: {launch_result['__typename']}"
-                )
-    
+        return RunResponse(
+            run_id=run_data["runId"],
+            job_name=run_data["jobName"],
+            status=run_data["status"],
+            message=f"Triggered {job_name} for source {source_id}"
+        )
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error triggering ETL: {str(e)}"
-        )
-
+        raise HTTPException(status_code=500, detail=str(e))
 
 # ====================================================================================
-# EMBEDDINGS ENDPOINTS - Vector Database Observability
+# EMBEDDINGS & RAG
 # ====================================================================================
 
 @app.get("/embeddings/stats", response_model=EmbeddingStatsResponse)
 async def get_embeddings_stats():
-    """
-    Get statistics about the vector database.
-    
-    Returns comprehensive information about embeddings stored in Qdrant:
-    - Total number of embeddings
-    - Unique variables present
-    - Date range covered
-    - Source identifiers
-    
-    This endpoint is useful for:
-    - Verifying that embeddings are being generated correctly
-    - Monitoring the RAG knowledge base growth
-    - Debugging missing or incomplete data
-    """
     try:
         from src.embeddings.database import VectorDatabase
-        
         db = VectorDatabase()
-        
-        # Get all embeddings to analyze
         collection = db.collection
         results = collection.get()
         
-        if not results['ids']:
-            return EmbeddingStatsResponse(
-                total_embeddings=0,
-                variables=[],
-                date_range=None,
-                sources=[],
-                collection_name=db.collection_name
-            )
+        count = len(results['ids']) if results['ids'] else 0
+        metas = results.get('metadatas', []) or []
         
-        # Extract statistics from metadata
         variables = set()
         sources = set()
-        start_timestamps = []
-        end_timestamps = []
-        fallback_timestamps = []
+        timestamps = []
         
-        for metadata in results.get('metadatas', []):
-            if metadata:
-                if 'variable' in metadata:
-                    variables.add(metadata['variable'])
-                if 'source_id' in metadata:
-                    sources.add(metadata['source_id'])
-                if 'start_timestamp' in metadata and metadata['start_timestamp']:
-                    start_timestamps.append(metadata['start_timestamp'])
-                if 'end_timestamp' in metadata and metadata['end_timestamp']:
-                    end_timestamps.append(metadata['end_timestamp'])
-                if 'timestamp' in metadata and metadata['timestamp']:
-                    fallback_timestamps.append(metadata['timestamp'])
-        
-        # Calculate date range
+        for m in metas:
+            if m:
+                if 'variable' in m: variables.add(m['variable'])
+                if 'source_id' in m: sources.add(m['source_id'])
+                if 'timestamp' in m: timestamps.append(m['timestamp'])
+                
         date_range = None
-        if not start_timestamps and fallback_timestamps:
-            start_timestamps.extend(fallback_timestamps)
-        if not end_timestamps and fallback_timestamps:
-            end_timestamps.extend(fallback_timestamps)
-
-        if start_timestamps and end_timestamps:
-            earliest = min(start_timestamps)
-            latest = max(end_timestamps)
-            date_range = {
-                "earliest": earliest,
-                "latest": latest
-            }
-        
+        if timestamps:
+            date_range = {"earliest": min(timestamps), "latest": max(timestamps)}
+            
         return EmbeddingStatsResponse(
-            total_embeddings=len(results['ids']),
+            total_embeddings=count,
             variables=sorted(list(variables)),
             date_range=date_range,
             sources=sorted(list(sources)),
             collection_name=db.collection_name
         )
-    
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error retrieving embeddings statistics: {str(e)}"
-        )
-
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/embeddings/clear")
-async def clear_embeddings(
-    confirm: bool = Query(default=False, description="Set to true to confirm destructive deletion")
-):
-    """Delete all embeddings from the configured vector database collection."""
+async def clear_embeddings(confirm: bool = False):
     if not confirm:
-        raise HTTPException(
-            status_code=400,
-            detail="Set confirm=true to clear all embeddings."
-        )
-
+        raise HTTPException(status_code=400, detail="Set confirm=true")
     try:
         from src.embeddings.database import VectorDatabase
-
         db = VectorDatabase()
         removed = db.clear_collection()
-        return {
-            "removed_embeddings": removed,
-            "collection_name": db.collection_name
-        }
-    except HTTPException:
-        raise
+        return {"removed": removed}
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to clear embeddings: {str(e)}"
-        )
-
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/embeddings/sample", response_model=List[EmbeddingResponse])
-async def get_sample_embeddings(
-    limit: int = Query(default=10, ge=1, le=100, description="Number of samples to return")
-):
-    """
-    Get a sample of embeddings from the vector database.
-    
-    Args:
-        limit: Number of sample embeddings to return (1-100)
-    
-    Returns:
-        List of embedding samples with metadata and preview of embedding vector
-    
-    Use this endpoint to:
-    - Verify embeddings are being stored correctly
-    - Inspect metadata structure
-    - Debug data quality issues
-    - Preview embedding dimensions
-    """
+async def get_sample_embeddings(limit: int = 10):
     try:
         from src.embeddings.database import VectorDatabase
-        
         db = VectorDatabase()
-        collection = db.collection
-        
-        # Get sample embeddings
-        results = collection.get(limit=limit, include=['embeddings', 'metadatas'])
-        
-        if not results['ids']:
-            return []
+        results = db.collection.get(limit=limit, include=['embeddings', 'metadatas'])
         
         samples = []
-        for i, embedding_id in enumerate(results['ids']):
-            metadata = results.get('metadatas', [{}])[i] or {}
-            embedding = results.get('embeddings', [[]])[i] or []
-            
+        ids = results.get('ids', [])
+        for i, eid in enumerate(ids):
+            meta = results['metadatas'][i]
+            emb = results['embeddings'][i]
             samples.append(EmbeddingResponse(
-                id=embedding_id,
-                variable=metadata.get('variable', 'unknown'),
-                timestamp=metadata.get('timestamp'),
-                location={
-                    'lat': metadata.get('latitude'),
-                    'lon': metadata.get('longitude')
-                } if 'latitude' in metadata else None,
-                metadata=metadata,
-                embedding_preview=embedding[:10] if len(embedding) >= 10 else embedding
+                id=eid,
+                variable=meta.get('variable', 'unknown'),
+                timestamp=meta.get('timestamp'),
+                location={'lat': meta.get('latitude'), 'lon': meta.get('longitude')} if 'latitude' in meta else None,
+                metadata=meta,
+                embedding_preview=emb[:10]
             ))
-        
         return samples
-    
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error retrieving sample embeddings: {str(e)}"
-        )
-
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/embeddings/search", response_model=List[EmbeddingSearchResult])
-async def search_embeddings(
-    query: str = Query(..., description="Natural language search query"),
-    limit: int = Query(default=5, ge=1, le=20, description="Number of results to return")
-):
-    """
-    Perform semantic search in the embeddings database.
-    
-    Args:
-        query: Natural language query (e.g., "temperature in Slovakia", "precipitation patterns")
-        limit: Maximum number of results to return (1-20)
-    
-    Returns:
-        List of most relevant embeddings with similarity scores
-    
-    This demonstrates the RAG capability by:
-    - Converting natural language to embeddings
-    - Finding semantically similar climate data
-    - Ranking results by relevance
-    
-    Example queries:
-    - "temperature anomalies"
-    - "heavy precipitation events"
-    - "wind speed patterns"
-    """
+async def search_embeddings(query: str, limit: int = 5):
     try:
         from src.embeddings.search import SemanticSearcher
-
         searcher = SemanticSearcher()
         results = searcher.search(query, k=limit)
-
-        if not results:
-            return []
-
-        search_results = []
-        for result in results:
-            metadata = result.get('metadata', {}) or {}
-            location = None
-            if 'latitude' in metadata and 'longitude' in metadata:
-                location = {
-                    'lat': metadata.get('latitude'),
-                    'lon': metadata.get('longitude')
-                }
-            search_results.append(EmbeddingSearchResult(
-                id=result.get('id', ''),
-                variable=metadata.get('variable', 'unknown'),
-                timestamp=metadata.get('timestamp'),
-                location=location,
-                metadata=metadata,
-                similarity_score=float(result.get('similarity', 0.0))
+        
+        out = []
+        for r in results:
+            m = r.get('metadata', {})
+            out.append(EmbeddingSearchResult(
+                id=r.get('id', ''),
+                variable=m.get('variable', 'unknown'),
+                timestamp=m.get('timestamp'),
+                location={'lat': m.get('latitude'), 'lon': m.get('longitude')} if 'latitude' in m else None,
+                metadata=m,
+                similarity_score=r.get('similarity', 0.0)
             ))
-
-        return search_results
-
+        return out
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error performing semantic search: {str(e)}"
-        )
-
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/rag/chat", response_model=RAGChatResponse)
 async def rag_chat(request: RAGChatRequest):
-    """
-    Run a RAG flow over the stored embeddings with optional LLM answer generation.
-    
-    When use_llm=True (default), uses Ollama to generate intelligent answers.
-    When use_llm=False, falls back to template-based summarization.
-    """
     try:
         from src.embeddings.search import SemanticSearcher
-
         searcher = SemanticSearcher()
         hits = searcher.search(request.question, k=request.top_k)
-        if not hits:
-            raise HTTPException(status_code=404, detail="No relevant context found in embeddings store")
-
-        llm_used = False
         
-        # Try LLM-powered answer generation
+        if not hits:
+            raise HTTPException(status_code=404, detail="No relevant context found.")
+            
+        llm_used = False
+        answer = ""
+        
         if request.use_llm:
             try:
                 from src.llm import OllamaClient
-                
                 llm = OllamaClient()
                 if await llm.check_health():
                     answer = await llm.generate_rag_answer(
                         question=request.question,
                         context_chunks=hits,
-                        temperature=request.temperature,
+                        temperature=request.temperature
                     )
                     llm_used = True
-                else:
-                    # Fallback to template
-                    answer, _ = summarize_hits(hits)
-                    answer += " (Note: Ollama LLM not available, using template summary)"
-            except Exception as llm_error:
-                # Log and fallback
-                print(f"LLM error, falling back to template: {llm_error}")
-                answer, _ = summarize_hits(hits)
-        else:
+            except Exception as e:
+                print(f"LLM failure: {e}")
+                
+        if not llm_used:
             answer, _ = summarize_hits(hits)
-        
-        # Extract references from metadata
-        references = []
+            answer += " (Template-based fallback)"
+            
+        # Build references
+        chunks = []
+        refs = []
         seen = set()
-        for hit in hits:
-            metadata = hit.get('metadata') or {}
-            ref = f"{metadata.get('source_id', 'source')}:{metadata.get('variable', 'var')}"
-            if ref not in seen:
-                seen.add(ref)
-                references.append(ref)
         
-        chunks = [
-            RAGChunk(
-                source_id=(hit.get('metadata') or {}).get('source_id', 'source'),
-                variable=(hit.get('metadata') or {}).get('variable'),
-                similarity=float(hit.get('similarity', 0.0)),
-                text=hit.get('text') or hit.get('document') or "",
-                metadata=hit.get('metadata') or {},
-            )
-            for hit in hits
-        ]
-
+        for h in hits:
+            m = h.get('metadata', {})
+            ref_str = f"{m.get('source_id')}:{m.get('variable')}"
+            if ref_str not in seen:
+                seen.add(ref_str)
+                refs.append(ref_str)
+            
+            chunks.append(RAGChunk(
+                source_id=m.get('source_id', ''),
+                variable=m.get('variable'),
+                similarity=h.get('similarity', 0.0),
+                text=h.get('text', ''),
+                metadata=m
+            ))
+            
         return RAGChatResponse(
             question=request.question,
             answer=answer,
-            references=references,
+            references=refs,
             chunks=chunks,
-            llm_used=llm_used,
+            llm_used=llm_used
         )
-
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error running RAG chat: {str(e)}")
-
+        raise HTTPException(status_code=500, detail=str(e))
 
 # ====================================================================================
-# APPLICATION STARTUP
+# SAMPLE DATA & STARTUP
 # ====================================================================================
+
+@app.get("/samples/{file_name:path}")
+async def download_sample_data(file_name: str):
+    """Serve files from data/raw for testing."""
+    if ".." in file_name: raise HTTPException(400)
+    file_path = SAMPLE_DATA_DIR / file_name
+    if not file_path.exists():
+        raise HTTPException(404, detail="File not found")
+    return FileResponse(file_path)
 
 @app.on_event("startup")
 async def startup_event():
-    """
-    Application startup event handler.
-    """
-    print("=" * 80)
-    print("Climate ETL Pipeline API Starting...")
-    print(f"Dagster GraphQL endpoint: {DAGSTER_GRAPHQL_URL}")
-    print("API Documentation: http://localhost:8000/docs")
-    print("=" * 80)
-
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    """
-    Application shutdown event handler.
-    """
-    print("Climate ETL Pipeline API Shutting down...")
-
-
-# ====================================================================================
-# SAMPLE DATA ENDPOINTS
-# ====================================================================================
-
-@app.get("/samples/{filename}")
-async def get_sample_file(filename: str):
-    """
-    Serve sample data files for testing.
-    
-    Available samples:
-    - test_climate.nc - NetCDF climate data
-    - test_raster.tif - GeoTIFF raster data
-    - test_stations.csv - CSV station data
-    """
-    samples_dir = Path("/app/data/raw")
-    file_path = samples_dir / filename
-    
-    if not file_path.exists():
-        raise HTTPException(
-            status_code=404,
-            detail=f"Sample file '{filename}' not found"
-        )
-    
-    # Determine media type
-    media_types = {
-        ".nc": "application/x-netcdf",
-        ".tif": "image/tiff",
-        ".tiff": "image/tiff",
-        ".csv": "text/csv",
-    }
-    suffix = file_path.suffix.lower()
-    media_type = media_types.get(suffix, "application/octet-stream")
-    
-    return FileResponse(
-        path=str(file_path),
-        media_type=media_type,
-        filename=filename
-    )
-
-
-@app.get("/samples")
-async def list_sample_files():
-    """
-    List available sample data files.
-    """
-    samples_dir = Path("/app/data/raw")
-    if not samples_dir.exists():
-        return {"samples": []}
-    
-    samples = []
-    for file_path in samples_dir.glob("test_*"):
-        if file_path.is_file():
-            samples.append({
-                "filename": file_path.name,
-                "url": f"http://web-api:8000/samples/{file_path.name}",
-                "size": file_path.stat().st_size,
-                "format": file_path.suffix[1:] if file_path.suffix else "unknown"
-            })
-    
-    return {"samples": samples}
-
-
-# ====================================================================================
-# MAIN (for running with uvicorn)
-# ====================================================================================
+    print(f"Climate API Starting. Dagster at {DAGSTER_GRAPHQL_URL}")
 
 if __name__ == "__main__":
     import uvicorn
-    
-    uvicorn.run(
-        "main:app",
-        host="0.0.0.0",
-        port=8000,
-        reload=True,
-        log_level="info"
-    )
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)

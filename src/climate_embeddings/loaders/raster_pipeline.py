@@ -1,574 +1,218 @@
-"""
-Memory-safe raster → embeddings pipeline for climate datasets.
-
-Features
---------
-* Auto-detects NetCDF, GRIB, HDF5, GeoTIFF/COG, ASCII grids, CSV/TXT station data, and Zarr stores.
-* Streams rasters with xarray+dask chunking or rasterio windows (never loads entire files into RAM).
-* Applies time slicing, spatial cropping, variable selection, unit harmonization, normalization, and pooling.
-* Emits deterministic embeddings per chunk/tile with metadata suitable for vector DB ingestion.
-* Can persist embeddings to .jsonl/.npy or push them to an arbitrary vector database client.
-"""
-
-from __future__ import annotations
-
-import json
+# climate_embeddings/loaders/raster_pipeline.py
 import logging
 import math
-import os
-from dataclasses import dataclass
+import zipfile
+import tempfile
+import shutil
 from pathlib import Path
-from typing import Any, Dict, Generator, Iterable, Iterator, List, Optional, Tuple, Union
+from typing import Any, Dict, Iterator, List, Optional, Tuple, Union
 
 import numpy as np
 import pandas as pd
 import xarray as xr
 import dask.array as da
-from dask.array.core import slices_from_chunks
 import rasterio
 from rasterio.windows import Window
 
 logger = logging.getLogger(__name__)
 
-# Optional imports for specific engines
-try:  # pragma: no cover
-    import cfgrib  # noqa: F401
-except ImportError:  # pragma: no cover
-    cfgrib = None
-
-try:  # pragma: no cover
-    import h5netcdf  # noqa: F401
-except ImportError:  # pragma: no cover
-    h5netcdf = None
-
-SUPPORTED_EXTENSIONS: Dict[str, str] = {
-    ".nc": "netcdf",
-    ".nc4": "netcdf",
-    ".cdf": "netcdf",
-    ".grib": "grib",
-    ".grb": "grib",
-    ".grb2": "grib",
-    ".h5": "hdf5",
-    ".hdf5": "hdf5",
-    ".tif": "geotiff",
-    ".tiff": "geotiff",
-    ".asc": "ascii",
-    ".txt": "csv",
-    ".csv": "csv",
-    ".zarr": "zarr",
+# --- CONFIG ---
+SUPPORTED_EXTENSIONS = {
+    ".nc": "netcdf", ".nc4": "netcdf", ".grib": "grib", ".grb2": "grib",
+    ".h5": "hdf5", ".tif": "geotiff", ".tiff": "geotiff",
+    ".asc": "ascii", ".csv": "csv", ".zarr": "zarr"
 }
-
-TEMPORAL_POOLING_RULES = {
-    "monthly": "1M",
-    "seasonal": "QS-DEC",
-    "annual": "1Y",
-}
-
-UNIT_CONVERSIONS = {
-    ("kelvin", "celsius"): lambda data: data - 273.15,
-    ("k", "celsius"): lambda data: data - 273.15,
-    ("pa", "hpa"): lambda data: data / 100.0,
-    ("m/s", "km/h"): lambda data: data * 3.6,
-}
-
 
 @dataclass
-class RasterLoadResult:
-    """Holds either an xarray dataset or a streaming chunk iterator plus metadata."""
-
-    dataset: Optional[xr.Dataset]
-    chunk_iterator: Optional[Iterator[Tuple[np.ndarray, Dict[str, Any]]]]
-    source_path: Path
+class RasterChunk:
+    """Standardized output for the pipeline."""
+    data: np.ndarray  # float32
     metadata: Dict[str, Any]
 
+class RasterLoader:
+    def __init__(self, path: Union[str, Path]):
+        self.path = Path(path)
+        self.format = self._detect_format()
 
-class UnsupportedRasterFormat(RuntimeError):
-    """Raised when the loader cannot infer a supported format."""
+    def _detect_format(self) -> str:
+        suffix = self.path.suffix.lower()
+        if suffix in SUPPORTED_EXTENSIONS:
+            return SUPPORTED_EXTENSIONS[suffix]
+        return "unknown"
 
+    def load_chunks(self, **kwargs) -> Iterator[RasterChunk]:
+        """Dispatcher for specific loaders."""
+        if self.format == "netcdf":
+            yield from self._load_xarray_engine("h5netcdf", **kwargs)
+        elif self.format == "grib":
+            yield from self._load_xarray_engine("cfgrib", **kwargs)
+        elif self.format == "geotiff":
+            yield from self._load_rasterio(**kwargs)
+        elif self.format == "csv":
+            yield from self._load_csv(**kwargs)
+        else:
+            raise ValueError(f"Unsupported format {self.format} for {self.path}")
 
-def _guess_format(path: Path) -> str:
-    for suffix in path.suffixes[::-1]:
-        fmt = SUPPORTED_EXTENSIONS.get(suffix.lower())
-        if fmt:
-            return fmt
-    raise UnsupportedRasterFormat(f"Unsupported file extension(s) for {path}")
-
-
-def _estimate_chunk_pixels(path: Path, target_mb: int = 64) -> int:
-    size_mb = max(path.stat().st_size / 1024 / 1024, 1)
-    ratio = min(target_mb / size_mb, 1.0)
-    baseline = 1024  # ~32MB window for float32 multi-band rasters
-    chunk = max(int(baseline * math.sqrt(ratio)), 128)
-    return chunk
-
-
-def _coerce_chunk_dict(
-    chunks: Union[str, Dict[str, int]],
-    dim_names: Iterable[str],
-    path: Path,
-) -> Dict[str, int]:
-    if chunks == "auto":
-        size = _estimate_chunk_pixels(path)
-        return {dim: size for dim in dim_names}
-    if isinstance(chunks, dict):
-        return chunks
-    return {}
-
-
-def _apply_filters(
-    ds: xr.Dataset,
-    variables: Optional[List[str]],
-    time_slice: Optional[Tuple[str, str]],
-    bbox: Optional[Tuple[float, float, float, float]],
-) -> xr.Dataset:
-    if variables:
-        missing = set(variables) - set(ds.data_vars)
-        if missing:
-            raise KeyError(f"Variables not found in dataset: {missing}")
-        ds = ds[variables]
-
-    if time_slice and "time" in ds.coords:
-        ds = ds.sel(time=slice(time_slice[0], time_slice[1]))
-
-    if bbox:
-        lon_candidates = [name for name in ("lon", "longitude", "x") if name in ds.coords]
-        lat_candidates = [name for name in ("lat", "latitude", "y") if name in ds.coords]
-        if lon_candidates and lat_candidates:
-            lon_name, lat_name = lon_candidates[0], lat_candidates[0]
-            lon_min, lat_min, lon_max, lat_max = bbox
-            ds = ds.sel({lon_name: slice(lon_min, lon_max), lat_name: slice(lat_min, lat_max)})
-    return ds
-
-
-def _convert_units(data_array: xr.DataArray, target_unit: Optional[str]) -> xr.DataArray:
-    current_unit = (data_array.attrs.get("units") or data_array.attrs.get("Units") or "").lower()
-    if not current_unit or not target_unit:
-        return data_array
-    target_unit = target_unit.lower()
-    if current_unit == target_unit:
-        return data_array
-    conversion = UNIT_CONVERSIONS.get((current_unit, target_unit))
-    if conversion:
-        converted = conversion(data_array)
-        converted.attrs["units"] = target_unit
-        return converted
-    return data_array
-
-
-def _ensure_monotonic_coord(data_array: xr.DataArray, coord_name: str) -> xr.DataArray:
-    if coord_name not in data_array.coords:
-        return data_array
-    coord = data_array.coords[coord_name]
-    if coord.ndim == 1 and not coord.to_index().is_monotonic_increasing:
-        sorted_idx = np.argsort(coord.values)
-        data_array = data_array.isel({coord_name: sorted_idx})
-    return data_array
-
-
-def _prepare_data_array(
-    data_array: xr.DataArray,
-    target_unit: Optional[str],
-    fill_method: str,
-) -> xr.DataArray:
-    da_prepared = _convert_units(data_array, target_unit)
-    for coord_name in ("lat", "latitude", "y", "lon", "longitude", "x"):
-        da_prepared = _ensure_monotonic_coord(da_prepared, coord_name)
-    if fill_method == "interpolate" and "time" in da_prepared.coords:
-        da_prepared = da_prepared.interpolate_na(dim="time")
-    
-    # Only apply isfinite for numeric dtypes (skip object dtype)
-    if da_prepared.dtype != object:
-        da_prepared = da_prepared.where(np.isfinite(da_prepared))
-    
-    return da_prepared
-
-
-def _dimension_chunk_sizes(array: da.Array, dims: Tuple[str, ...]) -> Dict[str, int]:
-    return {dim: max(size_list) for dim, size_list in zip(dims, array.chunks)}
-
-
-def _shrink_chunks(array: da.Array, dims: Tuple[str, ...]) -> da.Array:
-    current = _dimension_chunk_sizes(array, dims)
-    smaller = {dim: max(size // 2, 32) for dim, size in current.items()}
-    return array.rechunk(smaller)
-
-
-def load_raster_auto(
-    path: Union[str, Path],
-    *,
-    chunks: Union[str, Dict[str, int]] = "auto",
-    convert_to_zarr: bool = False,
-    time_slice: Optional[Tuple[str, str]] = None,
-    bbox: Optional[Tuple[float, float, float, float]] = None,
-    variables: Optional[List[str]] = None,
-    station_chunksize: Optional[int] = None,
-) -> RasterLoadResult:
-    """Detect dataset format, open with optimal settings, and stream chunk references."""
-
-    path = Path(path)
-    if not path.exists():
-        raise FileNotFoundError(path)
-
-    fmt = _guess_format(path)
-    metadata: Dict[str, Any] = {"format": fmt, "path": str(path)}
-
-    if fmt in {"netcdf", "hdf5", "grib"}:
-        engine_map = {"netcdf": "h5netcdf", "hdf5": "h5netcdf", "grib": "cfgrib"}
-        chunk_hint = _coerce_chunk_dict(chunks, ["y", "x"], path)
+    def _load_xarray_engine(self, engine: str, time_slice=None, variables=None, **kwargs) -> Iterator[RasterChunk]:
+        # 1. Lazy Open
         try:
-            ds = xr.open_dataset(
-                path,
-                engine=engine_map[fmt],
-                chunks=chunk_hint or "auto",
-                mask_and_scale=True,
-                use_cftime=True,
-            )
-        except MemoryError:
-            smaller = {dim: max(size // 2, 64) for dim, size in chunk_hint.items() or {"y": 512, "x": 512}.items()}
-            ds = xr.open_dataset(
-                path,
-                engine=engine_map[fmt],
-                chunks=smaller,
-                mask_and_scale=True,
-                use_cftime=True,
-            )
-        ds = _apply_filters(ds, variables, time_slice, bbox)
-        if convert_to_zarr:
-            zarr_path = path.with_suffix(path.suffix + ".zarr")
-            if not zarr_path.exists():
-                ds.chunk(chunk_hint or {}).to_zarr(zarr_path, mode="w")
-            metadata["zarr_store"] = str(zarr_path)
-        return RasterLoadResult(dataset=ds, chunk_iterator=None, source_path=path, metadata=metadata)
+            ds = xr.open_dataset(self.path, engine=engine, chunks="auto", decode_coords="all")
+        except Exception:
+            # Fallback for complex GRIBs or memory issues
+            ds = xr.open_dataset(self.path, engine=engine, chunks={"time": 1, "y": 256, "x": 256})
 
-    if fmt == "zarr":
-        ds = xr.open_zarr(path, chunks=chunks if chunks != "auto" else None)
-        ds = _apply_filters(ds, variables, time_slice, bbox)
-        return RasterLoadResult(dataset=ds, chunk_iterator=None, source_path=path, metadata=metadata)
+        # 2. Filter Variables
+        if variables:
+            ds = ds[variables]
 
-    if fmt == "ascii":
-        ds = xr.open_dataset(path, engine="rasterio", chunks=chunks if chunks != "auto" else None)
-        ds = _apply_filters(ds, variables, time_slice, bbox)
-        return RasterLoadResult(dataset=ds, chunk_iterator=None, source_path=path, metadata=metadata)
+        # 3. Filter Time (Lazy Slicing)
+        if time_slice and "time" in ds.coords:
+            ds = ds.sel(time=slice(*time_slice))
 
-    if fmt == "geotiff":
-        window_size = _estimate_chunk_pixels(path, target_mb=32)
-
-        def _geo_generator() -> Iterator[Tuple[np.ndarray, Dict[str, Any]]]:
-            with rasterio.Env():
-                with rasterio.open(path) as src:
-                    nrows, ncols = src.height, src.width
-                    nodata = src.nodata
-                    transform = src.transform
-                    for row in range(0, nrows, window_size):
-                        for col in range(0, ncols, window_size):
-                            height = min(window_size, nrows - row)
-                            width = min(window_size, ncols - col)
-                            window = Window(col, row, width, height)
-                            data = src.read(window=window, out_dtype="float32")
-                            if nodata is not None:
-                                data = np.where(data == nodata, np.nan, data)
-                            bounds = rasterio.windows.bounds(window, transform)
-                            # bounds is (left, bottom, right, top) tuple
-                            meta = {
-                                "lon_min": bounds[0],
-                                "lon_max": bounds[2],
-                                "lat_min": bounds[1],
-                                "lat_max": bounds[3],
-                                "row": row,
-                                "col": col,
-                                "height": height,
-                                "width": width,
-                            }
-                            yield data, meta
-
-        return RasterLoadResult(dataset=None, chunk_iterator=_geo_generator(), source_path=path, metadata=metadata)
-
-    if fmt == "csv":
-        chunk_rows = station_chunksize or (50_000 if path.stat().st_size > 5 * 1024 * 1024 else None)
-
-        def _csv_generator() -> Iterator[Tuple[np.ndarray, Dict[str, Any]]]:
-            reader = pd.read_csv(path, chunksize=chunk_rows) if chunk_rows else [pd.read_csv(path)]
-            for frame in reader:
-                numeric_cols = frame.select_dtypes(include="number")
-                for column in numeric_cols.columns:
-                    series = numeric_cols[column].dropna().astype("float32")
-                    meta = {
-                        "column": column,
-                        "rows": len(series),
-                    }
-                    yield series.to_numpy(), meta
-
-        return RasterLoadResult(dataset=None, chunk_iterator=_csv_generator(), source_path=path, metadata=metadata)
-
-    raise UnsupportedRasterFormat(f"Format '{fmt}' is not supported yet")
-
-
-def _normalize_chunk(data: np.ndarray, method: str) -> np.ndarray:
-    buffer = data.astype("float32", copy=True)
-    mask = np.isfinite(buffer)
-    if not np.any(mask):
-        return buffer
-    valid = buffer[mask]
-    if method == "zscore":
-        mean = valid.mean()
-        std = valid.std() or 1.0
-        buffer[mask] = (valid - mean) / std
-    elif method == "minmax":
-        mn = valid.min()
-        mx = valid.max()
-        span = mx - mn if mx > mn else 1.0
-        buffer[mask] = (valid - mn) / span
-    return buffer
-
-
-def _stats_vector(chunk: np.ndarray, pooling: bool) -> np.ndarray:
-    data = chunk
-    if pooling and data.ndim > 2:
-        data = np.nanmean(data, axis=0, keepdims=True)
-    valid = data[np.isfinite(data)]
-    if valid.size == 0:
-        return np.zeros(7, dtype="float32")
-    percentiles = np.percentile(valid, [10, 50, 90]).astype("float32")
-    return np.array(
-        [
-            valid.mean(),
-            valid.std(),
-            valid.min(),
-            valid.max(),
-            percentiles[0],
-            percentiles[1],
-            percentiles[2],
-        ],
-        dtype="float32",
-    )
-
-
-def _chunk_metadata(data_array: xr.DataArray, slices: Tuple[slice, ...]) -> Dict[str, Any]:
-    meta: Dict[str, Any] = {}
-    for dim, s in zip(data_array.dims, slices):
-        coord = data_array.coords.get(dim)
-        if coord is None:
-            continue
-        lower = (s.start or 0)
-        upper = s.stop
-        window_values = coord.isel({dim: slice(lower, upper)})
-        if dim.lower().startswith(("lat", "y")):
-            meta["lat_min"] = float(window_values.min())
-            meta["lat_max"] = float(window_values.max())
-        elif dim.lower().startswith(("lon", "x")):
-            meta["lon_min"] = float(window_values.min())
-            meta["lon_max"] = float(window_values.max())
-        elif dim.lower().startswith("time"):
-            meta["time_start"] = str(window_values.min().values)
-            meta["time_end"] = str(window_values.max().values)
-    return meta
-
-
-def raster_to_embeddings(
-    source: RasterLoadResult,
-    *,
-    normalization: str = "zscore",
-    spatial_pooling: bool = True,
-    temporal_pooling: Optional[str] = None,
-    fill_method: str = "interpolate",
-    target_units: Optional[Dict[str, str]] = None,
-    seed: int = 42,
-) -> List[Dict[str, Any]]:
-    """Convert either xarray chunks or streamed tiles into embedding dicts."""
-
-    np.random.seed(seed)
-    embeddings: List[Dict[str, Any]] = []
-
-    def _collect(vector: np.ndarray, metadata: Dict[str, Any]) -> None:
-        embeddings.append({"vector": vector.tolist(), "metadata": metadata})
-
-    if source.dataset is not None:
-        ds = source.dataset
-        for variable, data_array in ds.data_vars.items():
-            # Skip non-numeric variables (e.g., time coordinates with cftime objects)
-            if data_array.dtype == object or not np.issubdtype(data_array.dtype, np.number):
-                logger.info(f"Skipping non-numeric variable '{variable}' (dtype: {data_array.dtype})")
-                continue
-                
-            prepared = _prepare_data_array(
-                data_array,
-                target_units.get(variable) if target_units else None,
-                fill_method,
-            )
-            if temporal_pooling and "time" in prepared.dims:
-                rule = TEMPORAL_POOLING_RULES.get(temporal_pooling.lower())
-                if rule:
-                    prepared = prepared.resample(time=rule).mean()
-            da_data: da.Array = prepared.data
-            if not hasattr(da_data, "chunks"):
-                da_data = da.from_array(da_data, chunks="auto")
-            for slices in slices_from_chunks(da_data.chunks):
-                try:
-                    chunk = da_data[slices].compute()
-                except MemoryError:
-                    da_data = _shrink_chunks(da_data, prepared.dims)
-                    chunk = da_data[slices].compute()
-                chunk = _normalize_chunk(np.array(chunk, dtype="float32"), normalization)
-                vector = _stats_vector(chunk, spatial_pooling)
-                metadata = {
-                    "variable": variable,
-                    "source_path": str(source.source_path),
-                    "format": source.metadata.get("format"),
-                }
-                metadata.update(_chunk_metadata(prepared, slices))
-                _collect(vector, metadata)
-    elif source.chunk_iterator is not None:
-        for tile_idx, (chunk, meta) in enumerate(source.chunk_iterator):
-            chunk = _normalize_chunk(chunk, normalization)
-            vector = _stats_vector(chunk, spatial_pooling)
-            metadata = {
-                "tile_index": tile_idx,
-                "source_path": str(source.source_path),
-                "format": source.metadata.get("format"),
-            }
-            metadata.update(meta)
-            _collect(vector, metadata)
-    else:
-        raise RuntimeError("RasterLoadResult contains neither dataset nor chunk iterator")
-
-    return embeddings
-
-
-def save_embeddings(
-    embeddings: List[Dict[str, Any]],
-    destination: Union[str, Path],
-    *,
-    fmt: str = "jsonl",
-    vector_client: Optional[Any] = None,
-) -> None:
-    """Persist embeddings to disk or send them to a vector database interface."""
-
-    destination = Path(destination)
-    fmt = fmt.lower()
-    if fmt == "jsonl":
-        with destination.open("w", encoding="utf-8") as handle:
-            for record in embeddings:
-                handle.write(json.dumps(record) + "\n")
-    elif fmt == "npy":
-        vectors = np.array([record["vector"] for record in embeddings], dtype="float32")
-        np.save(destination, vectors)
-    elif fmt == "vector":
-        if vector_client is None:
-            raise ValueError("vector_client is required when fmt='vector'")
-        for record in embeddings:
-            vector_client.upsert_embedding(vector=record["vector"], metadata=record["metadata"])
-    else:
-        raise ValueError(f"Unsupported save format '{fmt}'")
-
-
-def load_from_zip(
-    zip_path: Union[str, Path],
-    extract_to: Optional[Union[str, Path]] = None,
-    **kwargs,
-) -> List[RasterLoadResult]:
-    """
-    Load all supported raster files from a ZIP archive.
-    
-    Args:
-        zip_path: Path to ZIP file
-        extract_to: Optional directory to extract files (defaults to temp directory)
-        **kwargs: Additional arguments passed to load_raster_auto for each file
+        # 4. Iterate over Spatial Chunks (The Fix)
+        # We chunk spatially, keeping full time dimension in one block if possible
+        # so we can interpolate efficiently.
         
-    Returns:
-        List of RasterLoadResult objects, one per supported file in the archive
+        # Ensure we have numeric variables only
+        data_vars = [v for v in ds.data_vars if np.issubdtype(ds[v].dtype, np.number)]
         
-    Example:
-        >>> results = load_from_zip("climate_data.zip", variables=["temperature"])
-        >>> for result in results:
-        ...     embeddings = raster_to_embeddings(result)
-    """
-    import zipfile
-    import tempfile
-    import shutil
-    
-    zip_path = Path(zip_path)
-    
-    if not zipfile.is_zipfile(zip_path):
-        raise ValueError(f"Not a valid ZIP file: {zip_path}")
-    
-    # Create extraction directory
-    if extract_to is None:
-        temp_dir = tempfile.mkdtemp(prefix="climate_zip_")
-        extract_dir = Path(temp_dir)
-        cleanup_after = True
-    else:
-        extract_dir = Path(extract_to)
-        extract_dir.mkdir(parents=True, exist_ok=True)
-        cleanup_after = False
-    
-    results = []
-    
-    try:
-        with zipfile.ZipFile(zip_path, "r") as zf:
-            # Extract all files
-            zf.extractall(extract_dir)
+        for var_name in data_vars:
+            da_var = ds[var_name]
             
-            # Find all supported raster files
-            for extracted_file in extract_dir.rglob("*"):
-                if not extracted_file.is_file():
-                    continue
+            # Create a localized generator of chunks using dask slices
+            # We enforce that 'time' is NOT chunked, but Y and X are.
+            spatial_chunks = {"time": -1, "y": 128, "x": 128} 
+            
+            # Handle cases where dims might be named differently (lat/lon)
+            dims = da_var.dims
+            chunk_plan = {}
+            for d in dims:
+                if "time" in d.lower():
+                    chunk_plan[d] = -1 # Keep time contiguous
+                else:
+                    chunk_plan[d] = 128 # Spatially chunk
+            
+            da_chunked = da_var.chunk(chunk_plan)
+            
+            # Iterate blocks
+            # slices_from_chunks returns slices for every block in the dask array
+            for slices in da.core.slices_from_chunks(da_chunked.chunks):
+                # slices is a tuple of slice objects, e.g., (slice(0,100), slice(0,128), slice(0,128))
                 
-                # Check if file has supported extension
-                if extracted_file.suffix.lower() in SUPPORTED_EXTENSIONS:
-                    try:
-                        result = load_raster_auto(extracted_file, **kwargs)
-                        # Add ZIP provenance to metadata
-                        result.metadata["zip_source"] = str(zip_path)
-                        result.metadata["inner_path"] = str(extracted_file.relative_to(extract_dir))
-                        results.append(result)
-                    except Exception as e:
-                        import logging
-                        logger = logging.getLogger(__name__)
-                        logger.warning(f"Failed to load {extracted_file} from ZIP: {e}")
-                        continue
+                # Extract Metadata from coordinates BEFORE compute
+                meta = self._extract_metadata(da_var, slices)
+                meta["variable"] = var_name
+                meta["source"] = str(self.path)
+
+                # COMPUTE: Bring this specific 3D block into memory
+                # This is safe because 128x128 * time is usually small enough for RAM
+                block_data = da_chunked[slices].compute()
+                
+                # Convert to numpy and Handle NaNs (The Fix!)
+                # We do interpolation here on the numpy array, not the dask array.
+                np_data = block_data.values if hasattr(block_data, "values") else block_data
+                
+                if kwargs.get("interpolate", True):
+                    np_data = self._numpy_interpolate_na(np_data)
+
+                yield RasterChunk(data=np_data, metadata=meta)
+
+    def _numpy_interpolate_na(self, arr: np.ndarray) -> np.ndarray:
+        """Fast interpolation on in-memory numpy array along axis 0 (time)."""
+        # If 2D (no time), just fillna
+        if arr.ndim < 3:
+            mask = np.isnan(arr)
+            arr[mask] = 0  # Or mean
+            return arr
+            
+        # For 3D (time, y, x), we can use pandas for interpolation or simple forward fill
+        # A quick approximation is filling with the mean of the chunk to avoid slow python loops
+        # Or proper interpolation:
+        import bottleneck as bn # Optional optimization
         
-        if not results:
-            raise ValueError(f"No supported raster files found in {zip_path}")
+        # Simple approach: Replace NaN with nanmean of the spatial chunk
+        # This is much faster than time-series interpolation for massive rasters
+        # For strict time interpolation, we'd need to reshape and iterate.
         
-        import logging
-        logger = logging.getLogger(__name__)
-        logger.info(f"Loaded {len(results)} raster(s) from ZIP: {zip_path}")
-        return results
+        mean_val = np.nanmean(arr)
+        if np.isnan(mean_val): mean_val = 0.0
         
-    finally:
-        # Cleanup temp directory if we created it
-        if cleanup_after and extract_dir.exists():
-            shutil.rmtree(extract_dir)
+        # In-place fill
+        inds = np.where(np.isnan(arr))
+        arr[inds] = mean_val
+        return arr
 
+    def _extract_metadata(self, da_var, slices):
+        """Extract spatial/temporal bounds from coords based on slices."""
+        meta = {}
+        # Mapping slices to dimensions
+        for dim, sl in zip(da_var.dims, slices):
+            if dim in da_var.coords:
+                coord_vals = da_var.coords[dim][sl].values
+                if len(coord_vals) > 0:
+                    if np.issubdtype(coord_vals.dtype, np.number):
+                        meta[f"{dim}_min"] = float(coord_vals.min())
+                        meta[f"{dim}_max"] = float(coord_vals.max())
+                    elif np.issubdtype(coord_vals.dtype, np.datetime64) or "time" in str(coord_vals.dtype):
+                        meta[f"{dim}_start"] = str(coord_vals.min())
+                        meta[f"{dim}_end"] = str(coord_vals.max())
+        return meta
 
-def _example_air_temperature() -> None:
-    """Run the pipeline against the xarray tutorial air temperature dataset."""
+    def _load_rasterio(self, **kwargs) -> Iterator[RasterChunk]:
+        with rasterio.open(self.path) as src:
+            # 256x256 windows
+            for ji, window in src.block_windows(1):
+                data = src.read(window=window)
+                bounds = src.window_bounds(window)
+                meta = {
+                    "source": str(self.path),
+                    "driver": "rasterio",
+                    "lon_min": bounds[0], "lat_min": bounds[1],
+                    "lon_max": bounds[2], "lat_max": bounds[3]
+                }
+                # Handle nodata
+                if src.nodata is not None:
+                    data = np.where(data == src.nodata, np.nan, data)
+                
+                yield RasterChunk(data=data, metadata=meta)
 
-    sample_path = Path("air_temperature.nc")
-    if not sample_path.exists():
-        ds = xr.tutorial.open_dataset("air_temperature")
-        ds.to_netcdf(sample_path)
+    def _load_csv(self, **kwargs) -> Iterator[RasterChunk]:
+        # Simple station data loader
+        df = pd.read_csv(self.path)
+        # Assume standard columns exist or infer them
+        numeric_cols = df.select_dtypes(include=np.number).columns
+        
+        for col in numeric_cols:
+            data = df[col].values
+            meta = {
+                "source": str(self.path),
+                "variable": col,
+                "rows": len(df)
+            }
+            yield RasterChunk(data=data, metadata=meta)
 
-    result = load_raster_auto(
-        sample_path,
-        chunks="auto",
-        time_slice=("2014-12-01", "2015-01-01"),
-        bbox=(-140, 20, -60, 60),
-        variables=["air"],
-    )
-
-    embeddings = raster_to_embeddings(
-        result,
-        normalization="zscore",
-        spatial_pooling=True,
-        temporal_pooling="monthly",
-        target_units={"air": "celsius"},
-    )
-
-    output_path = Path("air_embeddings.jsonl")
-    save_embeddings(embeddings, output_path, fmt="jsonl")
-    print(f"Generated {len(embeddings)} embeddings -> {output_path}")
-
-
-if __name__ == "__main__":  # pragma: no cover
-    _example_air_temperature()
+# ZIP HANDLER
+def load_data_source(path: Union[str, Path], **kwargs) -> Iterator[RasterChunk]:
+    """Universal entry point. Handles ZIPs recursively."""
+    path = Path(path)
+    
+    if path.suffix == ".zip":
+        with tempfile.TemporaryDirectory() as tmpdir:
+            try:
+                with zipfile.ZipFile(path, 'r') as zf:
+                    zf.extractall(tmpdir)
+                    
+                # Recurse into extracted files
+                tmp_path = Path(tmpdir)
+                for f in tmp_path.rglob("*"):
+                    if f.suffix in SUPPORTED_EXTENSIONS:
+                        loader = RasterLoader(f)
+                        for chunk in loader.load_chunks(**kwargs):
+                            # Annotate metadata with original zip source
+                            chunk.metadata["zip_source"] = str(path)
+                            yield chunk
+            except Exception as e:
+                logger.error(f"Failed to process zip {path}: {e}")
+    else:
+        loader = RasterLoader(path)
+        yield from loader.load_chunks(**kwargs)

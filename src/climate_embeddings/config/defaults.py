@@ -19,3 +19,9 @@ DEFAULT_METRIC = "cosine"
 
 # RAG
 DEFAULT_TEMPERATURE = 0.7
+
+# Spatial chunking targets (in pixels)
+DEFAULT_CHUNK_SHAPE = {"y": 256, "x": 256}
+
+# Memory safety limit for chunks (MB)
+CHUNK_MEMORY_LIMIT_MB = 64
