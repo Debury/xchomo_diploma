@@ -141,15 +141,30 @@ class VectorDatabase:
         except Exception as e:
             logger.error(f"REST collection creation failed: {e}")
 
-    def add_embeddings(self, ids: List[str], embeddings: List[List[float]], metadatas: List[Dict], documents: List[str]):
+    def add_embeddings(self, ids: List[str], embeddings: List[List[float]], metadatas: List[Dict], documents: List[str] = None):
+        """
+        Add embeddings to vector database with structured metadata.
+        
+        Args:
+            ids: List of unique identifiers
+            embeddings: List of embedding vectors
+            metadatas: List of structured metadata dictionaries (normalized schema)
+            documents: Optional list of text documents (deprecated - text is generated dynamically)
+        
+        Note: The 'documents' parameter is kept for backward compatibility but is not stored.
+        Text descriptions are generated dynamically from metadata when needed.
+        """
         if not self.client:
             logger.error("No client available for upsert")
             return
         
         points = []
-        for i, (uid, vec, meta, doc) in enumerate(zip(ids, embeddings, metadatas, documents)):
+        for i, (uid, vec, meta) in enumerate(zip(ids, embeddings, metadatas)):
+            # Use metadata directly (already normalized and structured)
             payload = meta.copy()
-            payload["text_content"] = doc
+            
+            # DO NOT store text_content - it's generated dynamically from metadata
+            # This keeps the DB clean and filterable
             
             # Deterministic integer ID
             point_id = hash(uid) % (2**63 - 1)
@@ -162,7 +177,7 @@ class VectorDatabase:
         
         try:
             self.client.upsert(collection_name=self.collection, points=points)
-            logger.info(f"Upserted {len(points)} points")
+            logger.info(f"Upserted {len(points)} points with structured metadata")
         except Exception as e:
             logger.error(f"Upsert failed: {e}")
             raise e

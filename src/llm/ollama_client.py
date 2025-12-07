@@ -59,8 +59,15 @@ class OllamaClient:
             if unit_str:
                 var_info_parts.append(f"Unit: {unit_str}")
             
-            # Get text content or generate from metadata
-            text_content = meta.get('text_content', '')
+            # Generate human-readable text dynamically from structured metadata
+            # (text_content is no longer stored in DB - we generate it from metadata)
+            from src.climate_embeddings.schema import generate_human_readable_text
+            text_content = generate_human_readable_text(meta)
+            
+            # If text_content was somehow stored (backward compatibility), use it
+            if not text_content and meta.get('text_content'):
+                text_content = meta.get('text_content')
+            
             if not text_content:
                 # Build structured metadata dynamically from available fields
                 parts = []

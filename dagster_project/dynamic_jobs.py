@@ -141,42 +141,42 @@ def process_all_sources(context: OpExecutionContext) -> List[Dict[str, Any]]:
                     if "source_id" not in meta:
                         meta["source_id"] = source_id
                 
-                batch_texts = generate_batch_descriptions(
-                    metadata_list=batch_metadata,
-                    stats_vectors=batch_stats,
-                    config=pipeline_config
-                )
-
-                batch_vectors = text_embedder.embed_documents(batch_texts)
+                # Generate normalized metadata using schema
+                from src.climate_embeddings.schema import ClimateChunkMetadata, generate_human_readable_text
                 
-                ids, embeddings, metadatas, documents = [], [], [], []
+                ids, embeddings, metadatas, texts_for_embedding = [], [], [], []
                 
-                for j, (sem_vec, stat_item, desc) in enumerate(zip(batch_vectors, batch_slice, batch_texts)):
+                for j, stat_item in enumerate(batch_slice):
                     uid = f"{source_id}_{timestamp}_{i+j}"
                     ids.append(uid)
-                    embeddings.append(sem_vec.tolist())
-                    documents.append(desc)
                     
                     stats_vector = stat_item["vector"]
-                    meta = stat_item["metadata"]
-                    meta_clean = {k: (float(val) if isinstance(val, (np.float32, np.float64)) else val) for k, val in meta.items()}
+                    raw_meta = stat_item["metadata"]
                     
-                    payload = {
-                        **meta_clean,
-                        "source_id": source_id,
-                        "timestamp": timestamp,
-                        "stat_mean": float(stats_vector[0]),
-                        "stat_std": float(stats_vector[1]),
-                        "stat_min": float(stats_vector[2]),
-                        "stat_max": float(stats_vector[3]),
-                        "stat_p10": float(stats_vector[4]),
-                        "stat_median": float(stats_vector[5]),
-                        "stat_p90": float(stats_vector[6]), 
-                        "stat_range": float(stats_vector[7])
-                    }
+                    # Create normalized metadata
+                    normalized_meta = ClimateChunkMetadata.from_chunk_metadata(
+                        raw_metadata=raw_meta,
+                        stats_vector=stats_vector,
+                        source_id=source_id,
+                        dataset_name=source_id  # Can be customized per source
+                    )
+                    
+                    # Convert to dict for storage
+                    payload = normalized_meta.to_dict()
                     metadatas.append(payload)
-
-                vector_db.add_embeddings(ids, embeddings, metadatas, documents)
+                    
+                    # Generate text ONLY for embedding (not stored in DB)
+                    text_for_embedding = generate_human_readable_text(payload)
+                    texts_for_embedding.append(text_for_embedding)
+                
+                # Generate embeddings from human-readable text
+                batch_vectors = text_embedder.embed_documents(texts_for_embedding)
+                
+                # Convert to list format
+                embeddings = [vec.tolist() for vec in batch_vectors]
+                
+                # Store in vector DB (without text_content - it's generated dynamically)
+                vector_db.add_embeddings(ids, embeddings, metadatas, [])  # Empty documents list
 
             logger.info(f"✓ Stored {total_chunks} vectors.")
             store.update_processing_status(source_id, "completed")
