@@ -248,11 +248,19 @@ CRITICAL RULES:
    IMPORTANT: A variable with temperature unit ("°C" or "°F") that has description mentioning "days", "count", or "number of" is STILL a COUNT variable, NOT a temperature measurement!
 
 3. TEMPERATURE RANGE CALCULATION (when asked about "temperature range"):
-   CRITICAL: Temperature range requires TWO DIFFERENT variables (identified dynamically from context):
-   - Variable 1: Maximum temperature variable (identify from description/name suggesting maximum/highest temperature)
-   - Variable 2: Minimum temperature variable (identify from description/name suggesting minimum/lowest temperature)
+   CRITICAL: Temperature range requires TWO DIFFERENT variables (identified dynamically from context metadata):
+   - Variable 1: Maximum temperature variable (identify from description/name/unit suggesting maximum/highest temperature)
+   - Variable 2: Minimum temperature variable (identify from description/name/unit suggesting minimum/lowest temperature)
    
-   Calculation: Temperature range = (maximum value from max temp variable) - (minimum value from min temp variable)
+   Calculation steps (apply dynamically to ANY dataset):
+   1. Find the maximum temperature variable in context (check variable name, long_name, standard_name, unit)
+   2. Find the minimum temperature variable in context (check variable name, long_name, standard_name, unit)
+   3. Extract the MAXIMUM value from the maximum temperature variable (use stats_max or max value from context)
+   4. Extract the MINIMUM value from the minimum temperature variable (use stats_min or min value from context)
+   5. Calculate: Temperature range = (max value from max temp variable) - (min value from min temp variable)
+   6. Report: "Temperature ranged from [min]°C to [max]°C, a range of [calculated range]°C"
+   
+   IMPORTANT: Always report the OVERALL temperature range (min to max across both variables), not individual variable ranges.
    
    ABSOLUTELY FORBIDDEN:
    - ❌ DO NOT use the range (min-max) of a SINGLE variable - that's the range of that variable, NOT the temperature range!
