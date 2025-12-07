@@ -21,13 +21,21 @@ const headers = {
 const fmtDate = (value) => (value ? new Date(value).toLocaleString() : '—');
 
 async function checkHealth() {
-    healthPanel.textContent = 'Checking…';
+    healthPanel.innerHTML = '<span class="loading"></span> Checking…';
     try {
         const res = await fetch('/health');
         const data = await res.json();
-        healthPanel.innerHTML = `API status: <strong>${data.status}</strong><br/>Dagster reachable: <strong>${data.dagster_available ? 'yes' : 'no'}</strong><br/>Checked at ${fmtDate(data.timestamp)}`;
+        const statusIcon = data.status === 'healthy' ? '✅' : '❌';
+        const dagsterIcon = data.dagster_available ? '✅' : '❌';
+        healthPanel.innerHTML = `
+            <div style="display: flex; flex-direction: column; gap: 0.75rem;">
+                <div>${statusIcon} API status: <strong style="color: var(--accent-light);">${data.status}</strong></div>
+                <div>${dagsterIcon} Dagster reachable: <strong style="color: var(--accent-light);">${data.dagster_available ? 'yes' : 'no'}</strong></div>
+                <div class="hint" style="margin-top: 0.5rem;">Checked at ${fmtDate(data.timestamp)}</div>
+            </div>
+        `;
     } catch (err) {
-        healthPanel.textContent = `Health check failed: ${err.message}`;
+        healthPanel.innerHTML = `❌ Health check failed: <span style="color: var(--danger);">${err.message}</span>`;
     }
 }
 
@@ -77,7 +85,7 @@ sourceForm?.addEventListener('submit', async (event) => {
 });
 
 async function loadSources() {
-    sourcesTable.innerHTML = '<tr><td colspan="5">Loading…</td></tr>';
+    sourcesTable.innerHTML = '<tr><td colspan="5" style="text-align: center; padding: 2rem;"><span class="loading"></span> Loading…</td></tr>';
     try {
         const res = await fetch('/sources?active_only=false');
         const data = await res.json();
@@ -262,7 +270,7 @@ function renderEmbeddingStats(data) {
 
 async function loadEmbeddingStats() {
     if (embeddingStatsSummary) {
-        embeddingStatsSummary.innerHTML = '<p class="hint">Loading…</p>';
+        embeddingStatsSummary.innerHTML = '<p class="hint"><span class="loading"></span> Loading…</p>';
     }
     try {
         const res = await fetch('/embeddings/stats');
@@ -280,7 +288,7 @@ async function loadEmbeddingStats() {
 
 ragForm?.addEventListener('submit', async (event) => {
     event.preventDefault();
-    ragStatus.textContent = 'Thinking…';
+    ragStatus.innerHTML = '<span class="loading"></span> Thinking…';
     ragAnswer.textContent = '';
     ragChunks.innerHTML = '';
     const formData = new FormData(ragForm);

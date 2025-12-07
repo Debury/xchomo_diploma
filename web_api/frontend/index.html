@@ -9,12 +9,12 @@
 <body>
     <header>
         <div>
-            <h1>Climate Data Control Center</h1>
+            <h1>🌍 Climate Data Control Center</h1>
             <p>Manage dynamic sources, trigger Dagster runs, and chat with the RAG assistant.</p>
         </div>
         <nav>
-            <a href="/docs" target="_blank">API Docs</a>
-            <a href="http://localhost:3000" target="_blank">Dagit UI</a>
+            <a href="/docs" target="_blank">📚 API Docs</a>
+            <a href="http://localhost:3000" target="_blank">⚙️ Dagit UI</a>
         </nav>
     </header>
 
@@ -22,7 +22,7 @@
         <div class="row">
             <section id="health" class="card">
                 <div class="section-header">
-                    <h2>Service Health</h2>
+                    <h2>💚 Service Health</h2>
                     <button id="refreshHealth">Check</button>
                 </div>
                 <div id="healthStatus" class="status-panel">Waiting for check…</div>
@@ -30,7 +30,7 @@
 
             <section id="embeddings" class="card">
                 <div class="section-header">
-                    <h2>Embedding Stats</h2>
+                    <h2>📊 Embedding Stats</h2>
                     <div class="button-group">
                         <button id="refreshEmbeddings">Refresh</button>
                         <button id="clearEmbeddings" class="ghost danger">Clear DB</button>
@@ -59,7 +59,7 @@
 
         <div class="row">
             <section id="sourceForm" class="card">
-                <h2>Create / Update Source</h2>
+                <h2>➕ Create / Update Source</h2>
                 <form id="createSourceForm">
                     <div class="grid">
                         <label>Source ID
@@ -114,7 +114,7 @@
 
             <section id="sources" class="card">
                 <div class="section-header">
-                    <h2>Active Sources</h2>
+                    <h2>📦 Active Sources</h2>
                     <button id="refreshSources">Refresh</button>
                 </div>
                 <div class="table-wrapper">
@@ -136,7 +136,7 @@
 
         <div class="row">
             <section id="ragChat" class="card">
-                <h2>RAG Assistant</h2>
+                <h2>🤖 RAG Assistant</h2>
                 <form id="ragForm">
                     <label>Ask a question
                         <textarea name="question" rows="3" required placeholder="How are Bratislava PM2.5 levels evolving?"></textarea>
