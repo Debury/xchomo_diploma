@@ -167,22 +167,50 @@ class VectorDatabase:
             logger.error(f"Upsert failed: {e}")
             raise e
 
-    def search(self, query_vector: List[float], limit: int = 5) -> List[Any]:
+    def search(
+        self, 
+        query_vector: List[float], 
+        limit: int = 5,
+        filter_dict: Optional[Dict[str, Any]] = None
+    ) -> List[Any]:
         """
         Search using Client, falling back to direct REST API if client methods are missing.
-        Returns list of objects with .score and .payload attributes (ScoredPoint-like).
+        Supports optional filtering by metadata fields.
+        
+        Args:
+            query_vector: Query embedding vector
+            limit: Maximum number of results to return
+            filter_dict: Optional filter dictionary. Examples:
+                - {"source_id": "NOAA_GSOM"}  # Filter by source
+                - {"variable": "TMAX"}  # Filter by variable
+                - {"source_id": "NOAA_GSOM", "variable": "TMIN"}  # Multiple filters (AND)
+        
+        Returns:
+            List of objects with .score and .payload attributes (ScoredPoint-like).
         """
         # Strategy 1: Try Python Client (various API versions)
         if self.client:
             # Try v1.11.x API first (search method)
             if hasattr(self.client, 'search'):
                 try:
-                    results = self.client.search(
-                        collection_name=self.collection,
-                        query_vector=query_vector,
-                        limit=limit,
-                        with_payload=True
-                    )
+                    search_kwargs = {
+                        "collection_name": self.collection,
+                        "query_vector": query_vector,
+                        "limit": limit,
+                        "with_payload": True
+                    }
+                    # Add filter if provided
+                    if filter_dict:
+                        from qdrant_client.models import Filter, FieldCondition, MatchValue
+                        conditions = []
+                        for key, value in filter_dict.items():
+                            conditions.append(
+                                FieldCondition(key=key, match=MatchValue(value=value))
+                            )
+                        if conditions:
+                            search_kwargs["query_filter"] = Filter(must=conditions)
+                    
+                    results = self.client.search(**search_kwargs)
                     if results:
                         return results
                 except Exception as e:
@@ -190,13 +218,24 @@ class VectorDatabase:
             # Try newer API (query_points) if search doesn't exist
             elif hasattr(self.client, 'query_points'):
                 try:
-                    from qdrant_client.models import Query
-                    results = self.client.query_points(
-                        collection_name=self.collection,
-                        query=Query(vector=query_vector),
-                        limit=limit,
-                        with_payload=True
-                    )
+                    from qdrant_client.models import Query, Filter, FieldCondition, MatchValue
+                    query_kwargs = {
+                        "collection_name": self.collection,
+                        "query": Query(vector=query_vector),
+                        "limit": limit,
+                        "with_payload": True
+                    }
+                    # Add filter if provided
+                    if filter_dict:
+                        conditions = []
+                        for key, value in filter_dict.items():
+                            conditions.append(
+                                FieldCondition(key=key, match=MatchValue(value=value))
+                            )
+                        if conditions:
+                            query_kwargs["query_filter"] = Filter(must=conditions)
+                    
+                    results = self.client.query_points(**query_kwargs)
                     if results and hasattr(results, 'points'):
                         return results.points
                 except Exception as e:
@@ -205,16 +244,37 @@ class VectorDatabase:
                 logger.debug("No search method available on client, using REST API")
 
         # Strategy 2: Direct REST API (Fail-safe - always works)
-        return self._search_via_rest(query_vector, limit)
+        return self._search_via_rest(query_vector, limit, filter_dict)
 
-    def _search_via_rest(self, query_vector: List[float], limit: int) -> List[Any]:
-        """Manual search via HTTP requests. Returns ScoredPoint-like objects."""
+    def _search_via_rest(
+        self, 
+        query_vector: List[float], 
+        limit: int,
+        filter_dict: Optional[Dict[str, Any]] = None
+    ) -> List[Any]:
+        """
+        Manual search via HTTP requests. Returns ScoredPoint-like objects.
+        Supports filtering via Qdrant REST API filter format.
+        """
         url = f"{self.base_url}/collections/{self.collection}/points/search"
         payload = {
             "vector": query_vector,
             "limit": limit,
             "with_payload": True
         }
+        
+        # Add filter if provided (Qdrant REST API format)
+        if filter_dict:
+            must_conditions = []
+            for key, value in filter_dict.items():
+                must_conditions.append({
+                    "key": key,
+                    "match": {"value": value}
+                })
+            if must_conditions:
+                payload["filter"] = {
+                    "must": must_conditions
+                }
         
         try:
             response = requests.post(url, json=payload, timeout=10)
@@ -231,6 +291,8 @@ class VectorDatabase:
                     # Ensure payload is a dict
                     payload_data = item.get("payload", {})
                     self.payload = payload_data if isinstance(payload_data, dict) else {}
+                    # For compatibility with code expecting metadata attribute
+                    self.metadata = self.payload
             
             return [ScoredResult(item) for item in result]
             

@@ -113,33 +113,48 @@ CRITICAL RULES:
 1. ONLY use information from the provided context. Do NOT make up or infer values not explicitly stated.
 
 2. VARIABLE TYPE IDENTIFICATION (CRITICAL - identify from context metadata):
-   To identify variable types, check these fields in order:
-   a) Description/long_name field: Look for keywords like:
-      - "days", "count", "number of", "occurrences" → COUNT variable (NOT a temperature!)
-      - "temperature", "temp", "degrees" → TEMPERATURE variable
-      - "precipitation", "rain", "snow" → PRECIPITATION variable
+   To identify variable types, check these fields in order (NO hardcoded variable names):
+   a) Description/long_name field: Look for keywords:
+      - "days", "count", "number of", "occurrences", "frequency" → COUNT variable (NOT a temperature!)
+      - "temperature", "temp", "degrees" (when referring to actual temp measurements) → TEMPERATURE variable
+      - "precipitation", "rain", "snow", "rainfall" → PRECIPITATION variable
+      - "wind", "speed", "velocity" → WIND variable
    
-   b) Variable name: If description is missing, variable names starting with:
-      - "DT", "DX" (e.g., DT32, DX32) → COUNT of days (NOT temperature!)
-      - "TMAX", "TMIN", "TEMP" → TEMPERATURE variable
-      - "PRCP", "PRECIP" → PRECIPITATION variable
+   b) Variable name patterns (if description is missing): Check if name suggests:
+      - Count/occurrence indicators (any pattern suggesting counting) → COUNT variable
+      - Maximum/highest temperature indicators → MAXIMUM TEMPERATURE variable
+      - Minimum/lowest temperature indicators → MINIMUM TEMPERATURE variable
+      - Precipitation indicators → PRECIPITATION variable
    
    c) Unit field: Check the unit:
-      - Unit is "days", "count", or missing but values are small integers (0-31) → COUNT variable
-      - Unit is "°C", "°F", "K", "Celsius", "Fahrenheit", "Kelvin" → TEMPERATURE variable
-      - Unit is "mm", "inches", "m" → PRECIPITATION variable
+      - Unit is "days", "count", "occurrences", or missing but values are small integers (0-31) → COUNT variable
+      - Unit is "°C", "°F", "K", "Celsius", "Fahrenheit", "Kelvin" → TEMPERATURE variable (if description confirms)
+      - Unit is "mm", "inches", "m", "meters" → PRECIPITATION variable
+      - Unit is "m/s", "mph", "km/h" → WIND variable
    
-   d) Value range: If values are small integers (0-31) and description mentions "days" → COUNT variable
+   d) Value range and description: If values are small integers (0-31) AND description mentions "days" or "count" → COUNT variable
    
-   IMPORTANT: A variable with unit "°C" or "°F" that has description mentioning "days" or "count" is STILL a COUNT variable, NOT a temperature!
+   IMPORTANT: A variable with temperature unit ("°C" or "°F") that has description mentioning "days", "count", or "number of" is STILL a COUNT variable, NOT a temperature measurement!
 
 3. TEMPERATURE RANGE CALCULATION (when asked about "temperature range"):
-   - You MUST find TWO SEPARATE variables: one for maximum temperature and one for minimum temperature
-   - Temperature range = (maximum temperature value) - (minimum temperature value)
-   - DO NOT use the range (min-max) of a single variable - that's the range of that variable, not the temperature range
-   - DO NOT use count variables (like DT32) - these are counts of days, NOT temperatures
-   - If the context only shows one temperature variable, you CANNOT calculate the full temperature range
-   - If you only see count variables or degree days, state that you need actual temperature variables (TMAX/TMIN or similar)
+   CRITICAL: Temperature range requires TWO DIFFERENT variables (identified dynamically from context):
+   - Variable 1: Maximum temperature variable (identify from description/name suggesting maximum/highest temperature)
+   - Variable 2: Minimum temperature variable (identify from description/name suggesting minimum/lowest temperature)
+   
+   Calculation: Temperature range = (maximum value from max temp variable) - (minimum value from min temp variable)
+   
+   ABSOLUTELY FORBIDDEN:
+   - ❌ DO NOT use the range (min-max) of a SINGLE variable - that's the range of that variable, NOT the temperature range!
+   - ❌ DO NOT use count variables (any variable identified as a count/occurrence) - these are counts, NOT temperatures
+   - ❌ DO NOT use degree days or heating/cooling indices - these are indices, NOT temperatures
+   - ❌ DO NOT calculate range from one variable's min and max values
+   - ❌ DO NOT infer or estimate - only use explicit values from context
+   
+   If context is insufficient:
+   - If you see ONLY minimum temperature variable: Say "I can see minimum temperature data, but I need maximum temperature data to calculate the temperature range."
+   - If you see ONLY maximum temperature variable: Say "I can see maximum temperature data, but I need minimum temperature data to calculate the temperature range."
+   - If you see NEITHER: Say "I need both maximum and minimum temperature variables to calculate the temperature range."
+   - NEVER make up values, infer missing data, or use incorrect variable types!
 
 4. UNIT CONVERSION (use European/SI units):
    - ALWAYS provide temperatures in Celsius (°C) in your answer

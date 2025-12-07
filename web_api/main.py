@@ -107,6 +107,9 @@ class RAGChatRequest(BaseModel):
     top_k: int = 3
     use_llm: bool = True
     temperature: float = 0.3
+    # Optional filters for narrowing search results
+    source_id: Optional[str] = None  # Filter by source (e.g., "NOAA_GSOM")
+    variable: Optional[str] = None  # Filter by variable (e.g., "TMAX", "TMIN")
 
 class RAGChatResponse(BaseModel):
     question: str
@@ -437,11 +440,20 @@ async def rag_chat(request: RAGChatRequest):
         # 1. Embed Query
         query_vec = embedder.embed_queries([request.question])[0]
         
-        # 2. Search (Using SAFE Wrapper)
+        # 2. Build filter dict if filters provided
+        filter_dict = {}
+        if request.source_id:
+            filter_dict["source_id"] = request.source_id
+        if request.variable:
+            filter_dict["variable"] = request.variable
+        
+        # 3. Search (Using SAFE Wrapper with optional filters)
         # This fixes the 'AttributeError: search' by using our custom method
+        # Filters allow narrowing search to specific sources or variables
         search_result = db.search(
             query_vector=query_vec.tolist(),
-            limit=request.top_k
+            limit=request.top_k,
+            filter_dict=filter_dict if filter_dict else None
         )
         
         # 3. Build Context
