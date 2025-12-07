@@ -104,7 +104,7 @@ class RAGChunk(BaseModel):
 
 class RAGChatRequest(BaseModel):
     question: str
-    top_k: int = 3
+    top_k: int = 10  # Increased from 3 to 10 to capture more relevant chunks (e.g., both TMAX and TMIN)
     use_llm: bool = True
     temperature: float = 0.3
     # Optional filters for narrowing search results
@@ -447,14 +447,74 @@ async def rag_chat(request: RAGChatRequest):
         if request.variable:
             filter_dict["variable"] = request.variable
         
+        # 2.5. Intelligent search for temperature range queries
+        # If query mentions "temperature range", we need both TMAX and TMIN
+        question_lower = request.question.lower()
+        is_temp_range_query = any(phrase in question_lower for phrase in [
+            "temperature range", "temp range", "range of temperature",
+            "min and max temperature", "maximum and minimum temperature"
+        ])
+        
+        # For temperature range queries, increase search to ensure we get both variables
+        search_limit = request.top_k
+        if is_temp_range_query and not request.variable:
+            search_limit = max(request.top_k, 15)  # Ensure we get enough results
+        
         # 3. Search (Using SAFE Wrapper with optional filters)
-        # This fixes the 'AttributeError: search' by using our custom method
-        # Filters allow narrowing search to specific sources or variables
         search_result = db.search(
             query_vector=query_vec.tolist(),
-            limit=request.top_k,
+            limit=search_limit,
             filter_dict=filter_dict if filter_dict else None
         )
+        
+        # 3.5. Post-process: For temperature range queries, ensure we have both TMAX and TMIN
+        if is_temp_range_query and not request.variable and search_result:
+            found_variables = set()
+            for hit in search_result:
+                meta = hit.payload if hasattr(hit, 'payload') else (hit if isinstance(hit, dict) else {})
+                var = meta.get('variable', '') if isinstance(meta, dict) else ''
+                if var:
+                    found_variables.add(var.upper())
+            
+            # Check if we have both TMAX and TMIN
+            has_tmax = any('TMAX' in v or ('MAX' in v and 'TEMP' in v) for v in found_variables)
+            has_tmin = any('TMIN' in v or ('MIN' in v and 'TEMP' in v) for v in found_variables)
+            
+            # If missing one, do targeted search for the missing variable
+            if not has_tmax or not has_tmin:
+                missing_vars = []
+                if not has_tmax:
+                    missing_vars.append('TMAX')
+                if not has_tmin:
+                    missing_vars.append('TMIN')
+                
+                # Search for missing variables
+                for missing_var in missing_vars:
+                    temp_filter = filter_dict.copy()
+                    temp_filter["variable"] = missing_var
+                    temp_results = db.search(
+                        query_vector=query_vec.tolist(),
+                        limit=3,  # Get a few results for the missing variable
+                        filter_dict=temp_filter
+                    )
+                    # Add unique results (check by variable name to avoid duplicates)
+                    for temp_hit in temp_results:
+                        temp_meta = temp_hit.payload if hasattr(temp_hit, 'payload') else (temp_hit if isinstance(temp_hit, dict) else {})
+                        temp_var = temp_meta.get('variable', '') if isinstance(temp_meta, dict) else ''
+                        # Check if already present
+                        already_present = any(
+                            (existing_hit.payload if hasattr(existing_hit, 'payload') else (existing_hit if isinstance(existing_hit, dict) else {})).get('variable', '') == temp_var
+                            for existing_hit in search_result
+                        )
+                        if not already_present:
+                            search_result.append(temp_hit)
+            
+            # Re-sort by score and limit to top_k
+            search_result = sorted(
+                search_result,
+                key=lambda x: getattr(x, 'score', 0.0) if hasattr(x, 'score') else (x.get('score', 0.0) if isinstance(x, dict) else 0.0),
+                reverse=True
+            )[:request.top_k]
         
         # 3. Build Context
         context_chunks = []

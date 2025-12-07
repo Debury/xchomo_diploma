@@ -371,7 +371,7 @@ ragForm?.addEventListener('submit', async (event) => {
     const formData = new FormData(ragForm);
     const payload = {
         question: formData.get('question')?.trim(),
-        top_k: 5,
+        top_k: 10,  // Increased to capture more relevant chunks (e.g., both TMAX and TMIN for temperature range queries)
         use_llm: true,
     };
 
@@ -416,12 +416,21 @@ ragForm?.addEventListener('submit', async (event) => {
                 card.className = 'chunk-card';
                 
                 const meta = chunk.metadata || {};
+                // Support both old schema (lat_min) and new schema (latitude_min)
+                const latMin = meta.latitude_min ?? meta.lat_min;
+                const latMax = meta.latitude_max ?? meta.lat_max;
+                const lonMin = meta.longitude_min ?? meta.lon_min;
+                const lonMax = meta.longitude_max ?? meta.lon_max;
+                
                 const timeInfo = meta.time_start || meta.time || '';
-                const spatialInfo = meta.lat_min !== undefined 
-                    ? `Lat: ${meta.lat_min?.toFixed(2)}° to ${meta.lat_max?.toFixed(2)}°`
+                const spatialInfo = latMin !== undefined && latMax !== undefined
+                    ? `Lat: ${latMin.toFixed(2)}° to ${latMax.toFixed(2)}°${lonMin !== undefined && lonMax !== undefined ? `, Lon: ${lonMin.toFixed(2)}° to ${lonMax.toFixed(2)}°` : ''}`
                     : '';
-                const statsInfo = meta.stat_mean !== undefined
-                    ? `Mean: ${meta.stat_mean?.toFixed(2)}${meta.unit ? ' ' + meta.unit : ''}`
+                // Support both old schema (stat_mean) and new schema (stats_mean)
+                const statMean = meta.stats_mean ?? meta.stat_mean;
+                const unit = meta.unit || '';
+                const statsInfo = statMean !== undefined
+                    ? `Mean: ${statMean.toFixed(2)}${unit ? ' ' + unit : ''}`
                     : '';
                 
                 card.innerHTML = `
