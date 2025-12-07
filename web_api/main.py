@@ -450,11 +450,16 @@ async def rag_chat(request: RAGChatRequest):
         refs = set()
         
         for hit in search_result:
-            # Handle both ScoredPoint (client) and dict (rest fallback)
-            # This logic is crucial because our fallback returns slightly different objects
-            meta = hit.payload if hasattr(hit, 'payload') else getattr(hit, 'payload', {})
-            score = hit.score if hasattr(hit, 'score') else getattr(hit, 'score', 0.0)
-            text = meta.get('text_content', str(meta))
+            # Handle both ScoredPoint (client) and ScoredResult (REST fallback)
+            # Both should have .payload and .score attributes
+            if hasattr(hit, 'payload'):
+                meta = hit.payload if isinstance(hit.payload, dict) else {}
+            else:
+                # Fallback: try to get from dict or default
+                meta = getattr(hit, 'payload', {}) if hasattr(hit, 'payload') else (hit if isinstance(hit, dict) else {})
+            
+            score = getattr(hit, 'score', 0.0) if hasattr(hit, 'score') else (hit.get('score', 0.0) if isinstance(hit, dict) else 0.0)
+            text = meta.get('text_content', '') if isinstance(meta, dict) else str(meta)
             
             context_chunks.append({"metadata": meta, "score": score})
             

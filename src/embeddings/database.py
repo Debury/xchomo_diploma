@@ -32,10 +32,15 @@ class VectorDatabase:
             self.collection_name = os.getenv("QDRANT_COLLECTION", "climate_data")
             logger.info(f"Using defaults: collection='{self.collection_name}', vector_size={self.vector_size}")
         
-        # Initialize client
+        # Initialize client (disable version check to avoid warnings with minor version differences)
         try:
-            self.client = QdrantClient(host=self.host, port=self.port)
-            logger.info(f"Qdrant Client initialized: {self.client}")
+            self.client = QdrantClient(
+                host=self.host, 
+                port=self.port,
+                prefer_grpc=False,  # Use REST API for compatibility
+                timeout=10
+            )
+            logger.info(f"Qdrant Client initialized: {self.host}:{self.port}")
         except Exception as e:
             logger.error(f"Failed to connect to Qdrant client: {e}")
             self.client = None
@@ -157,24 +162,45 @@ class VectorDatabase:
     def search(self, query_vector: List[float], limit: int = 5) -> List[Any]:
         """
         Search using Client, falling back to direct REST API if client methods are missing.
+        Returns list of objects with .score and .payload attributes (ScoredPoint-like).
         """
-        # Strategy 1: Python Client
+        # Strategy 1: Python Client (Qdrant v1.11.x API)
         if self.client:
             try:
-                # Try standard search
-                return self.client.search(
+                # For Qdrant v1.11.x, use the search method
+                results = self.client.search(
                     collection_name=self.collection,
                     query_vector=query_vector,
-                    limit=limit
+                    limit=limit,
+                    with_payload=True
                 )
-            except (AttributeError, TypeError, Exception) as e:
+                # Results should be ScoredPoint objects with .score and .payload
+                if results:
+                    return results
+            except AttributeError as e:
+                # Method doesn't exist - try alternative API
+                logger.warning(f"Client.search() not available ({e}). Trying alternative...")
+                try:
+                    # Try query_points for newer API
+                    from qdrant_client.models import Query, Filter
+                    results = self.client.query_points(
+                        collection_name=self.collection,
+                        query=query_vector,
+                        limit=limit,
+                        with_payload=True
+                    )
+                    if results and hasattr(results, 'points'):
+                        return results.points
+                except Exception as e2:
+                    logger.warning(f"Alternative search also failed ({e2}). Falling back to REST API.")
+            except Exception as e:
                 logger.warning(f"Client search failed ({e}). Falling back to REST API.")
 
         # Strategy 2: Direct REST API (Fail-safe)
         return self._search_via_rest(query_vector, limit)
 
     def _search_via_rest(self, query_vector: List[float], limit: int) -> List[Any]:
-        """Manual search via HTTP requests."""
+        """Manual search via HTTP requests. Returns ScoredPoint-like objects."""
         url = f"{self.base_url}/collections/{self.collection}/points/search"
         payload = {
             "vector": query_vector,
@@ -183,17 +209,20 @@ class VectorDatabase:
         }
         
         try:
-            response = requests.post(url, json=payload, timeout=5)
+            response = requests.post(url, json=payload, timeout=10)
             response.raise_for_status()
             result = response.json().get("result", [])
             
-            # Convert dict result to object-like structure for compatibility
+            # Convert dict result to ScoredPoint-like structure for compatibility
             # The API expects objects with .score and .payload attributes
             class ScoredResult:
+                """ScoredPoint-like object for compatibility with client API."""
                 def __init__(self, item):
                     self.id = item.get("id")
-                    self.score = item.get("score")
-                    self.payload = item.get("payload")
+                    self.score = float(item.get("score", 0.0))
+                    # Ensure payload is a dict
+                    payload_data = item.get("payload", {})
+                    self.payload = payload_data if isinstance(payload_data, dict) else {}
             
             return [ScoredResult(item) for item in result]
             

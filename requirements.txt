@@ -49,8 +49,8 @@ python-dateutil>=2.8.0
 # Sentence transformers for embedding generation
 sentence-transformers>=2.2.0
 
-# Qdrant for vector database
-qdrant-client>=1.12.1
+# Qdrant for vector database (pinned to match server version 1.11.0)
+qdrant-client>=1.11.0,<1.12.0
 
 # ====================================================================================
 # PHASE 5: DYNAMIC SOURCE MANAGEMENT & DATABASE
