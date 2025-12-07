@@ -1,11 +1,15 @@
 import os
 import logging
 import requests
+import warnings
 from typing import List, Dict, Any, Optional
 from qdrant_client import QdrantClient
 from qdrant_client.http.models import Distance, VectorParams, ScoredPoint
 
 logger = logging.getLogger(__name__)
+
+# Suppress Qdrant version compatibility warnings globally
+warnings.filterwarnings("ignore", message=".*version.*incompatible.*", category=UserWarning)
 
 class VectorDatabase:
     def __init__(self, config: Optional[Dict[str, Any]] = None):
@@ -34,12 +38,16 @@ class VectorDatabase:
         
         # Initialize client (disable version check to avoid warnings with minor version differences)
         try:
-            self.client = QdrantClient(
-                host=self.host, 
-                port=self.port,
-                prefer_grpc=False,  # Use REST API for compatibility
-                timeout=10
-            )
+            import warnings
+            # Suppress version compatibility warnings
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", message=".*version.*incompatible.*")
+                self.client = QdrantClient(
+                    host=self.host, 
+                    port=self.port,
+                    prefer_grpc=False,  # Use REST API for compatibility
+                    timeout=10
+                )
             logger.info(f"Qdrant Client initialized: {self.host}:{self.port}")
         except Exception as e:
             logger.error(f"Failed to connect to Qdrant client: {e}")
@@ -164,39 +172,39 @@ class VectorDatabase:
         Search using Client, falling back to direct REST API if client methods are missing.
         Returns list of objects with .score and .payload attributes (ScoredPoint-like).
         """
-        # Strategy 1: Python Client (Qdrant v1.11.x API)
+        # Strategy 1: Try Python Client (various API versions)
         if self.client:
-            try:
-                # For Qdrant v1.11.x, use the search method
-                results = self.client.search(
-                    collection_name=self.collection,
-                    query_vector=query_vector,
-                    limit=limit,
-                    with_payload=True
-                )
-                # Results should be ScoredPoint objects with .score and .payload
-                if results:
-                    return results
-            except AttributeError as e:
-                # Method doesn't exist - try alternative API
-                logger.warning(f"Client.search() not available ({e}). Trying alternative...")
+            # Try v1.11.x API first (search method)
+            if hasattr(self.client, 'search'):
                 try:
-                    # Try query_points for newer API
-                    from qdrant_client.models import Query, Filter
+                    results = self.client.search(
+                        collection_name=self.collection,
+                        query_vector=query_vector,
+                        limit=limit,
+                        with_payload=True
+                    )
+                    if results:
+                        return results
+                except Exception as e:
+                    logger.debug(f"Client.search() failed ({e}), trying REST fallback")
+            # Try newer API (query_points) if search doesn't exist
+            elif hasattr(self.client, 'query_points'):
+                try:
+                    from qdrant_client.models import Query
                     results = self.client.query_points(
                         collection_name=self.collection,
-                        query=query_vector,
+                        query=Query(vector=query_vector),
                         limit=limit,
                         with_payload=True
                     )
                     if results and hasattr(results, 'points'):
                         return results.points
-                except Exception as e2:
-                    logger.warning(f"Alternative search also failed ({e2}). Falling back to REST API.")
-            except Exception as e:
-                logger.warning(f"Client search failed ({e}). Falling back to REST API.")
+                except Exception as e:
+                    logger.debug(f"Client.query_points() failed ({e}), trying REST fallback")
+            else:
+                logger.debug("No search method available on client, using REST API")
 
-        # Strategy 2: Direct REST API (Fail-safe)
+        # Strategy 2: Direct REST API (Fail-safe - always works)
         return self._search_via_rest(query_vector, limit)
 
     def _search_via_rest(self, query_vector: List[float], limit: int) -> List[Any]:
