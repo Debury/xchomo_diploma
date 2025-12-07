@@ -1,3 +1,4 @@
+// DOM Elements
 const healthPanel = document.getElementById('healthStatus');
 const sourceForm = document.getElementById('createSourceForm');
 const sourceFormMessage = document.getElementById('sourceFormMessage');
@@ -8,6 +9,9 @@ const ragChunks = document.getElementById('ragChunks');
 const ragStatus = document.getElementById('ragStatus');
 const embeddingStatsSummary = document.getElementById('embeddingStatsSummary');
 const embeddingStatsRaw = document.getElementById('embeddingStatsRaw');
+const embeddingCount = document.getElementById('embeddingCount');
+const sourcesCount = document.getElementById('sourcesCount');
+const variablesCount = document.getElementById('variablesCount');
 
 const refreshHealthBtn = document.getElementById('refreshHealth');
 const refreshSourcesBtn = document.getElementById('refreshSources');
@@ -20,25 +24,38 @@ const headers = {
 
 const fmtDate = (value) => (value ? new Date(value).toLocaleString() : '—');
 
+// Health Check
 async function checkHealth() {
-    healthPanel.innerHTML = '<span class="loading"></span> Checking…';
+    healthPanel.innerHTML = '<div class="flex items-center gap-2"><div class="spinner"></div> Checking...</div>';
     try {
         const res = await fetch('/health');
         const data = await res.json();
         const statusIcon = data.status === 'healthy' ? '✅' : '❌';
+        const statusColor = data.status === 'healthy' ? 'text-green-400' : 'text-red-400';
         const dagsterIcon = data.dagster_available ? '✅' : '❌';
+        const dagsterColor = data.dagster_available ? 'text-green-400' : 'text-red-400';
+        
         healthPanel.innerHTML = `
-            <div style="display: flex; flex-direction: column; gap: 0.75rem;">
-                <div>${statusIcon} API status: <strong style="color: var(--accent-light);">${data.status}</strong></div>
-                <div>${dagsterIcon} Dagster reachable: <strong style="color: var(--accent-light);">${data.dagster_available ? 'yes' : 'no'}</strong></div>
-                <div class="hint" style="margin-top: 0.5rem;">Checked at ${fmtDate(data.timestamp)}</div>
+            <div class="space-y-2">
+                <div class="flex items-center gap-2">
+                    <span>${statusIcon}</span>
+                    <span class="text-sm text-gray-300">API status:</span>
+                    <span class="text-sm font-semibold ${statusColor}">${data.status}</span>
+                </div>
+                <div class="flex items-center gap-2">
+                    <span>${dagsterIcon}</span>
+                    <span class="text-sm text-gray-300">Dagster:</span>
+                    <span class="text-sm font-semibold ${dagsterColor}">${data.dagster_available ? 'reachable' : 'unreachable'}</span>
+                </div>
+                <div class="text-xs text-gray-500 mt-2">Checked at ${fmtDate(data.timestamp)}</div>
             </div>
         `;
     } catch (err) {
-        healthPanel.innerHTML = `❌ Health check failed: <span style="color: var(--danger);">${err.message}</span>`;
+        healthPanel.innerHTML = `<div class="text-red-400 text-sm">❌ Health check failed: ${err.message}</div>`;
     }
 }
 
+// Parse CSV string
 function parseCSV(value) {
     return value
         .split(',')
@@ -46,11 +63,13 @@ function parseCSV(value) {
         .filter(Boolean);
 }
 
+// Create Source Form
 sourceForm?.addEventListener('submit', async (event) => {
     event.preventDefault();
     sourceFormMessage.textContent = 'Saving…';
+    sourceFormMessage.className = 'text-sm text-gray-400';
+    
     const formData = new FormData(sourceForm);
-
     const payload = {
         source_id: formData.get('source_id')?.trim(),
         url: formData.get('url')?.trim(),
@@ -58,10 +77,8 @@ sourceForm?.addEventListener('submit', async (event) => {
         variables: parseCSV(formData.get('variables') || ''),
         tags: parseCSV(formData.get('tags') || ''),
         description: formData.get('description')?.trim() || null,
-        is_active: true,  // Always create as active (checkbox value: formData.get('is_active') === 'on')
+        is_active: formData.get('is_active') === 'on',
     };
-    
-    console.log('Creating source with is_active:', payload.is_active);
 
     if (!payload.variables.length) delete payload.variables;
     if (!payload.tags.length) delete payload.tags;
@@ -77,57 +94,118 @@ sourceForm?.addEventListener('submit', async (event) => {
             throw new Error(detail.detail || res.statusText);
         }
         sourceForm.reset();
-        sourceFormMessage.textContent = 'Source created – trigger it below.';
+        sourceFormMessage.textContent = '✅ Source created successfully!';
+        sourceFormMessage.className = 'text-sm text-green-400';
         await loadSources();
+        setTimeout(() => {
+            sourceFormMessage.textContent = '';
+        }, 3000);
     } catch (err) {
-        sourceFormMessage.textContent = `Error: ${err.message}`;
+        sourceFormMessage.textContent = `❌ Error: ${err.message}`;
+        sourceFormMessage.className = 'text-sm text-red-400';
     }
 });
 
+// Load Sources
 async function loadSources() {
-    sourcesTable.innerHTML = '<tr><td colspan="5" style="text-align: center; padding: 2rem;"><span class="loading"></span> Loading…</td></tr>';
+    sourcesTable.innerHTML = `
+        <tr>
+            <td colspan="5" class="px-4 py-8 text-center">
+                <div class="flex items-center justify-center gap-2">
+                    <div class="spinner"></div>
+                    <span class="text-gray-400">Loading sources...</span>
+                </div>
+            </td>
+        </tr>
+    `;
+    
     try {
         const res = await fetch('/sources?active_only=false');
         const data = await res.json();
+        
         if (!Array.isArray(data) || !data.length) {
-            sourcesTable.innerHTML = '<tr><td colspan="5">No sources configured yet.</td></tr>';
+            sourcesTable.innerHTML = `
+                <tr>
+                    <td colspan="5" class="px-4 py-8 text-center text-gray-400">
+                        No sources configured yet. Create one above!
+                    </td>
+                </tr>
+            `;
+            sourcesCount.textContent = '0';
             return;
         }
+        
+        sourcesCount.textContent = data.length.toString();
         sourcesTable.innerHTML = '';
+        
         data.forEach((source) => {
-            const activeStatus = source.active ? 'active' : 'inactive';
-            const activeClass = source.active ? 'completed' : 'failed';
+            const isActive = source.is_active !== false;
+            const statusClass = isActive ? 'completed' : 'failed';
+            const statusText = isActive ? 'Active' : 'Inactive';
+            const processingStatus = source.processing_status || 'pending';
+            
             const row = document.createElement('tr');
+            row.className = 'hover:bg-gray-700 transition-colors';
             row.innerHTML = `
-                <td>
-                    <strong>${source.source_id}</strong>
-                    <div class="hint">${source.description || ''}</div>
+                <td class="px-4 py-3">
+                    <div class="font-semibold text-gray-100">${source.source_id}</div>
+                    ${source.description ? `<div class="text-xs text-gray-400 mt-1">${source.description}</div>` : ''}
                 </td>
-                <td>${source.format}</td>
-                <td>
-                    <span class="status-pill ${activeClass}">${activeStatus}</span>
-                    <div class="hint">Processing: ${source.processing_status}</div>
+                <td class="px-4 py-3">
+                    <span class="px-2 py-1 bg-gray-700 text-gray-300 rounded text-xs">${source.format || 'auto'}</span>
                 </td>
-                <td>${fmtDate(source.last_processed)}</td>
-                <td>
-                    <div class="table-actions">
-                        <button data-trigger="${source.source_id}" ${!source.active ? 'disabled title="Activate source first"' : ''}>Trigger ETL</button>
-                        <button class="ghost" data-edit="${source.source_id}">Edit</button>
-                        <button class="ghost danger" data-delete="${source.source_id}">Delete</button>
+                <td class="px-4 py-3">
+                    <span class="status-badge ${statusClass}">${statusText}</span>
+                    <div class="text-xs text-gray-400 mt-1">${processingStatus}</div>
+                </td>
+                <td class="px-4 py-3 text-sm text-gray-400">${fmtDate(source.updated_at || source.created_at)}</td>
+                <td class="px-4 py-3">
+                    <div class="flex flex-wrap gap-2">
+                        <button 
+                            data-trigger="${source.source_id}" 
+                            ${!isActive ? 'disabled' : ''}
+                            class="px-3 py-1 text-xs bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded transition-colors"
+                            ${!isActive ? 'title="Activate source first"' : ''}
+                        >
+                            Trigger ETL
+                        </button>
+                        <button 
+                            data-edit="${source.source_id}"
+                            class="px-3 py-1 text-xs bg-gray-700 hover:bg-gray-600 text-gray-300 rounded transition-colors"
+                        >
+                            Edit
+                        </button>
+                        <button 
+                            data-delete="${source.source_id}"
+                            class="px-3 py-1 text-xs bg-red-600 hover:bg-red-700 text-white rounded transition-colors"
+                        >
+                            Delete
+                        </button>
                     </div>
                 </td>
             `;
             sourcesTable.appendChild(row);
         });
     } catch (err) {
-        sourcesTable.innerHTML = `<tr><td colspan="5">Failed to load sources: ${err.message}</td></tr>`;
+        sourcesTable.innerHTML = `
+            <tr>
+                <td colspan="5" class="px-4 py-8 text-center text-red-400">
+                    Failed to load sources: ${err.message}
+                </td>
+            </tr>
+        `;
     }
 }
 
+// Sources Table Actions
 sourcesTable?.addEventListener('click', async (event) => {
     const target = event.target;
-    if (target instanceof HTMLButtonElement && target.dataset.trigger) {
-        const sourceId = target.dataset.trigger;
+    if (!(target instanceof HTMLButtonElement)) return;
+    
+    const sourceId = target.dataset.trigger || target.dataset.edit || target.dataset.delete;
+    if (!sourceId) return;
+    
+    if (target.dataset.trigger) {
         target.textContent = 'Triggering…';
         target.disabled = true;
         try {
@@ -139,16 +217,17 @@ sourcesTable?.addEventListener('click', async (event) => {
                 const detail = await res.json().catch(() => ({}));
                 throw new Error(detail.detail || res.statusText);
             }
-            target.textContent = 'Queued ✅';
+            target.textContent = '✅ Queued';
+            target.classList.remove('bg-blue-600', 'hover:bg-blue-700');
+            target.classList.add('bg-green-600');
         } catch (err) {
             target.textContent = 'Retry';
             target.disabled = false;
             alert(`Failed to trigger ETL: ${err.message}`);
         }
-    } else if (target instanceof HTMLButtonElement && target.dataset.edit) {
-        const sourceId = target.dataset.edit;
+    } else if (target.dataset.edit) {
+        // Simple toggle active status
         try {
-            // Fetch current source data
             const res = await fetch(`/sources?active_only=false`, { headers });
             const sources = await res.json();
             const source = sources.find(s => s.source_id === sourceId);
@@ -157,23 +236,15 @@ sourcesTable?.addEventListener('click', async (event) => {
                 return;
             }
             
-            // Simple prompt to toggle active status
-            const newActive = !source.active;
-            const confirmMsg = newActive 
-                ? `Activate source ${sourceId}?` 
-                : `Deactivate source ${sourceId}?`;
-            
-            if (!confirm(confirmMsg)) {
+            const newActive = !source.is_active;
+            if (!confirm(`${newActive ? 'Activate' : 'Deactivate'} source ${sourceId}?`)) {
                 return;
             }
             
-            // Update source
             const updateRes = await fetch(`/sources/${sourceId}`, {
                 method: 'PUT',
                 headers,
-                body: JSON.stringify({
-                    is_active: newActive
-                })
+                body: JSON.stringify({ is_active: newActive })
             });
             
             if (!updateRes.ok) {
@@ -182,13 +253,11 @@ sourcesTable?.addEventListener('click', async (event) => {
             }
             
             await loadSources();
-            alert(`Source ${sourceId} ${newActive ? 'activated' : 'deactivated'}`);
         } catch (err) {
             alert(`Failed to edit source: ${err.message}`);
         }
-    } else if (target instanceof HTMLButtonElement && target.dataset.delete) {
-        const sourceId = target.dataset.delete;
-        if (!confirm(`Delete source ${sourceId}?`)) {
+    } else if (target.dataset.delete) {
+        if (!confirm(`Delete source ${sourceId}? This will also remove its embeddings.`)) {
             return;
         }
         const original = target.textContent;
@@ -212,56 +281,52 @@ sourcesTable?.addEventListener('click', async (event) => {
     }
 });
 
-function summarizeList(items = [], maxItems = 5) {
-    if (!items.length) {
-        return '—';
-    }
-    if (items.length <= maxItems) {
-        return items.join(', ');
-    }
-    const head = items.slice(0, maxItems).join(', ');
-    return `${head} … (+${items.length - maxItems} more)`;
-}
-
+// Embedding Stats
 function renderEmbeddingStats(data) {
-    if (!embeddingStatsSummary || !embeddingStatsRaw) {
-        return;
-    }
-
     if (!data || Object.keys(data).length === 0) {
-        embeddingStatsSummary.innerHTML = '<p class="hint">No embeddings stored yet.</p>';
+        embeddingStatsSummary.innerHTML = `
+            <div class="text-center text-gray-400 py-8">
+                <p>No embeddings stored yet.</p>
+                <p class="text-sm mt-2">Create a source and trigger ETL to generate embeddings.</p>
+            </div>
+        `;
         embeddingStatsRaw.textContent = '{}';
+        embeddingCount.textContent = '0';
+        variablesCount.textContent = '0';
         return;
     }
 
     const total = data.total_embeddings ?? 0;
     const collection = data.collection_name || '—';
-    const variables = summarizeList(data.variables || []);
-    const sources = summarizeList(data.sources || []);
+    const variables = data.variables || [];
+    const sources = data.sources || [];
     const dateRange = data?.date_range
         ? `${data.date_range.earliest || '—'} → ${data.date_range.latest || '—'}`
         : '—';
 
+    embeddingCount.textContent = total.toLocaleString();
+    variablesCount.textContent = variables.length.toString();
+
     embeddingStatsSummary.innerHTML = `
-        <div class="stat-card">
-            <p class="hint">Total embeddings</p>
-            <strong>${total.toLocaleString()}</strong>
-        </div>
-        <div class="stat-card">
-            <p class="hint">Collection</p>
-            <strong>${collection}</strong>
-        </div>
-        <div class="stat-card">
-            <p class="hint">Sources</p>
-            <strong>${sources}</strong>
-        </div>
-        <div class="stat-card">
-            <p class="hint">Variables tracked</p>
-            <strong>${variables}</strong>
-        </div>
-        <div class="stat-card">
-            <p class="hint">Date range</p>
-            <strong>${dateRange}</strong>
+        <div class="grid grid-cols-1 gap-4">
+            <div class="bg-gray-700 rounded-lg p-4">
+                <div class="text-sm text-gray-400 mb-1">Collection</div>
+                <div class="text-lg font-semibold text-gray-100">${collection}</div>
+            </div>
+            <div class="bg-gray-700 rounded-lg p-4">
+                <div class="text-sm text-gray-400 mb-1">Sources</div>
+                <div class="text-lg font-semibold text-gray-100">${sources.length}</div>
+                <div class="text-xs text-gray-500 mt-1">${sources.slice(0, 3).join(', ')}${sources.length > 3 ? ` +${sources.length - 3} more` : ''}</div>
+            </div>
+            <div class="bg-gray-700 rounded-lg p-4">
+                <div class="text-sm text-gray-400 mb-1">Variables</div>
+                <div class="text-lg font-semibold text-gray-100">${variables.length}</div>
+                <div class="text-xs text-gray-500 mt-1">${variables.slice(0, 3).join(', ')}${variables.length > 3 ? ` +${variables.length - 3} more` : ''}</div>
+            </div>
+            <div class="bg-gray-700 rounded-lg p-4">
+                <div class="text-sm text-gray-400 mb-1">Date Range</div>
+                <div class="text-lg font-semibold text-gray-100">${dateRange}</div>
+            </div>
         </div>
     `;
 
@@ -270,7 +335,12 @@ function renderEmbeddingStats(data) {
 
 async function loadEmbeddingStats() {
     if (embeddingStatsSummary) {
-        embeddingStatsSummary.innerHTML = '<p class="hint"><span class="loading"></span> Loading…</p>';
+        embeddingStatsSummary.innerHTML = `
+            <div class="text-center text-gray-400 py-8">
+                <div class="inline-block spinner"></div>
+                <p class="mt-2">Loading...</p>
+            </div>
+        `;
     }
     try {
         const res = await fetch('/embeddings/stats');
@@ -278,7 +348,11 @@ async function loadEmbeddingStats() {
         renderEmbeddingStats(data);
     } catch (err) {
         if (embeddingStatsSummary) {
-            embeddingStatsSummary.innerHTML = `<p class="hint">Failed to load stats: ${err.message}</p>`;
+            embeddingStatsSummary.innerHTML = `
+                <div class="text-center text-red-400 py-8">
+                    <p>Failed to load stats: ${err.message}</p>
+                </div>
+            `;
         }
         if (embeddingStatsRaw) {
             embeddingStatsRaw.textContent = '';
@@ -286,15 +360,19 @@ async function loadEmbeddingStats() {
     }
 }
 
+// RAG Form
 ragForm?.addEventListener('submit', async (event) => {
     event.preventDefault();
-    ragStatus.innerHTML = '<span class="loading"></span> Thinking…';
-    ragAnswer.textContent = '';
+    ragStatus.innerHTML = '<span class="flex items-center gap-2"><div class="spinner"></div> Thinking…</span>';
+    ragStatus.className = 'text-sm text-gray-400';
+    ragAnswer.innerHTML = '';
     ragChunks.innerHTML = '';
+    
     const formData = new FormData(ragForm);
     const payload = {
         question: formData.get('question')?.trim(),
-        top_k: 3,
+        top_k: 5,
+        use_llm: true,
     };
 
     try {
@@ -309,34 +387,34 @@ ragForm?.addEventListener('submit', async (event) => {
         }
         const data = await res.json();
         
-        // Display answer with better formatting
+        // Display answer
         if (data.answer) {
             ragAnswer.innerHTML = `
-                <div class="rag-answer-content">
+                <div class="rag-answer-card">
                     <div class="rag-answer-header">
-                        <strong>Answer</strong>
-                        ${data.llm_used ? '<span class="badge">LLM Generated</span>' : '<span class="badge">Context Only</span>'}
+                        <strong class="text-lg text-gray-100">Answer</strong>
+                        <span class="px-3 py-1 bg-blue-600 bg-opacity-20 text-blue-400 rounded-full text-xs font-semibold">
+                            ${data.llm_used ? '🤖 LLM Generated' : '📄 Context Only'}
+                        </span>
                     </div>
                     <div class="rag-answer-text">${data.answer.replace(/\n/g, '<br>')}</div>
                 </div>
             `;
         } else {
-            ragAnswer.textContent = 'No answer generated.';
+            ragAnswer.innerHTML = '<div class="text-gray-400">No answer generated.</div>';
         }
         
-        // Display context chunks with enhanced metadata
-        ragChunks.innerHTML = '';
+        // Display chunks
         if (data.chunks && data.chunks.length > 0) {
             const chunksHeader = document.createElement('div');
-            chunksHeader.className = 'chunks-header';
-            chunksHeader.innerHTML = `<h3>Retrieved Context (${data.chunks.length} chunks)</h3>`;
+            chunksHeader.className = 'mb-4';
+            chunksHeader.innerHTML = `<h3 class="text-lg font-semibold text-gray-100">Retrieved Context (${data.chunks.length} chunks)</h3>`;
             ragChunks.appendChild(chunksHeader);
             
             data.chunks.forEach((chunk, idx) => {
                 const card = document.createElement('div');
                 card.className = 'chunk-card';
                 
-                // Extract metadata for display
                 const meta = chunk.metadata || {};
                 const timeInfo = meta.time_start || meta.time || '';
                 const spatialInfo = meta.lat_min !== undefined 
@@ -347,38 +425,37 @@ ragForm?.addEventListener('submit', async (event) => {
                     : '';
                 
                 card.innerHTML = `
-                    <header>
-                        <div>
-                            <strong>${chunk.source_id || 'Unknown Source'}</strong>
-                            <span class="chunk-rank">#${idx + 1}</span>
+                    <div class="chunk-header">
+                        <div class="flex items-center gap-2">
+                            <strong class="text-gray-100">${chunk.source_id || 'Unknown Source'}</strong>
+                            <span class="px-2 py-0.5 bg-gray-700 text-gray-400 rounded text-xs">#${idx + 1}</span>
                         </div>
                         <span class="similarity-badge">${(chunk.similarity * 100).toFixed(1)}% match</span>
-                    </header>
+                    </div>
                     <div class="chunk-meta">
                         ${chunk.variable ? `<span class="meta-tag">Variable: ${chunk.variable}</span>` : ''}
                         ${timeInfo ? `<span class="meta-tag">Time: ${timeInfo}</span>` : ''}
                         ${spatialInfo ? `<span class="meta-tag">${spatialInfo}</span>` : ''}
                         ${statsInfo ? `<span class="meta-tag">${statsInfo}</span>` : ''}
                     </div>
-                    <div class="chunk-text">${chunk.text || 'No preview available.'}</div>
+                    <div class="text-sm text-gray-300 leading-relaxed">${chunk.text || 'No preview available.'}</div>
                 `;
                 ragChunks.appendChild(card);
             });
         } else {
-            ragChunks.innerHTML = '<p class="hint">No context chunks retrieved.</p>';
+            ragChunks.innerHTML = '<div class="text-gray-400 text-center py-4">No context chunks retrieved.</div>';
         }
         
         ragStatus.textContent = data.references && data.references.length 
             ? `References: ${data.references.join(', ')}` 
             : 'No references available.';
+        ragStatus.className = 'text-sm text-gray-400';
     } catch (err) {
-        ragStatus.textContent = `Chat error: ${err.message}`;
+        ragStatus.innerHTML = `<span class="text-red-400">❌ Error: ${err.message}</span>`;
     }
 });
 
-refreshHealthBtn?.addEventListener('click', checkHealth);
-refreshSourcesBtn?.addEventListener('click', loadSources);
-refreshEmbeddingsBtn?.addEventListener('click', loadEmbeddingStats);
+// Clear Embeddings
 clearEmbeddingsBtn?.addEventListener('click', async () => {
     if (!confirm('This will delete all embeddings from the vector database. Continue?')) {
         return;
@@ -396,17 +473,8 @@ clearEmbeddingsBtn?.addEventListener('click', async () => {
             throw new Error(detail.detail || res.statusText);
         }
         const data = await res.json();
-        if (embeddingStatsSummary) {
-            embeddingStatsSummary.innerHTML = `
-                <div class="stat-card">
-                    <p class="hint">Status</p>
-                    <strong>Cleared ${data.removed_embeddings} from ${data.collection_name}</strong>
-                </div>`;
-        }
-        if (embeddingStatsRaw) {
-            embeddingStatsRaw.textContent = JSON.stringify(data, null, 2);
-        }
         await loadEmbeddingStats();
+        alert(`Cleared ${data.removed_embeddings || 0} embeddings from ${data.collection_name || 'database'}`);
     } catch (err) {
         alert(`Failed to clear embeddings: ${err.message}`);
     } finally {
@@ -415,7 +483,12 @@ clearEmbeddingsBtn?.addEventListener('click', async () => {
     }
 });
 
-// Initial load
+// Event Listeners
+refreshHealthBtn?.addEventListener('click', checkHealth);
+refreshSourcesBtn?.addEventListener('click', loadSources);
+refreshEmbeddingsBtn?.addEventListener('click', loadEmbeddingStats);
+
+// Initial Load
 checkHealth();
 loadSources();
 loadEmbeddingStats();

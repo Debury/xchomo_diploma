@@ -3,159 +3,361 @@
 <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Climate RAG Console</title>
+    <title>Climate Data RAG Pipeline</title>
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- Flowbite CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/flowbite@2.4.1/dist/flowbite.min.css" rel="stylesheet" />
+    
+    <!-- Custom styles -->
     <link rel="stylesheet" href="/ui/static/styles.css" />
+    
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        primary: {
+                            50: '#eff6ff',
+                            100: '#dbeafe',
+                            200: '#bfdbfe',
+                            300: '#93c5fd',
+                            400: '#60a5fa',
+                            500: '#3b82f6',
+                            600: '#2563eb',
+                            700: '#1d4ed8',
+                            800: '#1e40af',
+                            900: '#1e3a8a',
+                        }
+                    }
+                }
+            }
+        }
+    </script>
 </head>
-<body>
-    <header>
-        <div>
-            <h1>🌍 Climate Data Control Center</h1>
-            <p>Manage dynamic sources, trigger Dagster runs, and chat with the RAG assistant.</p>
+<body class="bg-gray-900 text-gray-100 min-h-screen">
+    <!-- Navigation -->
+    <nav class="bg-gray-800 border-b border-gray-700 sticky top-0 z-50 backdrop-blur-lg bg-opacity-90">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="flex justify-between items-center h-16">
+                <div class="flex items-center">
+                    <div class="flex-shrink-0">
+                        <h1 class="text-2xl font-bold bg-gradient-to-r from-blue-400 to-purple-500 bg-clip-text text-transparent">
+                            🌍 Climate Data RAG
+                        </h1>
+                    </div>
+                </div>
+                <div class="flex items-center space-x-4">
+                    <a href="/docs" target="_blank" class="text-gray-300 hover:text-white px-3 py-2 rounded-md text-sm font-medium transition-colors">
+                        📚 API Docs
+                    </a>
+                    <a href="http://localhost:3000" target="_blank" class="text-gray-300 hover:text-white px-3 py-2 rounded-md text-sm font-medium transition-colors">
+                        ⚙️ Dagit UI
+                    </a>
+                </div>
+            </div>
         </div>
-        <nav>
-            <a href="/docs" target="_blank">📚 API Docs</a>
-            <a href="http://localhost:3000" target="_blank">⚙️ Dagit UI</a>
-        </nav>
-    </header>
+    </nav>
 
-    <main class="layout">
-        <div class="row">
-            <section id="health" class="card">
-                <div class="section-header">
-                    <h2>💚 Service Health</h2>
-                    <button id="refreshHealth">Check</button>
+    <!-- Main Content -->
+    <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        <!-- Stats Overview -->
+        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
+            <!-- Health Card -->
+            <div class="bg-gray-800 rounded-lg shadow-lg p-6 border border-gray-700">
+                <div class="flex items-center justify-between mb-4">
+                    <h3 class="text-lg font-semibold text-gray-200">Service Health</h3>
+                    <button id="refreshHealth" class="text-blue-400 hover:text-blue-300 transition-colors">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path>
+                        </svg>
+                    </button>
                 </div>
-                <div id="healthStatus" class="status-panel">Waiting for check…</div>
-            </section>
+                <div id="healthStatus" class="text-sm text-gray-400">Checking...</div>
+            </div>
 
-            <section id="embeddings" class="card">
-                <div class="section-header">
-                    <h2>📊 Embedding Stats</h2>
-                    <div class="button-group">
-                        <button id="refreshEmbeddings">Refresh</button>
-                        <button id="clearEmbeddings" class="ghost danger">Clear DB</button>
+            <!-- Embeddings Count -->
+            <div class="bg-gray-800 rounded-lg shadow-lg p-6 border border-gray-700">
+                <div class="flex items-center justify-between mb-4">
+                    <h3 class="text-lg font-semibold text-gray-200">Total Embeddings</h3>
+                    <div class="w-12 h-12 bg-blue-500 bg-opacity-20 rounded-lg flex items-center justify-center">
+                        <svg class="w-6 h-6 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"></path>
+                        </svg>
                     </div>
                 </div>
-                <div id="embeddingStatsSummary" class="stat-grid">
-                    <div class="stat-card">
-                        <p class="hint">Total embeddings</p>
-                        <strong>—</strong>
-                    </div>
-                    <div class="stat-card">
-                        <p class="hint">Sources</p>
-                        <strong>—</strong>
-                    </div>
-                    <div class="stat-card">
-                        <p class="hint">Date range</p>
-                        <strong>—</strong>
+                <div id="embeddingCount" class="text-3xl font-bold text-blue-400">—</div>
+                <p class="text-sm text-gray-400 mt-2">in vector database</p>
+            </div>
+
+            <!-- Sources Count -->
+            <div class="bg-gray-800 rounded-lg shadow-lg p-6 border border-gray-700">
+                <div class="flex items-center justify-between mb-4">
+                    <h3 class="text-lg font-semibold text-gray-200">Active Sources</h3>
+                    <div class="w-12 h-12 bg-purple-500 bg-opacity-20 rounded-lg flex items-center justify-center">
+                        <svg class="w-6 h-6 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"></path>
+                        </svg>
                     </div>
                 </div>
-                <details class="raw-json-panel">
-                    <summary>View raw JSON</summary>
-                    <pre id="embeddingStatsRaw">No data yet</pre>
+                <div id="sourcesCount" class="text-3xl font-bold text-purple-400">—</div>
+                <p class="text-sm text-gray-400 mt-2">configured</p>
+            </div>
+
+            <!-- Variables Count -->
+            <div class="bg-gray-800 rounded-lg shadow-lg p-6 border border-gray-700">
+                <div class="flex items-center justify-between mb-4">
+                    <h3 class="text-lg font-semibold text-gray-200">Variables</h3>
+                    <div class="w-12 h-12 bg-green-500 bg-opacity-20 rounded-lg flex items-center justify-center">
+                        <svg class="w-6 h-6 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 12l3-3 3 3 4-4M8 21l4-4 4 4M3 4h18M4 4h16v12a1 1 0 01-1 1H5a1 1 0 01-1-1V4z"></path>
+                        </svg>
+                    </div>
+                </div>
+                <div id="variablesCount" class="text-3xl font-bold text-green-400">—</div>
+                <p class="text-sm text-gray-400 mt-2">tracked</p>
+            </div>
+        </div>
+
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
+            <!-- Create Source Card -->
+            <div class="bg-gray-800 rounded-lg shadow-lg p-6 border border-gray-700">
+                <h2 class="text-xl font-bold text-gray-100 mb-6 flex items-center gap-2">
+                    <svg class="w-6 h-6 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path>
+                    </svg>
+                    Create New Source
+                </h2>
+                
+                <form id="createSourceForm" class="space-y-4">
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div>
+                            <label class="block text-sm font-medium text-gray-300 mb-2">
+                                Source ID <span class="text-red-400">*</span>
+                            </label>
+                            <input 
+                                type="text" 
+                                name="source_id" 
+                                required 
+                                placeholder="era5_bratislava"
+                                class="w-full px-4 py-2 bg-gray-700 border border-gray-600 rounded-lg text-gray-100 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all"
+                            />
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-300 mb-2">
+                                Format
+                            </label>
+                            <input 
+                                type="text" 
+                                name="format" 
+                                placeholder="netcdf (auto-detected)"
+                                class="w-full px-4 py-2 bg-gray-700 border border-gray-600 rounded-lg text-gray-100 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all"
+                            />
+                        </div>
+                    </div>
+                    
+                    <div>
+                        <label class="block text-sm font-medium text-gray-300 mb-2">
+                            Data URL <span class="text-red-400">*</span>
+                        </label>
+                        <input 
+                            type="url" 
+                            name="url" 
+                            required 
+                            placeholder="https://example.com/data.nc"
+                            class="w-full px-4 py-2 bg-gray-700 border border-gray-600 rounded-lg text-gray-100 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all"
+                        />
+                    </div>
+
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div>
+                            <label class="block text-sm font-medium text-gray-300 mb-2">
+                                Variables (comma separated)
+                            </label>
+                            <input 
+                                type="text" 
+                                name="variables" 
+                                placeholder="temperature_2m, precipitation"
+                                class="w-full px-4 py-2 bg-gray-700 border border-gray-600 rounded-lg text-gray-100 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all"
+                            />
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-300 mb-2">
+                                Tags (comma separated)
+                            </label>
+                            <input 
+                                type="text" 
+                                name="tags" 
+                                placeholder="temperature, slovakia"
+                                class="w-full px-4 py-2 bg-gray-700 border border-gray-600 rounded-lg text-gray-100 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all"
+                            />
+                        </div>
+                    </div>
+
+                    <div>
+                        <label class="block text-sm font-medium text-gray-300 mb-2">
+                            Description
+                        </label>
+                        <textarea 
+                            name="description" 
+                            rows="2" 
+                            placeholder="Short description of this data source..."
+                            class="w-full px-4 py-2 bg-gray-700 border border-gray-600 rounded-lg text-gray-100 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all resize-none"
+                        ></textarea>
+                    </div>
+
+                    <div class="flex items-center">
+                        <input 
+                            type="checkbox" 
+                            name="is_active" 
+                            checked 
+                            class="w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 rounded focus:ring-blue-500"
+                        />
+                        <label class="ml-2 text-sm text-gray-300">
+                            Active (enable ETL processing)
+                        </label>
+                    </div>
+
+                    <div class="flex items-center justify-between pt-4">
+                        <span id="sourceFormMessage" class="text-sm text-gray-400"></span>
+                        <button 
+                            type="submit"
+                            class="px-6 py-2 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-lg transition-colors shadow-lg hover:shadow-xl"
+                        >
+                            Create Source
+                        </button>
+                    </div>
+                </form>
+            </div>
+
+            <!-- Embedding Stats Card -->
+            <div class="bg-gray-800 rounded-lg shadow-lg p-6 border border-gray-700">
+                <div class="flex items-center justify-between mb-6">
+                    <h2 class="text-xl font-bold text-gray-100 flex items-center gap-2">
+                        <svg class="w-6 h-6 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"></path>
+                        </svg>
+                        Embedding Statistics
+                    </h2>
+                    <div class="flex gap-2">
+                        <button id="refreshEmbeddings" class="px-3 py-1 text-sm bg-gray-700 hover:bg-gray-600 text-gray-300 rounded-lg transition-colors">
+                            Refresh
+                        </button>
+                        <button id="clearEmbeddings" class="px-3 py-1 text-sm bg-red-600 hover:bg-red-700 text-white rounded-lg transition-colors">
+                            Clear DB
+                        </button>
+                    </div>
+                </div>
+                
+                <div id="embeddingStatsSummary" class="space-y-4">
+                    <div class="text-center text-gray-400 py-8">
+                        <div class="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-blue-400"></div>
+                        <p class="mt-2">Loading...</p>
+                    </div>
+                </div>
+
+                <details class="mt-6">
+                    <summary class="cursor-pointer text-sm text-blue-400 hover:text-blue-300 font-medium">
+                        View raw JSON
+                    </summary>
+                    <pre id="embeddingStatsRaw" class="mt-2 p-4 bg-gray-900 rounded-lg text-xs text-gray-300 overflow-auto max-h-64"></pre>
                 </details>
-            </section>
+            </div>
         </div>
 
-        <div class="row">
-            <section id="sourceForm" class="card">
-                <h2>➕ Create / Update Source</h2>
-                <form id="createSourceForm">
-                    <div class="grid">
-                        <label>Source ID
-                            <input type="text" name="source_id" required placeholder="era5_bratislava" />
-                        </label>
-                        <label>Data URL
-                            <input type="url" name="url" required placeholder="https://example.com/data.nc" />
-                        </label>
-                    </div>
-                    <div class="grid">
-                        <label>Format
-                            <input type="text" name="format" placeholder="netcdf (optional)" />
-                        </label>
-                        <label>Variables (comma separated)
-                            <input type="text" name="variables" placeholder="temperature_2m,pm25" />
-                        </label>
-                    </div>
-                    <label>Tags (comma separated)
-                        <input type="text" name="tags" placeholder="temperature,slovakia" />
-                    </label>
-                    <label>Description
-                        <textarea name="description" rows="2" placeholder="Short note about this source"></textarea>
-                    </label>
-                    <label style="display: flex; align-items: center; gap: 0.5rem;">
-                        <input type="checkbox" name="is_active" checked />
-                        <span>Active (enable ETL processing)</span>
-                    </label>
-                    <div class="actions">
-                        <button type="submit">Create Source</button>
-                        <span id="sourceFormMessage" class="hint"></span>
-                    </div>
-                </form>
-                <div class="guide">
-                    <h3>Need a refresher?</h3>
-                    <ol>
-                        <li>
-                            Pick a dataset URL. Inside Docker Compose, point to the built-in samples
-                            (e.g. <code>http://web-api:8000/samples/gistemp_global_anomaly.csv</code>).
-                        </li>
-                        <li>
-                            Fill at least <strong>Source ID</strong>, <strong>Data URL</strong>, and optionally the
-                            format/variables/tags so teammates know what it is.
-                        </li>
-                        <li>
-                            Save the source, then use the table’s “Trigger ETL” button to run
-                            <code>dynamic_source_etl_job</code>. Embedding stats will update once vectors land in Qdrant.
-                        </li>
-                    </ol>
-                    <p class="hint">Deleting a source now also wipes its embeddings, keeping the vector DB tidy.</p>
-                </div>
-            </section>
-
-            <section id="sources" class="card">
-                <div class="section-header">
-                    <h2>📦 Active Sources</h2>
-                    <button id="refreshSources">Refresh</button>
-                </div>
-                <div class="table-wrapper">
-                    <table>
-                        <thead>
-                            <tr>
-                                <th>ID</th>
-                                <th>Format</th>
-                                <th>Status</th>
-                                <th>Last processed</th>
-                                <th>Actions</th>
-                            </tr>
-                        </thead>
-                        <tbody id="sourcesTable"></tbody>
-                    </table>
-                </div>
-            </section>
+        <!-- Sources Table -->
+        <div class="bg-gray-800 rounded-lg shadow-lg p-6 border border-gray-700 mb-8">
+            <div class="flex items-center justify-between mb-6">
+                <h2 class="text-xl font-bold text-gray-100 flex items-center gap-2">
+                    <svg class="w-6 h-6 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"></path>
+                    </svg>
+                    Active Sources
+                </h2>
+                <button id="refreshSources" class="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-gray-300 rounded-lg transition-colors flex items-center gap-2">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path>
+                    </svg>
+                    Refresh
+                </button>
+            </div>
+            
+            <div class="overflow-x-auto">
+                <table class="w-full text-left">
+                    <thead class="bg-gray-700">
+                        <tr>
+                            <th class="px-4 py-3 text-sm font-semibold text-gray-200">Source ID</th>
+                            <th class="px-4 py-3 text-sm font-semibold text-gray-200">Format</th>
+                            <th class="px-4 py-3 text-sm font-semibold text-gray-200">Status</th>
+                            <th class="px-4 py-3 text-sm font-semibold text-gray-200">Last Processed</th>
+                            <th class="px-4 py-3 text-sm font-semibold text-gray-200">Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="sourcesTable" class="divide-y divide-gray-700">
+                        <tr>
+                            <td colspan="5" class="px-4 py-8 text-center text-gray-400">
+                                <div class="inline-block animate-spin rounded-full h-6 w-6 border-b-2 border-blue-400"></div>
+                                <p class="mt-2">Loading sources...</p>
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
         </div>
 
-        <div class="row">
-            <section id="ragChat" class="card">
-                <h2>🤖 RAG Assistant</h2>
-                <form id="ragForm">
-                    <label>Ask a question
-                        <textarea name="question" rows="3" required placeholder="How are Bratislava PM2.5 levels evolving?"></textarea>
+        <!-- RAG Chat -->
+        <div class="bg-gray-800 rounded-lg shadow-lg p-6 border border-gray-700">
+            <h2 class="text-xl font-bold text-gray-100 mb-6 flex items-center gap-2">
+                <svg class="w-6 h-6 text-yellow-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z"></path>
+                </svg>
+                RAG Assistant
+            </h2>
+            
+            <form id="ragForm" class="space-y-4">
+                <div>
+                    <label class="block text-sm font-medium text-gray-300 mb-2">
+                        Ask a question about your climate data
                     </label>
-                    <div class="actions">
-                        <button type="submit">Ask</button>
-                        <span id="ragStatus" class="hint"></span>
-                    </div>
-                </form>
-                <div id="ragAnswer" class="rag-answer"></div>
-                <div id="ragChunks" class="rag-chunks"></div>
-            </section>
+                    <textarea 
+                        name="question" 
+                        rows="3" 
+                        required 
+                        placeholder="What is the temperature trend in Europe?"
+                        class="w-full px-4 py-3 bg-gray-700 border border-gray-600 rounded-lg text-gray-100 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all resize-none"
+                    ></textarea>
+                </div>
+                
+                <div class="flex items-center justify-between">
+                    <span id="ragStatus" class="text-sm text-gray-400"></span>
+                    <button 
+                        type="submit"
+                        class="px-6 py-2 bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700 text-white font-semibold rounded-lg transition-all shadow-lg hover:shadow-xl"
+                    >
+                        Ask Question
+                    </button>
+                </div>
+            </form>
+
+            <div id="ragAnswer" class="mt-6"></div>
+            <div id="ragChunks" class="mt-6"></div>
         </div>
     </main>
 
-    <footer>
-        <small>Dagster at <strong>http://localhost:3000</strong> · API at <strong>http://localhost:8000</strong></small>
+    <!-- Footer -->
+    <footer class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 mt-12 border-t border-gray-700">
+        <div class="text-center text-gray-400 text-sm">
+            <p>Dagster UI at <strong class="text-gray-300">http://localhost:3000</strong> · API at <strong class="text-gray-300">http://localhost:8000</strong></p>
+        </div>
     </footer>
 
+    <!-- Flowbite JS -->
+    <script src="https://cdn.jsdelivr.net/npm/flowbite@2.4.1/dist/flowbite.min.js"></script>
+    
+    <!-- Custom JS -->
     <script src="/ui/static/app.js" type="module"></script>
 </body>
 </html>
