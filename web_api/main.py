@@ -268,7 +268,11 @@ async def get_embeddings_stats():
     """Get stats from Qdrant."""
     try:
         from src.embeddings.database import VectorDatabase
-        db = VectorDatabase()
+        from src.utils.config_loader import ConfigLoader
+        # Load config for proper vector size and collection name
+        config_loader = ConfigLoader("config/pipeline_config.yaml")
+        pipeline_config = config_loader.load()
+        db = VectorDatabase(config=pipeline_config)
         
         # FIX: Check if collection exists first
         collections = db.client.get_collections().collections
@@ -320,7 +324,11 @@ async def get_embeddings_stats():
 async def get_sample_embeddings(limit: int = 10):
     try:
         from src.embeddings.database import VectorDatabase
-        db = VectorDatabase()
+        from src.utils.config_loader import ConfigLoader
+        # Load config for proper vector size and collection name
+        config_loader = ConfigLoader("config/pipeline_config.yaml")
+        pipeline_config = config_loader.load()
+        db = VectorDatabase(config=pipeline_config)
         
         # FIX: Use Qdrant scroll
         points, _ = db.client.scroll(
@@ -350,9 +358,13 @@ async def get_sample_embeddings(limit: int = 10):
 async def clear_embeddings(confirm: bool = False):
     if not confirm: raise HTTPException(400, "Set confirm=true")
     from src.embeddings.database import VectorDatabase
-    db = VectorDatabase()
+    from src.utils.config_loader import ConfigLoader
+    # Load config for proper collection name
+    config_loader = ConfigLoader("config/pipeline_config.yaml")
+    pipeline_config = config_loader.load()
+    db = VectorDatabase(config=pipeline_config)
     db.client.delete_collection(db.collection)
-    return {"status": "cleared"}
+    return {"status": "cleared", "collection": db.collection}
 
 # --- SOURCES ---
 

@@ -7,7 +7,7 @@ Resources provide shared dependencies and configuration across ops and jobs.
 import logging
 import sys
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 from dagster import ConfigurableResource
 from pydantic import Field
 
@@ -69,13 +69,21 @@ class LoggerResource(ConfigurableResource):
     log_level: str = Field(default="INFO", description="Logging level")
     log_file: str = Field(default="logs/dagster_pipeline.log", description="Path to log file")
     
+    def __init__(self, **data):
+        super().__init__(**data)
+        # Cache logger instance to avoid repeated initialization
+        self._logger: Optional[logging.Logger] = None
+    
     def _get_logger(self) -> logging.Logger:
-        # Use the setup_logger from src.utils
-        return setup_logger(
-            name="dagster_climate_pipeline",
-            log_file=self.log_file,
-            level=self.log_level
-        )
+        """Get or create cached logger instance."""
+        if self._logger is None:
+            # Use the setup_logger from src.utils
+            self._logger = setup_logger(
+                name="dagster_climate_pipeline",
+                log_file=self.log_file,
+                level=self.log_level
+            )
+        return self._logger
     
     def info(self, message: str, *args, **kwargs):
         self._get_logger().info(message, *args, **kwargs)

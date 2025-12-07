@@ -21,14 +21,16 @@ class VectorDatabase:
         self.port = int(os.getenv("QDRANT_REST_PORT", 6333))
         self.base_url = f"http://{self.host}:{self.port}"
         
-        # Get vector size from config or default to 1024 (BAAI/bge-large-en-v1.5)
+        # Get vector size and collection name from config or defaults
         if config and "vector_db" in config:
             qdrant_config = config.get("vector_db", {}).get("qdrant", {})
             self.vector_size = qdrant_config.get("vector_size", 1024)
             self.collection_name = qdrant_config.get("collection_name", "climate_data")
+            logger.info(f"Using config: collection='{self.collection_name}', vector_size={self.vector_size}")
         else:
             self.vector_size = 1024  # Default for BAAI/bge-large-en-v1.5
-            self.collection_name = os.getenv("QDRANT_COLLECTION", "climate_rag")
+            self.collection_name = os.getenv("QDRANT_COLLECTION", "climate_data")
+            logger.info(f"Using defaults: collection='{self.collection_name}', vector_size={self.vector_size}")
         
         # Initialize client
         try:
@@ -46,7 +48,31 @@ class VectorDatabase:
         # Try via client first
         if self.client:
             try:
-                if not self.client.collection_exists(self.collection):
+                if self.client.collection_exists(self.collection):
+                    # Check if existing collection has correct vector size
+                    collection_info = self.client.get_collection(self.collection)
+                    existing_size = collection_info.config.params.vectors.size
+                    
+                    if existing_size != self.vector_size:
+                        logger.warning(
+                            f"Collection '{self.collection}' exists with vector size {existing_size}, "
+                            f"but expected {self.vector_size}. Deleting and recreating..."
+                        )
+                        # Delete existing collection
+                        self.client.delete_collection(self.collection)
+                        # Create new collection with correct size
+                        self.client.create_collection(
+                            collection_name=self.collection,
+                            vectors_config=VectorParams(
+                                size=self.vector_size,
+                                distance=Distance.COSINE
+                            )
+                        )
+                        logger.info(f"Recreated collection '{self.collection}' with vector size {self.vector_size}")
+                    else:
+                        logger.info(f"Collection '{self.collection}' exists with correct vector size {self.vector_size}")
+                else:
+                    # Create new collection
                     self.client.create_collection(
                         collection_name=self.collection,
                         vectors_config=VectorParams(
@@ -62,16 +88,42 @@ class VectorDatabase:
         # Fallback: Create via REST if client fails
         try:
             url = f"{self.base_url}/collections/{self.collection}"
-            resp = requests.get(url)
-            if resp.status_code != 200:
-                # Create
+            resp = requests.get(url, timeout=5)
+            if resp.status_code == 200:
+                # Collection exists, check vector size
+                collection_info = resp.json().get("result", {})
+                config = collection_info.get("config", {})
+                params = config.get("params", {})
+                vectors = params.get("vectors", {})
+                existing_size = vectors.get("size") if isinstance(vectors, dict) else None
+                
+                if existing_size and existing_size != self.vector_size:
+                    logger.warning(
+                        f"Collection '{self.collection}' exists with vector size {existing_size}, "
+                        f"but expected {self.vector_size}. Deleting and recreating..."
+                    )
+                    # Delete existing collection
+                    requests.delete(url, timeout=5)
+                    # Create new collection
+                    payload = {
+                        "vectors": {
+                            "size": self.vector_size,
+                            "distance": "Cosine"
+                        }
+                    }
+                    requests.put(url, json=payload, timeout=5)
+                    logger.info(f"Recreated collection '{self.collection}' via REST with vector size {self.vector_size}")
+                else:
+                    logger.info(f"Collection '{self.collection}' exists with correct vector size")
+            else:
+                # Create new collection
                 payload = {
                     "vectors": {
                         "size": self.vector_size,
                         "distance": "Cosine"
                     }
                 }
-                requests.put(url, json=payload)
+                requests.put(url, json=payload, timeout=5)
                 logger.info(f"Created collection '{self.collection}' via REST with vector size {self.vector_size}")
         except Exception as e:
             logger.error(f"REST collection creation failed: {e}")
