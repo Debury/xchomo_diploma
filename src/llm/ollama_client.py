@@ -160,10 +160,22 @@ class OllamaClient:
             
             context_lines.append(f"[Context {idx}] (Relevance: {score:.1%})\n{text_content}")
         
-        # Add summary of available temperature variables at the end
+        # Collect all time periods and temperature variables from context
+        time_periods = set()
         temp_vars_found = []
+        
         for hit in context_hits:
             meta = hit.get('metadata', {}) if isinstance(hit, dict) else getattr(hit, 'metadata', {})
+            
+            # Collect time periods
+            time_start = meta.get('time_start', '')
+            if time_start:
+                time_periods.add(str(time_start))
+            time_end = meta.get('time_end', '')
+            if time_end and time_end != time_start:
+                time_periods.add(str(time_end))
+            
+            # Collect temperature variables
             variable = meta.get('variable', '')
             long_name = meta.get('long_name', '').lower()
             var_lower = variable.lower()
@@ -188,6 +200,12 @@ class OllamaClient:
                 else:
                     temp_vars_found.append(f"Temperature: {variable}")
         
+        # Add summary of available time periods (CRITICAL - prevents hallucination of non-existent months)
+        if time_periods:
+            sorted_periods = sorted(time_periods)
+            context_lines.append(f"\n[SUMMARY] Available time periods in context (ONLY use these - do NOT invent others):\n" + "\n".join(f"  - {tp}" for tp in sorted_periods))
+        
+        # Add summary of available temperature variables
         if temp_vars_found:
             context_lines.append(f"\n[SUMMARY] Available temperature variables in context:\n" + "\n".join(f"  - {v}" for v in set(temp_vars_found)))
             if not any('MAXIMUM' in v for v in temp_vars_found):
@@ -222,6 +240,14 @@ class OllamaClient:
 
 CRITICAL RULES:
 1. ONLY use information from the provided context. Do NOT make up or infer values not explicitly stated.
+
+1a. TIME PERIODS (CRITICAL - prevents hallucination):
+   - ONLY use time periods that are explicitly listed in the "[SUMMARY] Available time periods in context" section
+   - DO NOT invent, infer, or assume time periods that are not explicitly stated in the context
+   - If the context shows data for "2016-04", DO NOT mention "January" or any other month unless it is explicitly listed in the available time periods
+   - If asked about a time range (e.g., "January to April"), check if ALL mentioned periods are in the available time periods list
+   - If a time period is missing from the context, explicitly state: "I only have data for [list actual periods], not for [missing period]"
+   - Example: If context shows only "2016-04", and question asks about "January to April", answer: "I only have data for April 2016, not for January, February, or March."
 
 2. VARIABLE TYPE IDENTIFICATION (CRITICAL - identify from context metadata):
    To identify variable types, check these fields in order (NO hardcoded variable names):
