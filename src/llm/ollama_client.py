@@ -100,6 +100,27 @@ class OllamaClient:
                 
                 if 'time_start' in meta:
                     parts.append(f"Period: {meta['time_start']}")
+                
+                # CRITICAL: Spatial coordinates - clearly separate from temperature values
+                # NEVER confuse longitude/latitude with temperature!
+                spatial_info = []
+                if 'lat_min' in meta and 'lat_max' in meta:
+                    lat_min = meta['lat_min']
+                    lat_max = meta['lat_max']
+                    if lat_min == lat_max:
+                        spatial_info.append(f"Location: {lat_min:.2f}°N")
+                    else:
+                        spatial_info.append(f"Latitude: {lat_min:.2f}° to {lat_max:.2f}°N")
+                if 'lon_min' in meta and 'lon_max' in meta:
+                    lon_min = meta['lon_min']
+                    lon_max = meta['lon_max']
+                    if lon_min == lon_max:
+                        spatial_info.append(f"{lon_min:.2f}°E")
+                    else:
+                        spatial_info.append(f"Longitude: {lon_min:.2f}° to {lon_max:.2f}°E")
+                if spatial_info:
+                    parts.append(f"Geographic coordinates: {' '.join(spatial_info)} (NOT temperature values!)")
+                
                 if 'stat_mean' in meta:
                     mean_val = meta['stat_mean']
                     formatted_mean = f"Mean value: {mean_val:.2f}{' ' + unit_str if unit_str else ''}"
@@ -131,6 +152,41 @@ class OllamaClient:
                 text_content = " | ".join(parts) if parts else str(meta)
             
             context_lines.append(f"[Context {idx}] (Relevance: {score:.1%})\n{text_content}")
+        
+        # Add summary of available temperature variables at the end
+        temp_vars_found = []
+        for hit in context_hits:
+            meta = hit.get('metadata', {}) if isinstance(hit, dict) else getattr(hit, 'metadata', {})
+            variable = meta.get('variable', '')
+            long_name = meta.get('long_name', '').lower()
+            var_lower = variable.lower()
+            
+            # Check if it's a temperature variable
+            is_temp = False
+            is_max = False
+            is_min = False
+            
+            if 'temp' in long_name or 'temp' in var_lower:
+                is_temp = True
+                if 'max' in long_name or 'max' in var_lower or 'tmax' in var_lower:
+                    is_max = True
+                elif 'min' in long_name or 'min' in var_lower or 'tmin' in var_lower:
+                    is_min = True
+            
+            if is_temp:
+                if is_max:
+                    temp_vars_found.append(f"MAXIMUM temperature: {variable}")
+                elif is_min:
+                    temp_vars_found.append(f"MINIMUM temperature: {variable}")
+                else:
+                    temp_vars_found.append(f"Temperature: {variable}")
+        
+        if temp_vars_found:
+            context_lines.append(f"\n[SUMMARY] Available temperature variables in context:\n" + "\n".join(f"  - {v}" for v in set(temp_vars_found)))
+            if not any('MAXIMUM' in v for v in temp_vars_found):
+                context_lines.append("  ⚠️ WARNING: No MAXIMUM temperature variable found - cannot calculate full temperature range!")
+            if not any('MINIMUM' in v for v in temp_vars_found):
+                context_lines.append("  ⚠️ WARNING: No MINIMUM temperature variable found - cannot calculate full temperature range!")
         
         context_str = "\n\n".join(context_lines)
         
@@ -197,12 +253,18 @@ CRITICAL RULES:
    - ❌ DO NOT use degree days or heating/cooling indices - these are indices, NOT temperatures
    - ❌ DO NOT calculate range from one variable's min and max values
    - ❌ DO NOT infer or estimate - only use explicit values from context
+   - ❌ DO NOT confuse geographic coordinates (longitude/latitude) with temperature values! Coordinates are locations, NOT temperatures!
+   
+   CRITICAL: Geographic coordinates (longitude, latitude) are LOCATIONS, NOT temperature values!
+   - Longitude values (e.g., -82.54°) are geographic coordinates, NOT temperatures
+   - Latitude values (e.g., 35.43°) are geographic coordinates, NOT temperatures
+   - NEVER use longitude or latitude values as temperature values!
    
    If context is insufficient:
    - If you see ONLY minimum temperature variable: Say "I can see minimum temperature data, but I need maximum temperature data to calculate the temperature range."
    - If you see ONLY maximum temperature variable: Say "I can see maximum temperature data, but I need minimum temperature data to calculate the temperature range."
    - If you see NEITHER: Say "I need both maximum and minimum temperature variables to calculate the temperature range."
-   - NEVER make up values, infer missing data, or use incorrect variable types!
+   - NEVER make up values, infer missing data, use incorrect variable types, or confuse coordinates with temperatures!
 
 4. UNIT CONVERSION (use European/SI units):
    - ALWAYS provide temperatures in Celsius (°C) in your answer
