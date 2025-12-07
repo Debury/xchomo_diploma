@@ -213,6 +213,39 @@ embeddings = raster_to_embeddings(
 - Auto-reduces chunk size on `MemoryError`
 - Yields chunks one at a time (generator pattern)
 
+### Text Generation (`src/climate_embeddings/text_generation.py`)
+
+**Purpose**: Generate RAG-friendly text descriptions from climate data chunks
+
+**Features**:
+- Configurable verbosity levels (low, medium, high)
+- Automatic formatting of spatial, temporal, and statistical information
+- Variable name mapping for readability
+- Batch processing support
+
+**Usage**:
+```python
+from src.climate_embeddings.text_generation import generate_text_description
+
+meta = {
+    "variable": "2m_temperature",
+    "source_id": "era5_europe",
+    "time_start": "2024-01-15T12:00:00",
+    "lat_min": 48.0,
+    "lat_max": 49.0,
+    "unit": "K"
+}
+stats = [285.5, 3.2, 280.0, 290.0, 282.0, 285.0, 288.0, 10.0]
+
+desc = generate_text_description(
+    metadata=meta,
+    stats_vector=stats,
+    verbosity="medium",
+    include_coordinates=True,
+    include_statistics=True
+)
+```
+
 ### Ollama Client (`src/llm/ollama_client.py`)
 
 **Purpose**: LLM integration for RAG answer generation
@@ -220,6 +253,7 @@ embeddings = raster_to_embeddings(
 **Features**:
 - Health checks and model auto-pull
 - Climate-specific system prompt
+- Enhanced context formatting with structured metadata
 - Context injection from vector search
 - Fallback to template-based answers
 - 120s timeout for model loading
@@ -230,12 +264,43 @@ from src.llm.ollama_client import OllamaClient
 
 client = OllamaClient(base_url="http://ollama:11434")
 
-# Generate RAG answer
+# Generate RAG answer with structured context
 answer = client.generate_rag_answer(
     query="What is the temperature trend?",
     context_hits=[...],  # Top-k results from Qdrant
     temperature=0.7
 )
+```
+
+### RAG Pipeline (`src/climate_embeddings/rag/rag_pipeline.py`)
+
+**Purpose**: Orchestrate retrieval and generation for RAG queries
+
+**Features**:
+- Query embedding and vector search
+- Structured context formatting
+- LLM integration with fallback
+- Metadata extraction and summarization
+
+**Usage**:
+```python
+from src.climate_embeddings.rag import RAGPipeline
+from src.climate_embeddings.index import VectorIndex
+from src.climate_embeddings.embeddings import TextEmbedder
+from src.llm.ollama_client import OllamaClient
+
+index = VectorIndex()  # or use Qdrant
+embedder = TextEmbedder()
+llm = OllamaClient()
+
+pipeline = RAGPipeline(
+    index=index,
+    text_embedder=embedder,
+    llm_client=llm,
+    top_k=5
+)
+
+answer = pipeline.ask("What is the average temperature in Europe?")
 ```
 
 ### Dynamic Jobs (`dagster_project/dynamic_jobs.py`)
@@ -245,11 +310,17 @@ answer = client.generate_rag_answer(
 2. Auto-detect format (no manual specification)
 3. Load raster in memory-safe chunks
 4. Extract statistics (mean/std/min/max/percentiles)
-5. Convert stats to text descriptions
-6. Generate semantic embeddings (MiniLM-L6-v2)
-7. Store in Qdrant with metadata
+5. Generate rich text descriptions using `text_generation` module
+6. Generate semantic embeddings (BAAI/bge-large-en-v1.5, 1024-dim)
+7. Store in Qdrant with comprehensive metadata
 
 **No OOM errors**: Uses chunked loading throughout pipeline
+
+**Text Generation**: Uses configurable text generation with proper formatting of:
+- Variable names (with human-readable mappings)
+- Temporal information (dates, months)
+- Spatial bounds (latitude/longitude ranges)
+- Statistical summaries (configurable verbosity)
 
 ## 🧪 Testing
 
@@ -305,13 +376,22 @@ raster_pipeline:
   pooling_strategy: "mean"
 
 embeddings:
-  model: "sentence-transformers/all-MiniLM-L6-v2"
+  model: "BAAI/bge-large-en-v1.5"  # High-quality 1024-dim embeddings
   batch_size: 32
-  vector_dim: 384
+  vector_dim: 1024
 
-qdrant:
-  collection_name: "climate_embeddings"
-  distance: "Cosine"
+vector_db:
+  qdrant:
+    collection_name: "climate_data"
+    vector_size: 1024  # Matches BAAI/bge-large-en-v1.5
+    distance: "COSINE"
+
+text_generation:
+  verbosity: "medium"  # low, medium, or high
+  include_sample_values: true
+  include_statistics: true
+  include_coordinates: true
+  include_attributes: false
 ```
 
 ### Ollama Config (docker-compose.yml)

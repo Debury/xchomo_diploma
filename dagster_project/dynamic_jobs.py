@@ -57,7 +57,9 @@ def process_all_sources(context: OpExecutionContext) -> List[Dict[str, Any]]:
 
     logger.info("Initializing Models...")
     text_embedder = TextEmbedder()
-    vector_db = VectorDatabase()
+    # Initialize VectorDatabase with config for proper vector size
+    pipeline_config = config_loader.load()
+    vector_db = VectorDatabase(config=pipeline_config)
     results = []
 
     for source in sources:
@@ -127,46 +129,22 @@ def process_all_sources(context: OpExecutionContext) -> List[Dict[str, Any]]:
                 batch_slice = stat_embeddings[i : i + BATCH_SIZE]
                 if i % 100 == 0: logger.info(f"Processing {i}/{total_chunks}...")
                 
-                batch_texts = []
-                for item in batch_slice:
-                    meta = item["metadata"]
-                    vec = item["vector"] 
-                    variable = meta.get("variable", "unknown")
-                    
-                    # --- NEW: Variable Mapping for Clarity ---
-                    VAR_MAP = {
-                        "t": "Air Temperature",
-                        "2t": "2-meter Temperature",
-                        "tp": "Total Precipitation",
-                        "z": "Geopotential",
-                        "band_1": "Satellite Image Band 1",
-                        "air": "Air Temperature",
-                        "gray": "Terrain Intensity"
-                    }
-                    readable_var = VAR_MAP.get(variable, variable)
-                    
-                    parts = [f"Climate variable: {readable_var} ({variable})"]
-                    
-                    if "time_start" in meta:
-                        t_str = str(meta['time_start'])
-                        parts.append(f"Time: {t_str}")
-                        try:
-                            clean_date = t_str.split('T')[0]
-                            dt_obj = datetime.strptime(clean_date, '%Y-%m-%d')
-                            month_name = dt_obj.strftime('%B')
-                            parts.append(f"Month: {month_name}")
-                        except: pass
-
-                    if "lat_min" in meta: parts.append(f"Lat {meta['lat_min']:.1f}")
-                    
-                    if len(vec) >= 8: 
-                        parts.append(f"Mean={vec[0]:.1f}")
-                        parts.append(f"Std={vec[1]:.1f}")
-                        parts.append(f"Max={vec[3]:.1f}")
-                        parts.append(f"P90={vec[6]:.1f} (High Extreme)")
-                        parts.append(f"Range={vec[7]:.1f}")
-                    
-                    batch_texts.append(" | ".join(parts))
+                # Use the new text generation module for consistent, configurable descriptions
+                from src.climate_embeddings.text_generation import generate_batch_descriptions
+                
+                batch_metadata = [item["metadata"] for item in batch_slice]
+                batch_stats = [item["vector"] for item in batch_slice]
+                
+                # Add source_id to metadata if not present
+                for meta in batch_metadata:
+                    if "source_id" not in meta:
+                        meta["source_id"] = source_id
+                
+                batch_texts = generate_batch_descriptions(
+                    metadata_list=batch_metadata,
+                    stats_vectors=batch_stats,
+                    config=pipeline_config
+                )
 
                 batch_vectors = text_embedder.embed_documents(batch_texts)
                 

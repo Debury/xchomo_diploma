@@ -302,17 +302,69 @@ td {
     line-height: 1.5;
 }
 
+.rag-answer-content {
+    background: rgba(15, 23, 42, 0.7);
+    border-radius: 0.8rem;
+    padding: 1.2rem;
+    border: 1px solid rgba(148, 163, 184, 0.2);
+}
+
+.rag-answer-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 1rem;
+    padding-bottom: 0.75rem;
+    border-bottom: 1px solid rgba(148, 163, 184, 0.2);
+}
+
+.rag-answer-header strong {
+    font-size: 1.1rem;
+    color: var(--accent);
+}
+
+.rag-answer-text {
+    line-height: 1.7;
+    color: var(--text);
+}
+
+.badge {
+    display: inline-block;
+    padding: 0.25rem 0.75rem;
+    border-radius: 999px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    background: rgba(56, 189, 248, 0.2);
+    color: var(--accent);
+}
+
 .rag-chunks {
-    margin-top: 1rem;
+    margin-top: 1.5rem;
     display: grid;
-    gap: 0.8rem;
+    gap: 1rem;
+}
+
+.chunks-header {
+    margin-bottom: 0.5rem;
+}
+
+.chunks-header h3 {
+    margin: 0;
+    font-size: 1.1rem;
+    color: var(--accent);
 }
 
 .chunk-card {
-    padding: 0.9rem;
+    padding: 1rem;
     border-radius: 0.8rem;
     border: 1px solid rgba(148, 163, 184, 0.2);
     background: rgba(15, 23, 42, 0.6);
+    transition: border-color 0.2s, background 0.2s;
+}
+
+.chunk-card:hover {
+    border-color: rgba(56, 189, 248, 0.4);
+    background: rgba(15, 23, 42, 0.8);
 }
 
 .chunk-card header {
@@ -320,6 +372,55 @@ td {
     justify-content: space-between;
     align-items: center;
     padding: 0;
+    margin-bottom: 0.75rem;
+}
+
+.chunk-card header strong {
+    color: var(--accent);
+}
+
+.chunk-rank {
+    display: inline-block;
+    margin-left: 0.5rem;
+    padding: 0.15rem 0.5rem;
+    background: rgba(148, 163, 184, 0.2);
+    border-radius: 999px;
+    font-size: 0.75rem;
+    font-weight: 600;
+}
+
+.similarity-badge {
+    padding: 0.25rem 0.75rem;
+    border-radius: 999px;
+    font-size: 0.85rem;
+    font-weight: 600;
+    background: rgba(34, 197, 94, 0.2);
+    color: #4ade80;
+}
+
+.chunk-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    margin-bottom: 0.75rem;
+}
+
+.meta-tag {
+    display: inline-block;
+    padding: 0.2rem 0.6rem;
+    border-radius: 0.5rem;
+    font-size: 0.8rem;
+    background: rgba(148, 163, 184, 0.15);
+    color: var(--muted);
+    border: 1px solid rgba(148, 163, 184, 0.2);
+}
+
+.chunk-text {
+    color: var(--text);
+    font-size: 0.9rem;
+    line-height: 1.6;
+    padding-top: 0.75rem;
+    border-top: 1px solid rgba(148, 163, 184, 0.1);
 }
 
 footer {

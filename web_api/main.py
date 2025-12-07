@@ -413,8 +413,13 @@ async def rag_chat(request: RAGChatRequest):
         from src.climate_embeddings.embeddings.text_models import TextEmbedder
         from src.llm.ollama_client import OllamaClient
         from src.embeddings.database import VectorDatabase
+        from src.utils.config_loader import ConfigLoader
         
-        db = VectorDatabase()
+        # Load config for VectorDatabase initialization
+        config_loader = ConfigLoader(config_path="config/pipeline_config.yaml")
+        pipeline_config = config_loader.load()
+        
+        db = VectorDatabase(config=pipeline_config)
         embedder = TextEmbedder()
         
         # 1. Embed Query

@@ -300,22 +300,69 @@ ragForm?.addEventListener('submit', async (event) => {
             throw new Error(detail.detail || res.statusText);
         }
         const data = await res.json();
-        ragAnswer.textContent = data.answer;
-        ragChunks.innerHTML = '';
-        data.chunks.forEach((chunk) => {
-            const card = document.createElement('div');
-            card.className = 'chunk-card';
-            card.innerHTML = `
-                <header>
-                    <strong>${chunk.source_id}</strong>
-                    <span>${(chunk.similarity * 100).toFixed(1)}%</span>
-                </header>
-                <div class="hint">${chunk.variable || 'unknown variable'}</div>
-                <p>${chunk.text || 'No preview available.'}</p>
+        
+        // Display answer with better formatting
+        if (data.answer) {
+            ragAnswer.innerHTML = `
+                <div class="rag-answer-content">
+                    <div class="rag-answer-header">
+                        <strong>Answer</strong>
+                        ${data.llm_used ? '<span class="badge">LLM Generated</span>' : '<span class="badge">Context Only</span>'}
+                    </div>
+                    <div class="rag-answer-text">${data.answer.replace(/\n/g, '<br>')}</div>
+                </div>
             `;
-            ragChunks.appendChild(card);
-        });
-        ragStatus.textContent = data.references.length ? `References: ${data.references.join(', ')}` : 'No references available.';
+        } else {
+            ragAnswer.textContent = 'No answer generated.';
+        }
+        
+        // Display context chunks with enhanced metadata
+        ragChunks.innerHTML = '';
+        if (data.chunks && data.chunks.length > 0) {
+            const chunksHeader = document.createElement('div');
+            chunksHeader.className = 'chunks-header';
+            chunksHeader.innerHTML = `<h3>Retrieved Context (${data.chunks.length} chunks)</h3>`;
+            ragChunks.appendChild(chunksHeader);
+            
+            data.chunks.forEach((chunk, idx) => {
+                const card = document.createElement('div');
+                card.className = 'chunk-card';
+                
+                // Extract metadata for display
+                const meta = chunk.metadata || {};
+                const timeInfo = meta.time_start || meta.time || '';
+                const spatialInfo = meta.lat_min !== undefined 
+                    ? `Lat: ${meta.lat_min?.toFixed(2)}° to ${meta.lat_max?.toFixed(2)}°`
+                    : '';
+                const statsInfo = meta.stat_mean !== undefined
+                    ? `Mean: ${meta.stat_mean?.toFixed(2)}${meta.unit ? ' ' + meta.unit : ''}`
+                    : '';
+                
+                card.innerHTML = `
+                    <header>
+                        <div>
+                            <strong>${chunk.source_id || 'Unknown Source'}</strong>
+                            <span class="chunk-rank">#${idx + 1}</span>
+                        </div>
+                        <span class="similarity-badge">${(chunk.similarity * 100).toFixed(1)}% match</span>
+                    </header>
+                    <div class="chunk-meta">
+                        ${chunk.variable ? `<span class="meta-tag">Variable: ${chunk.variable}</span>` : ''}
+                        ${timeInfo ? `<span class="meta-tag">Time: ${timeInfo}</span>` : ''}
+                        ${spatialInfo ? `<span class="meta-tag">${spatialInfo}</span>` : ''}
+                        ${statsInfo ? `<span class="meta-tag">${statsInfo}</span>` : ''}
+                    </div>
+                    <div class="chunk-text">${chunk.text || 'No preview available.'}</div>
+                `;
+                ragChunks.appendChild(card);
+            });
+        } else {
+            ragChunks.innerHTML = '<p class="hint">No context chunks retrieved.</p>';
+        }
+        
+        ragStatus.textContent = data.references && data.references.length 
+            ? `References: ${data.references.join(', ')}` 
+            : 'No references available.';
     } catch (err) {
         ragStatus.textContent = `Chat error: ${err.message}`;
     }

@@ -26,43 +26,106 @@ class RAGPipeline:
         self.temperature = temperature
 
     def ask(self, query: str) -> str:
-        # 1. Embed
+        """
+        Process a query through the RAG pipeline.
+        
+        Args:
+            query: User question about climate data
+            
+        Returns:
+            Answer string with context from retrieved data
+        """
+        # 1. Embed query
         if hasattr(self.text_embedder, 'embed_queries'):
             query_vec = self.text_embedder.embed_queries([query])[0]
         else:
             query_vec = self.text_embedder(query)
 
-        # 2. Retrieve
+        # 2. Retrieve similar chunks
         results = self.index.search(query_vec, k=self.top_k)
         
         if not results:
             return "No relevant data found."
 
-        # 3. Context
-        context_lines = []
-        for res in results:
-            # Handle both dict (from Qdrant) and object (from local Index) styles if needed
-            meta = res['metadata'] if isinstance(res, dict) else res.metadata
-            stats = res['stats'] if isinstance(res, dict) else getattr(res, 'stats', [])
+        # 3. Build structured context
+        context_chunks = []
+        for idx, res in enumerate(results, 1):
+            # Handle both dict (from Qdrant) and object (from local Index) styles
+            if isinstance(res, dict):
+                meta = res.get('metadata', {})
+                score = res.get('score', 0.0)
+                stats = res.get('stats', [])
+            else:
+                meta = getattr(res, 'metadata', {})
+                score = getattr(res, 'score', 0.0)
+                stats = getattr(res, 'stats', [])
             
-            desc = f"Source: {meta.get('source_id', 'unknown')} | Var: {meta.get('variable', '?')}"
-            if len(stats) > 0:
-                desc += f" | Avg: {stats[0]:.2f} | Max: {stats[3]:.2f}"
-            context_lines.append(desc)
+            # Extract key information
+            source_id = meta.get('source_id', 'unknown')
+            variable = meta.get('variable', 'unknown')
+            text_content = meta.get('text_content', '')
+            
+            # Build context entry
+            context_entry = {
+                'rank': idx,
+                'similarity': score,
+                'source_id': source_id,
+                'variable': variable,
+                'text': text_content if text_content else self._format_metadata_summary(meta, stats),
+                'metadata': meta
+            }
+            context_chunks.append(context_entry)
 
-        context_str = "\n".join(context_lines)
+        # 4. Format context for LLM
+        context_str = self._format_context_for_llm(context_chunks)
 
-        # 4. Generate
+        # 5. Generate answer
         if self.llm_client:
             try:
-                # Basic synchronous generation call
-                prompt = f"Context:\n{context_str}\n\nQuestion: {query}\nAnswer:"
-                # Adapt to your specific LLM client signature
                 if hasattr(self.llm_client, 'generate_rag_answer'):
-                    # This path is usually async in your code, handling sync here for CLI
-                    return f"[Async Client] Context found: {len(results)} items."
-                return f"LLM Answer placeholder for: {query}"
+                    # Use the LLM client's RAG method
+                    return self.llm_client.generate_rag_answer(
+                        query=query,
+                        context_hits=context_chunks,
+                        temperature=self.temperature
+                    )
+                else:
+                    # Fallback: simple prompt
+                    prompt = f"Context:\n{context_str}\n\nQuestion: {query}\nAnswer:"
+                    return f"LLM Answer placeholder for: {query}"
             except Exception as e:
+                logger.error(f"LLM generation error: {e}")
                 return f"LLM Error: {e}"
         
-        return f"Retrieved Context:\n{context_str}"
+        # Return formatted context if no LLM
+        return f"Retrieved {len(context_chunks)} relevant data chunks:\n\n{context_str}"
+    
+    def _format_metadata_summary(self, meta: Dict[str, Any], stats: List[float]) -> str:
+        """Format a summary from metadata and statistics."""
+        parts = []
+        
+        variable = meta.get('variable', 'unknown')
+        parts.append(f"Variable: {variable}")
+        
+        if 'time_start' in meta:
+            parts.append(f"Time: {meta['time_start']}")
+        
+        if 'lat_min' in meta and 'lat_max' in meta:
+            parts.append(f"Latitude: {meta['lat_min']:.2f}° to {meta['lat_max']:.2f}°")
+        
+        if stats and len(stats) >= 4:
+            parts.append(f"Mean: {stats[0]:.2f}, Max: {stats[3]:.2f}")
+        
+        return " | ".join(parts)
+    
+    def _format_context_for_llm(self, context_chunks: List[Dict[str, Any]]) -> str:
+        """Format retrieved context chunks for LLM consumption."""
+        lines = []
+        
+        for chunk in context_chunks:
+            lines.append(f"[Chunk {chunk['rank']}] Similarity: {chunk['similarity']:.3f}")
+            lines.append(f"Source: {chunk['source_id']} | Variable: {chunk['variable']}")
+            lines.append(f"Data: {chunk['text']}")
+            lines.append("")  # Empty line between chunks
+        
+        return "\n".join(lines)

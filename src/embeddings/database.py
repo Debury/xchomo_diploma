@@ -8,10 +8,27 @@ from qdrant_client.http.models import Distance, VectorParams, ScoredPoint
 logger = logging.getLogger(__name__)
 
 class VectorDatabase:
-    def __init__(self):
+    def __init__(self, config: Optional[Dict[str, Any]] = None):
+        """
+        Initialize VectorDatabase with optional configuration.
+        
+        Args:
+            config: Optional configuration dict. If provided, reads vector_size
+                   from config['vector_db']['qdrant']['vector_size'].
+                   Defaults to 1024 (BAAI/bge-large-en-v1.5 dimension).
+        """
         self.host = os.getenv("QDRANT_HOST", "localhost")
         self.port = int(os.getenv("QDRANT_REST_PORT", 6333))
         self.base_url = f"http://{self.host}:{self.port}"
+        
+        # Get vector size from config or default to 1024 (BAAI/bge-large-en-v1.5)
+        if config and "vector_db" in config:
+            qdrant_config = config.get("vector_db", {}).get("qdrant", {})
+            self.vector_size = qdrant_config.get("vector_size", 1024)
+            self.collection_name = qdrant_config.get("collection_name", "climate_data")
+        else:
+            self.vector_size = 1024  # Default for BAAI/bge-large-en-v1.5
+            self.collection_name = os.getenv("QDRANT_COLLECTION", "climate_rag")
         
         # Initialize client
         try:
@@ -21,18 +38,23 @@ class VectorDatabase:
             logger.error(f"Failed to connect to Qdrant client: {e}")
             self.client = None
             
-        self.collection = "climate_rag"
+        self.collection = self.collection_name
         self._ensure_collection()
 
     def _ensure_collection(self):
+        """Ensure the collection exists with correct vector size."""
         # Try via client first
         if self.client:
             try:
                 if not self.client.collection_exists(self.collection):
                     self.client.create_collection(
                         collection_name=self.collection,
-                        vectors_config=VectorParams(size=1024, distance=Distance.COSINE)
+                        vectors_config=VectorParams(
+                            size=self.vector_size,
+                            distance=Distance.COSINE
+                        )
                     )
+                    logger.info(f"Created collection '{self.collection}' with vector size {self.vector_size}")
                 return
             except Exception as e:
                 logger.warning(f"Client collection check failed ({e}), trying REST...")
@@ -45,12 +67,12 @@ class VectorDatabase:
                 # Create
                 payload = {
                     "vectors": {
-                        "size": 1024,
+                        "size": self.vector_size,
                         "distance": "Cosine"
                     }
                 }
                 requests.put(url, json=payload)
-                logger.info("Created collection via REST")
+                logger.info(f"Created collection '{self.collection}' via REST with vector size {self.vector_size}")
         except Exception as e:
             logger.error(f"REST collection creation failed: {e}")
 
