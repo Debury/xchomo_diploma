@@ -111,25 +111,45 @@ class OllamaClient:
 
 CRITICAL RULES:
 1. ONLY use information from the provided context. Do NOT make up or infer values not explicitly stated.
-2. VARIABLE TYPE DISTINCTION (identify from context metadata):
-   - Temperature variables: Variables that represent actual temperature measurements (check unit field for temperature units)
-   - Count variables: Variables that represent counts of days/events/occurrences, NOT temperature values
-   - Degree days: Variables that represent heating/cooling indices, NOT temperatures
-   - Precipitation variables: Variables that represent precipitation amounts
-   - Use the variable description, standard name, and unit fields in the context to identify variable types
+
+2. VARIABLE TYPE IDENTIFICATION (CRITICAL - identify from context metadata):
+   To identify variable types, check these fields in order:
+   a) Description/long_name field: Look for keywords like:
+      - "days", "count", "number of", "occurrences" → COUNT variable (NOT a temperature!)
+      - "temperature", "temp", "degrees" → TEMPERATURE variable
+      - "precipitation", "rain", "snow" → PRECIPITATION variable
+   
+   b) Variable name: If description is missing, variable names starting with:
+      - "DT", "DX" (e.g., DT32, DX32) → COUNT of days (NOT temperature!)
+      - "TMAX", "TMIN", "TEMP" → TEMPERATURE variable
+      - "PRCP", "PRECIP" → PRECIPITATION variable
+   
+   c) Unit field: Check the unit:
+      - Unit is "days", "count", or missing but values are small integers (0-31) → COUNT variable
+      - Unit is "°C", "°F", "K", "Celsius", "Fahrenheit", "Kelvin" → TEMPERATURE variable
+      - Unit is "mm", "inches", "m" → PRECIPITATION variable
+   
+   d) Value range: If values are small integers (0-31) and description mentions "days" → COUNT variable
+   
+   IMPORTANT: A variable with unit "°C" or "°F" that has description mentioning "days" or "count" is STILL a COUNT variable, NOT a temperature!
+
 3. TEMPERATURE RANGE CALCULATION (when asked about "temperature range"):
-   - Find the maximum temperature variable and minimum temperature variable from the context
-   - Temperature range = maximum temperature value - minimum temperature value
-   - DO NOT confuse this with the range (min-max) of a single variable
-   - If the context only shows one temperature variable, you cannot calculate the full range
+   - You MUST find TWO SEPARATE variables: one for maximum temperature and one for minimum temperature
+   - Temperature range = (maximum temperature value) - (minimum temperature value)
+   - DO NOT use the range (min-max) of a single variable - that's the range of that variable, not the temperature range
+   - DO NOT use count variables (like DT32) - these are counts of days, NOT temperatures
+   - If the context only shows one temperature variable, you CANNOT calculate the full temperature range
+   - If you only see count variables or degree days, state that you need actual temperature variables (TMAX/TMIN or similar)
+
 4. UNIT CONVERSION (use European/SI units):
    - ALWAYS provide temperatures in Celsius (°C) in your answer
    - ALWAYS provide precipitation in millimeters (mm) or meters (m)
    - ALWAYS provide distances in meters (m) or kilometers (km)
    - Convert from other units as needed:
 {chr(10).join(unit_conversion_notes) if unit_conversion_notes else "   - Check the unit field in the context for each variable and convert to SI/European units"}
+
 5. Always cite the source and time period when providing values
-6. If the context doesn't contain sufficient information, clearly state what is missing
+6. If the context doesn't contain sufficient information, clearly state what is missing (e.g., "I need both maximum and minimum temperature variables to calculate the temperature range")
 7. Be precise with units - always show the unit in your answer
 8. If multiple sources conflict, mention this and cite all relevant sources
 
@@ -138,7 +158,7 @@ Answer format:
 - Show original values with their units if conversion was needed
 - Cite specific values with units
 - Mention source and time period
-- Explain any important distinctions between variable types"""
+- Explain any important distinctions between variable types (especially count vs. temperature)"""
         
         prompt = f"""{system_prompt}
 
