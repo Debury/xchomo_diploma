@@ -157,19 +157,19 @@ def process_all_sources(context: OpExecutionContext) -> List[Dict[str, Any]]:
                     embeddings.append(sem_vec.tolist())
                     documents.append(desc)
                     
-                    v = stat_item["vector"]
+                    stats_vector = stat_item["vector"]
                     meta = stat_item["metadata"]
-                    meta_clean = {k: (float(v) if isinstance(v, (np.float32, np.float64)) else v) for k,v in meta.items()}
+                    meta_clean = {k: (float(val) if isinstance(val, (np.float32, np.float64)) else val) for k, val in meta.items()}
                     
                     payload = {
                         **meta_clean,
                         "source_id": source_id,
                         "timestamp": timestamp,
-                        "stat_mean": float(v[0]),
-                        "stat_std": float(v[1]),
-                        "stat_max": float(v[3]),
-                        "stat_p90": float(v[6]), 
-                        "stat_range": float(v[7])
+                        "stat_mean": float(stats_vector[0]),
+                        "stat_std": float(stats_vector[1]),
+                        "stat_max": float(stats_vector[3]),
+                        "stat_p90": float(stats_vector[6]), 
+                        "stat_range": float(stats_vector[7])
                     }
                     metadatas.append(payload)
 
