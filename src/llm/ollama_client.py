@@ -200,20 +200,31 @@ class OllamaClient:
                 else:
                     temp_vars_found.append(f"Temperature: {variable}")
         
-        # Add summary of available time periods (CRITICAL - prevents hallucination of non-existent months)
+        # Build context string with summaries at the BEGINNING (critical for LLM to see them first)
+        summary_lines = []
+        
+        # Add summary of available time periods FIRST (CRITICAL - prevents hallucination)
         if time_periods:
             sorted_periods = sorted(time_periods)
-            context_lines.append(f"\n[SUMMARY] Available time periods in context (ONLY use these - do NOT invent others):\n" + "\n".join(f"  - {tp}" for tp in sorted_periods))
+            summary_lines.append(f"⚠️ CRITICAL: Available time periods in context (ONLY use these - DO NOT invent others):")
+            summary_lines.append("\n".join(f"  - {tp}" for tp in sorted_periods))
+            summary_lines.append("")  # Empty line for separation
         
         # Add summary of available temperature variables
         if temp_vars_found:
-            context_lines.append(f"\n[SUMMARY] Available temperature variables in context:\n" + "\n".join(f"  - {v}" for v in set(temp_vars_found)))
+            summary_lines.append(f"Available temperature variables in context:")
+            summary_lines.append("\n".join(f"  - {v}" for v in set(temp_vars_found)))
             if not any('MAXIMUM' in v for v in temp_vars_found):
-                context_lines.append("  ⚠️ WARNING: No MAXIMUM temperature variable found - cannot calculate full temperature range!")
+                summary_lines.append("  ⚠️ WARNING: No MAXIMUM temperature variable found - cannot calculate full temperature range!")
             if not any('MINIMUM' in v for v in temp_vars_found):
-                context_lines.append("  ⚠️ WARNING: No MINIMUM temperature variable found - cannot calculate full temperature range!")
+                summary_lines.append("  ⚠️ WARNING: No MINIMUM temperature variable found - cannot calculate full temperature range!")
+            summary_lines.append("")  # Empty line for separation
         
-        context_str = "\n\n".join(context_lines)
+        # Combine: summaries first, then context chunks
+        if summary_lines:
+            context_str = "\n".join(summary_lines) + "\n\n" + "\n\n".join(context_lines)
+        else:
+            context_str = "\n\n".join(context_lines)
         
         # Dynamically detect units from metadata (no hardcoded patterns)
         detected_units = set()

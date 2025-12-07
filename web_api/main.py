@@ -437,24 +437,45 @@ async def rag_chat(request: RAGChatRequest):
         db = VectorDatabase(config=pipeline_config)
         embedder = TextEmbedder()
         
-        # 1. Detect query type for intelligent retrieval and dynamic top_k
+        # 1. Detect query type and extract mentioned variables for intelligent retrieval
         question_lower = request.question.lower()
+        
+        # Detect temperature range queries
         is_temp_range_query = any(phrase in question_lower for phrase in [
             "temperature range", "temp range", "range of temperature",
             "min and max temperature", "maximum and minimum temperature",
             "temperature min max", "temp min max"
         ])
         
-        # Dynamic top_k based on query type (no hard limits - Qdrant handles large limits well)
-        # For temperature range queries, we need more results to ensure TMAX+TMIN
-        # For simple queries, smaller top_k is sufficient
+        # Detect multi-variable queries (mentions multiple climate variables)
+        # Common variable keywords to detect
+        variable_keywords = {
+            "temperature": ["temperature", "temp", "tmax", "tmin", "thermal"],
+            "precipitation": ["precipitation", "rain", "rainfall", "prcp", "snow"],
+            "wind": ["wind", "speed", "velocity", "awnd", "wdf", "wsf"],
+            "pressure": ["pressure", "barometric", "msl"],
+            "humidity": ["humidity", "moisture", "dewpoint"],
+        }
+        
+        mentioned_variables = []
+        for var_type, keywords in variable_keywords.items():
+            if any(kw in question_lower for kw in keywords):
+                mentioned_variables.append(var_type)
+        
+        is_multi_variable_query = len(mentioned_variables) > 1 or any(word in question_lower for word in [
+            "compare", "difference", "versus", "vs", "both", "and", "also", "additionally"
+        ])
+        
+        # Dynamic top_k based on query complexity
         if request.top_k is None:
             if is_temp_range_query:
-                top_k = 20  # Higher for multi-variable queries
-            elif any(word in question_lower for word in ["compare", "difference", "versus", "vs", "both"]):
-                top_k = 15  # Medium for comparison queries
+                top_k = 25  # Higher for temperature range (need TMAX + TMIN)
+            elif is_multi_variable_query:
+                top_k = 30  # Higher for multi-variable queries (need all variables)
+            elif any(word in question_lower for word in ["compare", "difference", "versus", "vs"]):
+                top_k = 20  # Medium for comparison queries
             else:
-                top_k = 10  # Default for simple queries
+                top_k = 15  # Default (increased from 10 for better coverage)
         else:
             top_k = request.top_k
         
@@ -465,8 +486,8 @@ async def rag_chat(request: RAGChatRequest):
         if request.variable:
             filter_dict["variable"] = request.variable
         
-        # 3. HYBRID SEARCH STRATEGY for temperature range queries
-        # Best practice: Use query expansion + multiple targeted searches
+        # 3. MULTI-QUERY RETRIEVAL STRATEGY
+        # Best practice: Use query expansion + multiple targeted searches for complex queries
         search_result = []
         
         if is_temp_range_query and not request.variable:
@@ -529,8 +550,58 @@ async def rag_chat(request: RAGChatRequest):
                 reverse=True
             )[:top_k]
             
+        elif is_multi_variable_query and not request.variable:
+            # Multi-variable query strategy: Perform multiple targeted searches
+            # 1. General semantic search (broader context)
+            # 2. Targeted searches for each mentioned variable type
+            
+            # Search 1: General semantic search
+            general_query_vec = embedder.embed_queries([request.question])[0]
+            general_results = db.search(
+                query_vector=general_query_vec.tolist(),
+                limit=top_k,
+                filter_dict=filter_dict if filter_dict else None
+            )
+            search_result.extend(general_results)
+            
+            # Search 2-N: Targeted searches for each mentioned variable type
+            # Use query expansion to improve retrieval for each variable
+            for var_type in mentioned_variables:
+                # Expand query with variable-specific terms
+                expanded_query = f"{request.question} {var_type}"
+                expanded_query_vec = embedder.embed_queries([expanded_query])[0]
+                
+                # Search without variable filter (to get all relevant chunks)
+                var_results = db.search(
+                    query_vector=expanded_query_vec.tolist(),
+                    limit=min(10, top_k),  # Get top 10 per variable type
+                    filter_dict=filter_dict if filter_dict else None
+                )
+                search_result.extend(var_results)
+            
+            # Deduplicate by variable + time + location
+            seen_chunks = set()
+            deduplicated_results = []
+            for hit in search_result:
+                meta = hit.payload if hasattr(hit, 'payload') else (hit if isinstance(hit, dict) else {})
+                var = meta.get('variable', '') if isinstance(meta, dict) else ''
+                time = meta.get('time_start', '') if isinstance(meta, dict) else ''
+                source = meta.get('source_id', '') if isinstance(meta, dict) else ''
+                chunk_key = f"{source}:{var}:{time}"
+                
+                if chunk_key not in seen_chunks:
+                    seen_chunks.add(chunk_key)
+                    deduplicated_results.append(hit)
+            
+            # Re-sort by score (best matches first)
+            search_result = sorted(
+                deduplicated_results,
+                key=lambda x: getattr(x, 'score', 0.0) if hasattr(x, 'score') else (x.get('score', 0.0) if isinstance(x, dict) else 0.0),
+                reverse=True
+            )[:top_k]
+            
         else:
-            # Standard semantic search for non-temperature-range queries
+            # Standard semantic search for simple single-variable queries
             query_vec = embedder.embed_queries([request.question])[0]
             search_result = db.search(
                 query_vector=query_vec.tolist(),
