@@ -221,9 +221,16 @@ def _load_csv(path: Path, **kwargs) -> Iterator[RasterChunk]:
             col_lower = str(col).lower()
             col_str = str(col)
             
-            # Skip attribute columns (usually end with _ATTRIBUTES or _ATTR)
+            # Extract attribute columns (usually end with _ATTRIBUTES or _ATTR)
+            # These contain metadata like long_name, units, etc.
             if '_attributes' in col_lower or col_lower.endswith('_attr') or col_str.endswith('_ATTRIBUTES'):
                 metadata_cols.append(col)
+                # Store attribute column mapping for later extraction
+                if not hasattr(sample_df, '_attribute_columns'):
+                    sample_df._attribute_columns = {}
+                # Map attribute column to its variable (e.g., TMIN_ATTRIBUTES -> TMIN)
+                base_var = col_str.replace('_ATTRIBUTES', '').replace('_ATTR', '')
+                sample_df._attribute_columns[base_var] = col
                 continue
             
             # Identify metadata columns
@@ -288,6 +295,43 @@ def _load_csv(path: Path, **kwargs) -> Iterator[RasterChunk]:
                     "source": str(path.name),
                     "format": "csv",
                 }
+                
+                # Extract metadata from _ATTRIBUTES column if available
+                attr_col_name = f"{var_col}_ATTRIBUTES"
+                if attr_col_name in df_chunk.columns:
+                    # Get first non-null attribute value
+                    attr_value = df_chunk[attr_col_name].dropna().iloc[0] if len(df_chunk[attr_col_name].dropna()) > 0 else None
+                    if attr_value:
+                        # Try to parse as JSON or key-value pairs
+                        try:
+                            import json
+                            if isinstance(attr_value, str) and attr_value.startswith('{'):
+                                attr_dict = json.loads(attr_value)
+                                if 'long_name' in attr_dict:
+                                    meta["long_name"] = str(attr_dict['long_name'])
+                                if 'units' in attr_dict or 'unit' in attr_dict:
+                                    meta["unit"] = str(attr_dict.get('units', attr_dict.get('unit', '')))
+                                if 'standard_name' in attr_dict:
+                                    meta["standard_name"] = str(attr_dict['standard_name'])
+                        except:
+                            # If not JSON, try to extract key-value pairs from string
+                            attr_str = str(attr_value)
+                            if 'long_name' in attr_str.lower():
+                                # Try to extract long_name value
+                                import re
+                                match = re.search(r'long_name["\']?\s*[:=]\s*["\']?([^"\',}]+)', attr_str, re.IGNORECASE)
+                                if match:
+                                    meta["long_name"] = match.group(1).strip()
+                            if 'unit' in attr_str.lower():
+                                match = re.search(r'units?["\']?\s*[:=]\s*["\']?([^"\',}]+)', attr_str, re.IGNORECASE)
+                                if match:
+                                    meta["unit"] = match.group(1).strip()
+                
+                # Also check if there's a separate metadata row or header
+                # Some CSV files have metadata in the first few rows
+                if 'long_name' not in meta and hasattr(sample_df, '_attribute_columns'):
+                    # Try to get from sample if available
+                    pass  # Could be enhanced later
                 
                 # Extract time information if available
                 if time_cols:

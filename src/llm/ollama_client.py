@@ -71,15 +71,63 @@ class OllamaClient:
                 if var_info_parts:
                     parts.append(" | ".join(var_info_parts))
                 
+                # CRITICAL: Identify variable type from description/name to help LLM understand
+                var_type_hint = ""
+                long_name_lower = long_name.lower() if long_name else ""
+                var_lower = variable.lower() if variable else ""
+                
+                # Detect variable type from description/name
+                if "maximum" in long_name_lower or "max" in long_name_lower or "highest" in long_name_lower:
+                    var_type_hint = " (MAXIMUM TEMPERATURE variable)"
+                elif "minimum" in long_name_lower or "min" in long_name_lower or "lowest" in long_name_lower:
+                    var_type_hint = " (MINIMUM TEMPERATURE variable)"
+                elif "count" in long_name_lower or "days" in long_name_lower or "number" in long_name_lower:
+                    var_type_hint = " (COUNT variable - NOT a temperature measurement)"
+                elif "temp" in long_name_lower or "temperature" in long_name_lower:
+                    var_type_hint = " (TEMPERATURE variable)"
+                
+                # Also check variable name patterns
+                if not var_type_hint:
+                    if "max" in var_lower or "tmax" in var_lower:
+                        var_type_hint = " (MAXIMUM TEMPERATURE variable)"
+                    elif "min" in var_lower or "tmin" in var_lower:
+                        var_type_hint = " (MINIMUM TEMPERATURE variable)"
+                    elif "dt" in var_lower or "dx" in var_lower:
+                        var_type_hint = " (COUNT variable - NOT a temperature measurement)"
+                
+                if var_type_hint:
+                    parts.append(f"Variable type:{var_type_hint}")
+                
                 if 'time_start' in meta:
                     parts.append(f"Period: {meta['time_start']}")
                 if 'stat_mean' in meta:
                     mean_val = meta['stat_mean']
-                    parts.append(f"Mean: {mean_val:.2f}{' ' + unit_str if unit_str else ''}")
+                    formatted_mean = f"Mean value: {mean_val:.2f}{' ' + unit_str if unit_str else ''}"
+                    # Convert to Celsius if needed
+                    if 'F' in unit_str.upper() or 'FAHRENHEIT' in unit_str.upper():
+                        mean_c = (mean_val - 32) * 5/9
+                        formatted_mean += f" ({mean_c:.2f}°C)"
+                    elif 'K' in unit_str.upper() or 'KELVIN' in unit_str.upper():
+                        mean_c = mean_val - 273.15
+                        formatted_mean += f" ({mean_c:.2f}°C)"
+                    parts.append(formatted_mean)
+                
+                # CRITICAL: Clarify that this is the VALUE RANGE of this variable, NOT the temperature range
                 if 'stat_min' in meta and 'stat_max' in meta:
                     min_val = meta['stat_min']
                     max_val = meta['stat_max']
-                    parts.append(f"Range: {min_val:.2f} to {max_val:.2f}{' ' + unit_str if unit_str else ''}")
+                    formatted_range = f"Value range (min to max for THIS variable): {min_val:.2f} to {max_val:.2f}{' ' + unit_str if unit_str else ''}"
+                    # Convert to Celsius if needed
+                    if 'F' in unit_str.upper() or 'FAHRENHEIT' in unit_str.upper():
+                        min_c = (min_val - 32) * 5/9
+                        max_c = (max_val - 32) * 5/9
+                        formatted_range += f" ({min_c:.2f} to {max_c:.2f}°C)"
+                    elif 'K' in unit_str.upper() or 'KELVIN' in unit_str.upper():
+                        min_c = min_val - 273.15
+                        max_c = max_val - 273.15
+                        formatted_range += f" ({min_c:.2f} to {max_c:.2f}°C)"
+                    parts.append(formatted_range)
+                
                 text_content = " | ".join(parts) if parts else str(meta)
             
             context_lines.append(f"[Context {idx}] (Relevance: {score:.1%})\n{text_content}")
