@@ -24,6 +24,21 @@ const headers = {
 
 const fmtDate = (value) => (value ? new Date(value).toLocaleString() : '—');
 
+// Toggle chunks visibility (for when there are many chunks)
+function toggleChunks(chunksId) {
+    const container = document.getElementById(chunksId);
+    const toggle = document.getElementById(`${chunksId}-toggle`);
+    if (container && toggle) {
+        if (container.classList.contains('hidden')) {
+            container.classList.remove('hidden');
+            toggle.textContent = '▲ Hide';
+        } else {
+            container.classList.add('hidden');
+            toggle.textContent = '▼ Show';
+        }
+    }
+}
+
 // Health Check
 async function checkHealth() {
     healthPanel.innerHTML = '<div class="flex items-center gap-2"><div class="spinner"></div> Checking...</div>';
@@ -406,10 +421,28 @@ ragForm?.addEventListener('submit', async (event) => {
         
         // Display chunks
         if (data.chunks && data.chunks.length > 0) {
+            // Create collapsible header for chunks (useful when there are many chunks)
             const chunksHeader = document.createElement('div');
             chunksHeader.className = 'mb-4';
-            chunksHeader.innerHTML = `<h3 class="text-lg font-semibold text-gray-100">Retrieved Context (${data.chunks.length} chunks)</h3>`;
+            const isCollapsible = data.chunks.length > 5; // Collapsible if more than 5 chunks
+            const chunksId = `chunks-${Date.now()}`;
+            
+            if (isCollapsible) {
+                chunksHeader.innerHTML = `
+                    <div class="flex items-center justify-between cursor-pointer" onclick="toggleChunks('${chunksId}')">
+                        <h3 class="text-lg font-semibold text-gray-100">Retrieved Context (${data.chunks.length} chunks)</h3>
+                        <span id="${chunksId}-toggle" class="text-gray-400 text-sm">▼ Show</span>
+                    </div>
+                `;
+            } else {
+                chunksHeader.innerHTML = `<h3 class="text-lg font-semibold text-gray-100">Retrieved Context (${data.chunks.length} chunks)</h3>`;
+            }
             ragChunks.appendChild(chunksHeader);
+            
+            // Create container for chunks
+            const chunksContainer = document.createElement('div');
+            chunksContainer.id = chunksId;
+            chunksContainer.className = isCollapsible ? 'hidden' : '';
             
             data.chunks.forEach((chunk, idx) => {
                 const card = document.createElement('div');
@@ -449,8 +482,10 @@ ragForm?.addEventListener('submit', async (event) => {
                     </div>
                     <div class="text-sm text-gray-300 leading-relaxed">${chunk.text || 'No preview available.'}</div>
                 `;
-                ragChunks.appendChild(card);
+                chunksContainer.appendChild(card);
             });
+            
+            ragChunks.appendChild(chunksContainer);
         } else {
             ragChunks.innerHTML = '<div class="text-gray-400 text-center py-4">No context chunks retrieved.</div>';
         }

@@ -104,7 +104,7 @@ class RAGChunk(BaseModel):
 
 class RAGChatRequest(BaseModel):
     question: str
-    top_k: int = 10  # Increased from 3 to 10 to capture more relevant chunks (e.g., both TMAX and TMIN)
+    top_k: Optional[int] = None  # If None, will be auto-determined based on query type
     use_llm: bool = True
     temperature: float = 0.3
     # Optional filters for narrowing search results
@@ -437,13 +437,26 @@ async def rag_chat(request: RAGChatRequest):
         db = VectorDatabase(config=pipeline_config)
         embedder = TextEmbedder()
         
-        # 1. Detect query type for intelligent retrieval
+        # 1. Detect query type for intelligent retrieval and dynamic top_k
         question_lower = request.question.lower()
         is_temp_range_query = any(phrase in question_lower for phrase in [
             "temperature range", "temp range", "range of temperature",
             "min and max temperature", "maximum and minimum temperature",
             "temperature min max", "temp min max"
         ])
+        
+        # Dynamic top_k based on query type (no hard limits - Qdrant handles large limits well)
+        # For temperature range queries, we need more results to ensure TMAX+TMIN
+        # For simple queries, smaller top_k is sufficient
+        if request.top_k is None:
+            if is_temp_range_query:
+                top_k = 20  # Higher for multi-variable queries
+            elif any(word in question_lower for word in ["compare", "difference", "versus", "vs", "both"]):
+                top_k = 15  # Medium for comparison queries
+            else:
+                top_k = 10  # Default for simple queries
+        else:
+            top_k = request.top_k
         
         # 2. Build filter dict if filters provided
         filter_dict = {}
@@ -466,7 +479,7 @@ async def rag_chat(request: RAGChatRequest):
             general_query_vec = embedder.embed_queries([request.question])[0]
             general_results = db.search(
                 query_vector=general_query_vec.tolist(),
-                limit=request.top_k,
+                limit=top_k,
                 filter_dict=filter_dict if filter_dict else None
             )
             search_result.extend(general_results)
@@ -478,7 +491,7 @@ async def rag_chat(request: RAGChatRequest):
             tmax_filter["variable"] = "TMAX"
             tmax_results = db.search(
                 query_vector=tmax_query_vec.tolist(),
-                limit=min(5, request.top_k),  # Get top 5 TMAX results
+                limit=min(8, top_k),  # Get top 8 TMAX results (more to ensure we find it)
                 filter_dict=tmax_filter
             )
             search_result.extend(tmax_results)
@@ -490,7 +503,7 @@ async def rag_chat(request: RAGChatRequest):
             tmin_filter["variable"] = "TMIN"
             tmin_results = db.search(
                 query_vector=tmin_query_vec.tolist(),
-                limit=min(5, request.top_k),  # Get top 5 TMIN results
+                limit=min(8, top_k),  # Get top 8 TMIN results (more to ensure we find it)
                 filter_dict=tmin_filter
             )
             search_result.extend(tmin_results)
@@ -514,14 +527,14 @@ async def rag_chat(request: RAGChatRequest):
                 deduplicated_results,
                 key=lambda x: getattr(x, 'score', 0.0) if hasattr(x, 'score') else (x.get('score', 0.0) if isinstance(x, dict) else 0.0),
                 reverse=True
-            )[:request.top_k]
+            )[:top_k]
             
         else:
             # Standard semantic search for non-temperature-range queries
             query_vec = embedder.embed_queries([request.question])[0]
             search_result = db.search(
                 query_vector=query_vec.tolist(),
-                limit=request.top_k,
+                limit=top_k,
                 filter_dict=filter_dict if filter_dict else None
             )
         
