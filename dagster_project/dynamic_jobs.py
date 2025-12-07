@@ -31,11 +31,12 @@ from src.sources import get_source_store
     description="Complete pipeline: download → process → embeddings → Qdrant (memory-safe)",
     out=Out(dagster_type=List[Dict[str, Any]]),
     tags={"phase": "5", "type": "complete_pipeline"},
-    required_resource_keys={"logger", "data_paths"}
+    required_resource_keys={"logger", "data_paths", "config_loader"}
 )
 def process_all_sources(context: OpExecutionContext) -> List[Dict[str, Any]]:
     logger = context.resources.logger
     data_paths = context.resources.data_paths
+    config_loader = context.resources.config_loader
     
     logger.info("=" * 80)
     logger.info("DYNAMIC SOURCE ETL - Complete Pipeline")

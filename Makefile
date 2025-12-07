@@ -66,7 +66,7 @@ cli-generate: ## Generate embeddings using CLI (climate_embeddings)
 	$(PYTHON) -m climate_embeddings.cli.main generate --help
 	@echo "$(YELLOW)Usage: python -m climate_embeddings.cli.main generate <file>$(NC)"
 
-run-all: docker compose-up ## Start all services with docker compose
+run-all: docker-compose-up ## Start all services with docker compose
 	@echo "$(GREEN)✓ All services started$(NC)"
 
 ##@ Testing
