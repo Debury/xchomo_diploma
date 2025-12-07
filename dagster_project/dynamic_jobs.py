@@ -167,7 +167,10 @@ def process_all_sources(context: OpExecutionContext) -> List[Dict[str, Any]]:
                         "timestamp": timestamp,
                         "stat_mean": float(stats_vector[0]),
                         "stat_std": float(stats_vector[1]),
+                        "stat_min": float(stats_vector[2]),
                         "stat_max": float(stats_vector[3]),
+                        "stat_p10": float(stats_vector[4]),
+                        "stat_median": float(stats_vector[5]),
                         "stat_p90": float(stats_vector[6]), 
                         "stat_range": float(stats_vector[7])
                     }
