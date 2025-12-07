@@ -33,9 +33,8 @@ class OllamaClient:
         Returns:
             Generated answer string
         """
-        # Format context with better structure and variable type information
+        # Format context with better structure and metadata information
         context_lines = []
-        variable_types = {}  # Track variable types to help LLM understand
         
         for idx, hit in enumerate(context_hits, 1):
             meta = hit.get('metadata', {}) if isinstance(hit, dict) else getattr(hit, 'metadata', {})
@@ -43,66 +42,103 @@ class OllamaClient:
             
             variable = meta.get('variable', 'unknown')
             
-            # Classify variable types to help LLM understand
-            var_lower = variable.lower()
-            var_type = "unknown"
-            if any(x in var_lower for x in ['tmax', 'tmin', 'temp', 'temperature']):
-                var_type = "temperature (°F or °C)"
-            elif any(x in var_lower for x in ['prcp', 'precip', 'rain']):
-                var_type = "precipitation (inches or mm)"
-            elif any(x in var_lower for x in ['snow']):
-                var_type = "snowfall (inches or mm)"
-            elif any(x in var_lower for x in ['dtd', 'dx', 'dt']):  # DT32, DX32, etc.
-                var_type = "count of days (not a temperature value!)"
-            elif any(x in var_lower for x in ['dd', 'hdd', 'cdd']):  # HTDD, CLDD
-                var_type = "degree days (heating/cooling index)"
-            elif any(x in var_lower for x in ['wind', 'wdf', 'wsf']):
-                var_type = "wind (speed in mph/m/s or direction in degrees)"
+            # Dynamically extract unit and metadata information
+            unit = meta.get('unit', meta.get('units', ''))
+            unit_str = str(unit).strip() if unit else ''
+            long_name = meta.get('long_name', '')
+            standard_name = meta.get('standard_name', '')
             
-            variable_types[variable] = var_type
+            # Build variable description from available metadata (no hardcoded patterns)
+            var_info_parts = []
+            if variable != 'unknown':
+                var_info_parts.append(f"Variable: {variable}")
+            if long_name:
+                var_info_parts.append(f"Description: {long_name}")
+            if standard_name:
+                var_info_parts.append(f"Standard name: {standard_name}")
+            if unit_str:
+                var_info_parts.append(f"Unit: {unit_str}")
             
             # Get text content or generate from metadata
             text_content = meta.get('text_content', '')
             if not text_content:
-                # Build structured metadata
+                # Build structured metadata dynamically from available fields
                 parts = []
                 if 'source_id' in meta:
                     parts.append(f"Source: {meta['source_id']}")
-                if variable != 'unknown':
-                    parts.append(f"Variable: {variable} ({var_type})")
+                
+                # Add variable information from metadata
+                if var_info_parts:
+                    parts.append(" | ".join(var_info_parts))
+                
                 if 'time_start' in meta:
                     parts.append(f"Period: {meta['time_start']}")
                 if 'stat_mean' in meta:
-                    parts.append(f"Mean: {meta['stat_mean']:.2f}")
+                    mean_val = meta['stat_mean']
+                    parts.append(f"Mean: {mean_val:.2f}{' ' + unit_str if unit_str else ''}")
                 if 'stat_min' in meta and 'stat_max' in meta:
-                    parts.append(f"Range: {meta['stat_min']:.2f} to {meta['stat_max']:.2f}")
+                    min_val = meta['stat_min']
+                    max_val = meta['stat_max']
+                    parts.append(f"Range: {min_val:.2f} to {max_val:.2f}{' ' + unit_str if unit_str else ''}")
                 text_content = " | ".join(parts) if parts else str(meta)
             
             context_lines.append(f"[Context {idx}] (Relevance: {score:.1%})\n{text_content}")
         
         context_str = "\n\n".join(context_lines)
         
-        # Enhanced system prompt with clear instructions
-        system_prompt = """You are an expert climate data analyst. Your task is to answer questions about climate data using ONLY the provided context.
+        # Dynamically detect units from metadata (no hardcoded patterns)
+        detected_units = set()
+        
+        for hit in context_hits:
+            meta = hit.get('metadata', {}) if isinstance(hit, dict) else getattr(hit, 'metadata', {})
+            unit = meta.get('unit', meta.get('units', ''))
+            if unit:
+                detected_units.add(str(unit).strip())
+        
+        # Build unit conversion instructions dynamically based on detected units
+        unit_conversion_notes = []
+        for unit in detected_units:
+            unit_upper = unit.upper()
+            if 'F' in unit_upper or 'FAHRENHEIT' in unit_upper:
+                unit_conversion_notes.append("- Fahrenheit (°F) to Celsius (°C): °C = (°F - 32) × 5/9")
+            elif 'K' in unit_upper and 'KELVIN' in unit_upper or (len(unit) == 1 and unit_upper == 'K'):
+                unit_conversion_notes.append("- Kelvin (K) to Celsius (°C): °C = K - 273.15")
+            elif 'INCH' in unit_upper or 'IN' in unit_upper:
+                unit_conversion_notes.append("- Inches to millimeters: mm = in × 25.4")
+        
+        # Enhanced system prompt with fully dynamic instructions (no hardcoded variable names)
+        system_prompt = f"""You are an expert climate data analyst. Your task is to answer questions about climate data using ONLY the provided context.
 
 CRITICAL RULES:
 1. ONLY use information from the provided context. Do NOT make up or infer values not explicitly stated.
-2. Distinguish between different variable types:
-   - TEMPERATURE variables (TMAX, TMIN, EMXT, EMNT): These are actual temperature values in °F or °C
-   - COUNT variables (DT32, DX32, DX70, etc.): These are COUNTS of days, NOT temperature values
-   - DEGREE DAYS (HTDD, CLDD): These are heating/cooling indices, NOT temperatures
-   - PRECIPITATION (PRCP, EMXP): These are precipitation amounts in inches or mm
-3. When asked about "temperature range", use TMAX and TMIN values, NOT count variables like DT32
-4. Always cite the source and time period when providing values
-5. If the context doesn't contain the answer, say "The provided context does not contain this information"
-6. Be precise with units and values - do not round unless necessary
-7. If multiple sources conflict, mention this and cite all relevant sources
+2. VARIABLE TYPE DISTINCTION (identify from context metadata):
+   - Temperature variables: Variables that represent actual temperature measurements (check unit field for temperature units)
+   - Count variables: Variables that represent counts of days/events/occurrences, NOT temperature values
+   - Degree days: Variables that represent heating/cooling indices, NOT temperatures
+   - Precipitation variables: Variables that represent precipitation amounts
+   - Use the variable description, standard name, and unit fields in the context to identify variable types
+3. TEMPERATURE RANGE CALCULATION (when asked about "temperature range"):
+   - Find the maximum temperature variable and minimum temperature variable from the context
+   - Temperature range = maximum temperature value - minimum temperature value
+   - DO NOT confuse this with the range (min-max) of a single variable
+   - If the context only shows one temperature variable, you cannot calculate the full range
+4. UNIT CONVERSION (use European/SI units):
+   - ALWAYS provide temperatures in Celsius (°C) in your answer
+   - ALWAYS provide precipitation in millimeters (mm) or meters (m)
+   - ALWAYS provide distances in meters (m) or kilometers (km)
+   - Convert from other units as needed:
+{chr(10).join(unit_conversion_notes) if unit_conversion_notes else "   - Check the unit field in the context for each variable and convert to SI/European units"}
+5. Always cite the source and time period when providing values
+6. If the context doesn't contain sufficient information, clearly state what is missing
+7. Be precise with units - always show the unit in your answer
+8. If multiple sources conflict, mention this and cite all relevant sources
 
 Answer format:
-- Start with a direct answer
+- Start with a direct answer using European/SI units (Celsius, mm, m, etc.)
+- Show original values with their units if conversion was needed
 - Cite specific values with units
 - Mention source and time period
-- Explain any important distinctions (e.g., count vs. temperature)"""
+- Explain any important distinctions between variable types"""
         
         prompt = f"""{system_prompt}
 
@@ -115,6 +151,9 @@ Answer format:
 === YOUR ANSWER ===
 Provide a precise, factual answer based ONLY on the context above. If the context doesn't contain the answer, state that clearly."""
         
+        # Try to generate with the configured model
+        # Use longer timeout for first request (model may need to load)
+        # Subsequent requests will be faster
         try:
             resp = requests.post(
                 f"{self.base_url}/api/generate",
@@ -132,22 +171,119 @@ Provide a precise, factual answer based ONLY on the context above. If the contex
                     },
                     "system": system_prompt  # Use system prompt for better instruction following
                 },
-                timeout=120  # Allow time for model loading
+                timeout=300  # Increased to 5 minutes for first load (model may be loading from disk)
             )
             resp.raise_for_status()
             result = resp.json()
             return result.get("response", "No response generated.")
+        except requests.exceptions.HTTPError as e:
+            if e.response.status_code == 404:
+                # Model not found - try to list available models and suggest fix
+                try:
+                    models_resp = requests.get(f"{self.base_url}/api/tags", timeout=5)
+                    if models_resp.status_code == 200:
+                        models = models_resp.json().get("models", [])
+                        model_names = [m.get("name", "") for m in models]
+                        available = ", ".join(model_names[:5]) if model_names else "none"
+                        return f"""LLM Error: Model '{self.model}' not found in Ollama.
+
+Available models: {available}
+
+To install the model, run:
+  docker compose exec ollama ollama pull {self.model}
+
+Or use an available model by setting OLLAMA_MODEL environment variable."""
+                    else:
+                        return f"LLM Error: Model '{self.model}' not found. Please install it with: docker compose exec ollama ollama pull {self.model}"
+                except:
+                    return f"LLM Error: Model '{self.model}' not found. Please install it with: docker compose exec ollama ollama pull {self.model}"
+            else:
+                return f"LLM Error: HTTP {e.response.status_code} - {str(e)}"
         except requests.exceptions.Timeout:
-            return "LLM Error: Request timed out. The model may still be loading."
+            # Check if model is available and suggest solutions
+            try:
+                models_resp = requests.get(f"{self.base_url}/api/tags", timeout=5)
+                if models_resp.status_code == 200:
+                    models = models_resp.json().get("models", [])
+                    model_names = [m.get("name", "") for m in models]
+                    if self.model in model_names:
+                        return f"""LLM Error: Request timed out after 5 minutes.
+
+The model '{self.model}' is installed but may be:
+1. Still loading into memory (first request takes longer)
+2. Too slow for the current hardware
+3. Experiencing memory issues
+
+Solutions:
+- Wait a few minutes and try again (model may finish loading)
+- Try a smaller model: llama3.2:3b or gemma2:2b
+- Check Ollama logs: docker compose logs ollama
+- Increase server resources (RAM/CPU)"""
+                    else:
+                        return f"LLM Error: Model '{self.model}' not found. Please install it with: docker compose exec ollama ollama pull {self.model}"
+            except:
+                pass
+            return "LLM Error: Request timed out. The model may still be loading, the server is unavailable, or the model is too slow for the current hardware."
+        except requests.exceptions.ConnectionError:
+            return f"LLM Error: Cannot connect to Ollama at {self.base_url}. Is the Ollama service running?"
         except requests.exceptions.RequestException as e:
             return f"LLM Error: {str(e)}"
         except Exception as e:
             return f"LLM Error: {str(e)}"
 
     def check_health(self) -> bool:
-        """Check if Ollama service is available."""
+        """Check if Ollama service is available and model is installed."""
         try:
             resp = requests.get(f"{self.base_url}/api/tags", timeout=5)
+            if resp.status_code == 200:
+                # Also check if the configured model is available
+                models = resp.json().get("models", [])
+                model_names = [m.get("name", "") for m in models]
+                if self.model not in model_names:
+                    import logging
+                    logger = logging.getLogger(__name__)
+                    logger.warning(f"Configured model '{self.model}' not found. Available: {', '.join(model_names[:3])}")
+                return True
+            return False
+        except Exception as e:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error(f"Ollama health check failed: {e}")
+            return False
+    
+    def warm_up_model(self, timeout: int = 60) -> bool:
+        """
+        Warm up the model by sending a small test request.
+        This loads the model into memory, making subsequent requests faster.
+        
+        Returns:
+            True if warm-up successful, False otherwise
+        """
+        try:
+            # Send a minimal prompt to load the model
+            resp = requests.post(
+                f"{self.base_url}/api/generate",
+                json={
+                    "model": self.model,
+                    "prompt": "test",
+                    "stream": False,
+                    "options": {
+                        "num_predict": 1  # Just generate 1 token to trigger model load
+                    }
+                },
+                timeout=timeout
+            )
             return resp.status_code == 200
         except:
             return False
+    
+    def list_available_models(self) -> list:
+        """List all available models in Ollama."""
+        try:
+            resp = requests.get(f"{self.base_url}/api/tags", timeout=5)
+            if resp.status_code == 200:
+                models = resp.json().get("models", [])
+                return [m.get("name", "") for m in models]
+            return []
+        except:
+            return []
