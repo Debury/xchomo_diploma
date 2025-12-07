@@ -434,15 +434,18 @@ ragForm?.addEventListener('submit', async (event) => {
                         <span id="${chunksId}-toggle" class="text-gray-400 text-sm">▼ Show</span>
                     </div>
                 `;
-                // Add event listener instead of inline onclick
-                const headerDiv = document.getElementById(`${chunksId}-header`);
-                if (headerDiv) {
-                    headerDiv.addEventListener('click', () => toggleChunks(chunksId));
-                }
             } else {
                 chunksHeader.innerHTML = `<h3 class="text-lg font-semibold text-gray-100">Retrieved Context (${data.chunks.length} chunks)</h3>`;
             }
             ragChunks.appendChild(chunksHeader);
+            
+            // Add event listener AFTER element is in DOM (for collapsible chunks)
+            if (isCollapsible) {
+                const headerDiv = document.getElementById(`${chunksId}-header`);
+                if (headerDiv) {
+                    headerDiv.addEventListener('click', () => toggleChunks(chunksId));
+                }
+            }
             
             // Create container for chunks
             const chunksContainer = document.createElement('div');
