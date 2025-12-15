@@ -135,6 +135,17 @@ class SourceResponse(BaseModel):
     last_processed: Optional[str] = None
 
 
+class AuthRequest(BaseModel):
+    username: str
+    password: str
+
+class AuthResponse(BaseModel):
+    success: bool
+    token: Optional[str] = None
+    message: str
+    username: Optional[str] = None
+
+
 # ====================================================================================
 # FASTAPI APPLICATION
 # ====================================================================================
@@ -250,20 +261,49 @@ def summarize_hits(results: List[Dict[str, Any]]) -> Tuple[str, List[str]]:
 
 @app.get("/")
 async def root():
-    return {"status": "ok", "docs": "/docs"}
+    return {"status": "ok", "docs": "/docs", "ui": "/app"}
 
 @app.get("/ui", response_class=FileResponse)
 async def serve_frontend():
     if not FRONTEND_DIR.exists():
         raise HTTPException(404, "Frontend not found")
+    # Serve legacy UI for backwards compatibility
+    legacy_file = FRONTEND_DIR / "legacy-index.html"
+    if legacy_file.exists():
+        return FileResponse(legacy_file)
     return FileResponse(FRONTEND_DIR / "index.html")
 
 @app.get("/chat", response_class=FileResponse)
 async def serve_chat():
-    chat_file = FRONTEND_DIR / "chat.html"
-    if not chat_file.exists():
+    # Serve the new SPA chat interface
+    spa_file = FRONTEND_DIR / "spa.html"
+    if not spa_file.exists():
         raise HTTPException(404, "Chat UI not found")
-    return FileResponse(chat_file)
+    return FileResponse(spa_file)
+
+# Vue SPA dist directory
+VUE_DIST_DIR = FRONTEND_DIR / "dist"
+
+# Serve Vue SPA static assets (JS, CSS, etc.)
+@app.get("/app/assets/{file_path:path}")
+async def serve_vue_assets(file_path: str):
+    """Serve Vue built assets"""
+    asset_file = VUE_DIST_DIR / "assets" / file_path
+    if asset_file.exists() and asset_file.is_file():
+        return FileResponse(asset_file)
+    raise HTTPException(404, f"Asset not found: {file_path}")
+
+# Serve Vue SPA - catch-all for client-side routing
+@app.get("/app")
+@app.get("/app/{path:path}")
+async def serve_vue_app(path: str = ""):
+    """Serve Vue SPA - all routes return index.html for client-side routing"""
+    if VUE_DIST_DIR.exists():
+        # Production: serve built Vue app
+        index_file = VUE_DIST_DIR / "index.html"
+        if index_file.exists():
+            return FileResponse(index_file)
+    raise HTTPException(404, "Vue app not built. Run 'npm run build' in frontend/")
 
 @app.get("/health", response_model=HealthResponse)
 async def health_check():
@@ -273,6 +313,56 @@ async def health_check():
         dagster_up = True
     except: pass
     return HealthResponse(status="healthy", dagster_available=dagster_up, timestamp=datetime.now().isoformat())
+
+
+# --- AUTHENTICATION ---
+
+import hashlib
+import secrets
+
+# Simple token storage (in production, use Redis or database)
+_valid_tokens: Dict[str, str] = {}
+
+@app.post("/auth/login", response_model=AuthResponse)
+async def auth_login(request: AuthRequest):
+    """
+    Simple authentication endpoint.
+    Credentials are read from AUTH_USERNAME and AUTH_PASSWORD environment variables.
+    """
+    expected_username = os.getenv("AUTH_USERNAME", "admin")
+    expected_password = os.getenv("AUTH_PASSWORD", "climate2024")
+    
+    if request.username == expected_username and request.password == expected_password:
+        # Generate a simple token
+        token = secrets.token_urlsafe(32)
+        _valid_tokens[token] = request.username
+        return AuthResponse(
+            success=True,
+            token=token,
+            message="Login successful",
+            username=request.username
+        )
+    
+    return AuthResponse(
+        success=False,
+        message="Invalid username or password"
+    )
+
+@app.post("/auth/logout")
+async def auth_logout(token: str = Query(...)):
+    """Invalidate a token"""
+    if token in _valid_tokens:
+        del _valid_tokens[token]
+        return {"success": True, "message": "Logged out"}
+    return {"success": False, "message": "Invalid token"}
+
+@app.get("/auth/verify")
+async def auth_verify(token: str = Query(...)):
+    """Verify if a token is valid"""
+    if token in _valid_tokens:
+        return {"valid": True, "username": _valid_tokens[token]}
+    return {"valid": False}
+
 
 # --- EMBEDDINGS (QDRANT) ---
 

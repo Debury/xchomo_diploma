@@ -1,0 +1,374 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Climate RAG - Chat</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        dark: {
+                            bg: '#0f172a',
+                            card: '#1e293b',
+                            border: '#334155',
+                            hover: '#475569'
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        @keyframes pulse-dot {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        .typing-dot { animation: pulse-dot 1.5s infinite; }
+        .typing-dot:nth-child(2) { animation-delay: 0.2s; }
+        .typing-dot:nth-child(3) { animation-delay: 0.4s; }
+        
+        .message-enter { animation: slideUp 0.3s ease-out; }
+        @keyframes slideUp {
+            from { opacity: 0; transform: translateY(20px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        
+        .scrollbar-thin::-webkit-scrollbar { width: 6px; }
+        .scrollbar-thin::-webkit-scrollbar-track { background: #1e293b; }
+        .scrollbar-thin::-webkit-scrollbar-thumb { background: #475569; border-radius: 3px; }
+        .scrollbar-thin::-webkit-scrollbar-thumb:hover { background: #64748b; }
+        
+        .gradient-border {
+            background: linear-gradient(135deg, #3b82f6 0%, #8b5cf6 50%, #06b6d4 100%);
+            padding: 1px;
+            border-radius: 0.75rem;
+        }
+        .gradient-border > div {
+            background: #1e293b;
+            border-radius: calc(0.75rem - 1px);
+        }
+    </style>
+</head>
+<body class="bg-dark-bg text-gray-100 min-h-screen flex flex-col">
+    <!-- Header -->
+    <header class="bg-dark-card border-b border-dark-border sticky top-0 z-50">
+        <div class="max-w-6xl mx-auto px-4 py-3 flex items-center justify-between">
+            <div class="flex items-center gap-3">
+                <div class="w-10 h-10 rounded-xl bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center text-xl">
+                    🌍
+                </div>
+                <div>
+                    <h1 class="text-xl font-bold bg-gradient-to-r from-blue-400 to-purple-400 bg-clip-text text-transparent">
+                        Climate RAG
+                    </h1>
+                    <p class="text-xs text-gray-500">Powered by AI</p>
+                </div>
+            </div>
+            <div class="flex items-center gap-4">
+                <div id="statusIndicator" class="flex items-center gap-2 text-sm">
+                    <div class="w-2 h-2 rounded-full bg-green-500"></div>
+                    <span class="text-gray-400">Online</span>
+                </div>
+                <a href="/docs" target="_blank" class="text-gray-400 hover:text-white transition-colors text-sm">
+                    API Docs
+                </a>
+                <a href="/" class="text-gray-400 hover:text-white transition-colors text-sm">
+                    Dashboard
+                </a>
+            </div>
+        </div>
+    </header>
+
+    <!-- Main Chat Area -->
+    <main class="flex-1 flex flex-col max-w-4xl w-full mx-auto">
+        <!-- Stats Bar -->
+        <div class="px-4 py-3 border-b border-dark-border bg-dark-card/50">
+            <div class="flex items-center justify-between text-sm">
+                <div class="flex items-center gap-6">
+                    <div class="flex items-center gap-2">
+                        <span class="text-gray-500">Embeddings:</span>
+                        <span id="statsEmbeddings" class="text-blue-400 font-semibold">—</span>
+                    </div>
+                    <div class="flex items-center gap-2">
+                        <span class="text-gray-500">Variables:</span>
+                        <span id="statsVariables" class="text-purple-400 font-semibold">—</span>
+                    </div>
+                    <div class="flex items-center gap-2">
+                        <span class="text-gray-500">Sources:</span>
+                        <span id="statsSources" class="text-green-400 font-semibold">—</span>
+                    </div>
+                </div>
+                <button id="btnRefreshStats" class="text-gray-500 hover:text-white transition-colors">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path>
+                    </svg>
+                </button>
+            </div>
+        </div>
+
+        <!-- Messages Container -->
+        <div id="messagesContainer" class="flex-1 overflow-y-auto scrollbar-thin p-4 space-y-4">
+            <!-- Welcome Message -->
+            <div class="message-enter flex gap-3">
+                <div class="w-8 h-8 rounded-lg bg-gradient-to-br from-green-500 to-emerald-600 flex items-center justify-center text-sm flex-shrink-0">
+                    🤖
+                </div>
+                <div class="flex-1">
+                    <div class="bg-dark-card rounded-2xl rounded-tl-sm p-4 border border-dark-border">
+                        <p class="text-gray-200">Welcome! I'm your Climate Data Assistant. Ask me anything about the climate variables in your database.</p>
+                        <div class="mt-3 flex flex-wrap gap-2">
+                            <button onclick="askQuestion('What variables are available?')" class="px-3 py-1.5 text-sm bg-dark-hover hover:bg-gray-600 rounded-lg transition-colors">
+                                📊 List variables
+                            </button>
+                            <button onclick="askQuestion('What is hurs?')" class="px-3 py-1.5 text-sm bg-dark-hover hover:bg-gray-600 rounded-lg transition-colors">
+                                💧 What is hurs?
+                            </button>
+                            <button onclick="askQuestion('Compare TMIN and TMAX')" class="px-3 py-1.5 text-sm bg-dark-hover hover:bg-gray-600 rounded-lg transition-colors">
+                                🌡️ Compare temps
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Input Area -->
+        <div class="p-4 border-t border-dark-border bg-dark-card">
+            <!-- Options -->
+            <div class="flex items-center gap-4 mb-3 text-sm">
+                <label class="flex items-center gap-2 cursor-pointer">
+                    <input type="checkbox" id="useLLM" checked class="w-4 h-4 rounded bg-dark-border border-dark-border text-blue-500 focus:ring-blue-500 focus:ring-offset-0">
+                    <span class="text-gray-400">Use LLM</span>
+                </label>
+                <label class="flex items-center gap-2">
+                    <span class="text-gray-500">Top K:</span>
+                    <input type="number" id="topK" value="5" min="1" max="20" class="w-16 px-2 py-1 bg-dark-bg border border-dark-border rounded text-gray-200 text-sm focus:outline-none focus:border-blue-500">
+                </label>
+            </div>
+            
+            <!-- Input Form -->
+            <form id="chatForm" class="flex gap-3">
+                <div class="flex-1 gradient-border">
+                    <div class="flex items-center">
+                        <input 
+                            type="text" 
+                            id="questionInput" 
+                            placeholder="Ask about your climate data..." 
+                            autocomplete="off"
+                            class="flex-1 px-4 py-3 bg-transparent text-gray-100 placeholder-gray-500 focus:outline-none"
+                        >
+                        <button 
+                            type="submit" 
+                            id="submitBtn"
+                            class="px-4 py-3 text-blue-400 hover:text-blue-300 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                            <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"></path>
+                            </svg>
+                        </button>
+                    </div>
+                </div>
+            </form>
+            
+            <p class="text-xs text-gray-600 mt-2 text-center">
+                Press Enter to send • Powered by OpenRouter LLM
+            </p>
+        </div>
+    </main>
+
+    <script>
+        // State
+        let isLoading = false;
+        let conversationHistory = [];
+
+        // Elements
+        const messagesContainer = document.getElementById('messagesContainer');
+        const chatForm = document.getElementById('chatForm');
+        const questionInput = document.getElementById('questionInput');
+        const submitBtn = document.getElementById('submitBtn');
+        const useLLM = document.getElementById('useLLM');
+        const topK = document.getElementById('topK');
+
+        // Initialize
+        document.addEventListener('DOMContentLoaded', () => {
+            loadStats();
+            questionInput.focus();
+        });
+
+        // Load stats
+        async function loadStats() {
+            try {
+                const resp = await fetch('/rag/info');
+                const data = await resp.json();
+                document.getElementById('statsEmbeddings').textContent = data.total_embeddings?.toLocaleString() || '—';
+                document.getElementById('statsVariables').textContent = data.variables?.length || '—';
+                document.getElementById('statsSources').textContent = data.sources?.length || '—';
+            } catch (e) {
+                console.error('Failed to load stats:', e);
+            }
+        }
+
+        document.getElementById('btnRefreshStats').addEventListener('click', loadStats);
+
+        // Ask question helper
+        function askQuestion(question) {
+            questionInput.value = question;
+            chatForm.dispatchEvent(new Event('submit'));
+        }
+
+        // Add message to chat
+        function addMessage(role, content, meta = {}) {
+            const isUser = role === 'user';
+            const div = document.createElement('div');
+            div.className = 'message-enter flex gap-3' + (isUser ? ' flex-row-reverse' : '');
+            
+            const avatar = isUser ? '👤' : '🤖';
+            const avatarBg = isUser ? 'from-blue-500 to-indigo-600' : 'from-green-500 to-emerald-600';
+            const msgBg = isUser ? 'bg-blue-600' : 'bg-dark-card border border-dark-border';
+            const msgRadius = isUser ? 'rounded-2xl rounded-tr-sm' : 'rounded-2xl rounded-tl-sm';
+            
+            let metaHtml = '';
+            if (meta.search_time_ms !== undefined || meta.llm_time_ms !== undefined) {
+                metaHtml = `
+                    <div class="mt-2 pt-2 border-t border-dark-border text-xs text-gray-500 flex gap-4">
+                        ${meta.search_time_ms !== undefined ? `<span>🔍 ${meta.search_time_ms.toFixed(0)}ms</span>` : ''}
+                        ${meta.llm_time_ms ? `<span>🧠 ${meta.llm_time_ms.toFixed(0)}ms</span>` : ''}
+                        ${meta.llm_used === false ? '<span>📊 Search only</span>' : ''}
+                    </div>
+                `;
+            }
+            
+            let sourcesHtml = '';
+            if (meta.references && meta.references.length > 0) {
+                sourcesHtml = `
+                    <div class="mt-2 pt-2 border-t border-dark-border">
+                        <span class="text-xs text-gray-500">Sources:</span>
+                        <div class="flex flex-wrap gap-1 mt-1">
+                            ${meta.references.map(ref => `
+                                <span class="px-2 py-0.5 text-xs bg-dark-hover rounded-full text-gray-300">${ref}</span>
+                            `).join('')}
+                        </div>
+                    </div>
+                `;
+            }
+            
+            div.innerHTML = `
+                <div class="w-8 h-8 rounded-lg bg-gradient-to-br ${avatarBg} flex items-center justify-center text-sm flex-shrink-0">
+                    ${avatar}
+                </div>
+                <div class="max-w-[80%]">
+                    <div class="${msgBg} ${msgRadius} p-4">
+                        <p class="text-gray-200 whitespace-pre-wrap">${escapeHtml(content)}</p>
+                        ${sourcesHtml}
+                        ${metaHtml}
+                    </div>
+                </div>
+            `;
+            
+            messagesContainer.appendChild(div);
+            messagesContainer.scrollTop = messagesContainer.scrollHeight;
+        }
+
+        // Add typing indicator
+        function addTypingIndicator() {
+            const div = document.createElement('div');
+            div.id = 'typingIndicator';
+            div.className = 'message-enter flex gap-3';
+            div.innerHTML = `
+                <div class="w-8 h-8 rounded-lg bg-gradient-to-br from-green-500 to-emerald-600 flex items-center justify-center text-sm flex-shrink-0">
+                    🤖
+                </div>
+                <div class="bg-dark-card rounded-2xl rounded-tl-sm p-4 border border-dark-border">
+                    <div class="flex gap-1">
+                        <div class="w-2 h-2 bg-gray-400 rounded-full typing-dot"></div>
+                        <div class="w-2 h-2 bg-gray-400 rounded-full typing-dot"></div>
+                        <div class="w-2 h-2 bg-gray-400 rounded-full typing-dot"></div>
+                    </div>
+                </div>
+            `;
+            messagesContainer.appendChild(div);
+            messagesContainer.scrollTop = messagesContainer.scrollHeight;
+        }
+
+        function removeTypingIndicator() {
+            const indicator = document.getElementById('typingIndicator');
+            if (indicator) indicator.remove();
+        }
+
+        // Escape HTML
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        // Handle form submit
+        chatForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            
+            const question = questionInput.value.trim();
+            if (!question || isLoading) return;
+            
+            isLoading = true;
+            submitBtn.disabled = true;
+            questionInput.value = '';
+            
+            // Add user message
+            addMessage('user', question);
+            conversationHistory.push({ role: 'user', content: question });
+            
+            // Show typing
+            addTypingIndicator();
+            
+            try {
+                const resp = await fetch('/rag/query', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        question: question,
+                        use_llm: useLLM.checked,
+                        top_k: parseInt(topK.value) || 5,
+                        conversation_history: conversationHistory.slice(-6)
+                    })
+                });
+                
+                const data = await resp.json();
+                
+                removeTypingIndicator();
+                
+                if (data.answer) {
+                    addMessage('assistant', data.answer, {
+                        search_time_ms: data.search_time_ms,
+                        llm_time_ms: data.llm_time_ms,
+                        llm_used: data.llm_used,
+                        references: data.references
+                    });
+                    conversationHistory.push({ role: 'assistant', content: data.answer });
+                } else {
+                    addMessage('assistant', 'Sorry, I could not process your request.');
+                }
+                
+            } catch (err) {
+                removeTypingIndicator();
+                addMessage('assistant', `Error: ${err.message}`);
+            } finally {
+                isLoading = false;
+                submitBtn.disabled = false;
+                questionInput.focus();
+            }
+        });
+
+        // Keyboard shortcut
+        questionInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                chatForm.dispatchEvent(new Event('submit'));
+            }
+        });
+    </script>
+</body>
+</html>

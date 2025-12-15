@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Climate Data ETL - UI</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🌍 Climate Data ETL Pipeline</h1>
+            <p>Manage climate data sources, embeddings, and RAG queries</p>
+        </header>
+        
+        <nav class="nav-links">
+            <a href="/app" class="nav-btn primary">🚀 New Dashboard (Vue)</a>
+            <a href="/chat" class="nav-btn">💬 Quick Chat</a>
+            <a href="/docs" class="nav-btn">📚 API Docs</a>
+        </nav>
+        
+        <section class="stats-grid" id="stats">
+            <div class="stat-card">
+                <h3>Total Embeddings</h3>
+                <p id="stat-embeddings">Loading...</p>
+            </div>
+            <div class="stat-card">
+                <h3>Variables</h3>
+                <p id="stat-variables">Loading...</p>
+            </div>
+            <div class="stat-card">
+                <h3>Sources</h3>
+                <p id="stat-sources">Loading...</p>
+            </div>
+        </section>
+    </div>
+    
+    <script>
+        async function loadStats() {
+            try {
+                const resp = await fetch('/rag/info');
+                const data = await resp.json();
+                document.getElementById('stat-embeddings').textContent = data.total_embeddings?.toLocaleString() || '0';
+                document.getElementById('stat-variables').textContent = data.variables?.length || '0';
+                document.getElementById('stat-sources').textContent = data.sources?.length || '0';
+            } catch (e) {
+                console.error('Failed to load stats:', e);
+            }
+        }
+        loadStats();
+    </script>
+    
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: system-ui, sans-serif; background: #1a1a2e; color: #eee; min-height: 100vh; }
+        .container { max-width: 1200px; margin: 0 auto; padding: 2rem; }
+        header { text-align: center; margin-bottom: 2rem; }
+        header h1 { font-size: 2.5rem; margin-bottom: 0.5rem; }
+        header p { color: #888; }
+        .nav-links { display: flex; gap: 1rem; justify-content: center; margin-bottom: 2rem; flex-wrap: wrap; }
+        .nav-btn { padding: 0.75rem 1.5rem; background: #2d2d44; border-radius: 8px; color: #eee; text-decoration: none; transition: all 0.2s; }
+        .nav-btn:hover { background: #3d3d54; transform: translateY(-2px); }
+        .nav-btn.primary { background: #4f46e5; }
+        .nav-btn.primary:hover { background: #6366f1; }
+        .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; }
+        .stat-card { background: #2d2d44; padding: 1.5rem; border-radius: 12px; text-align: center; }
+        .stat-card h3 { color: #888; font-size: 0.9rem; margin-bottom: 0.5rem; }
+        .stat-card p { font-size: 2rem; font-weight: bold; color: #60a5fa; }
+    </style>
+</body>
+</html>

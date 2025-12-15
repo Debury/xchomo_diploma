@@ -28,7 +28,7 @@ class OpenRouterClient:
         # - openai/gpt-4o-mini ($0.15/1M input) - best value
         # - anthropic/claude-3-haiku ($0.25/1M input) - very good
         # - openai/gpt-4o ($2.50/1M input) - best quality
-        self.model = os.getenv("OPENROUTER_MODEL", "meta-llama/llama-3.1-8b-instruct:free")
+        self.model = os.getenv("OPENROUTER_MODEL", "mistralai/mistral-7b-instruct:free")
     
     def is_available(self) -> bool:
         """Check if OpenRouter API key is configured."""

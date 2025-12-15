@@ -110,11 +110,10 @@ services:
   web-api:
     build: .
     container_name: climate-web-api
-    command: uvicorn web_api.main:app --host 0.0.0.0 --port 8000 --reload
+    command: uvicorn web_api.main:app --host 0.0.0.0 --port 8000
     ports:
       - "8000:8000"
     volumes:
-      - ./web_api:/app/web_api
       - ./dagster_project:/app/dagster_project
       - ./src:/app/src
       - ./tests:/app/tests
