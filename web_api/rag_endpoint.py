@@ -413,7 +413,7 @@ async def get_collection_info() -> Dict[str, Any]:
         if _CACHED_INFO and (time.time() - _CACHED_INFO_TS) < 300:
             return _CACHED_INFO
         
-        _config, db, _embedder = _get_components()
+        _config, db, _embedder, _llm = _get_components()
         
         variables = set()
         sources = set()
