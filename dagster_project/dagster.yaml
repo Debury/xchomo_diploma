@@ -36,3 +36,8 @@ local_artifact_storage:
 
 telemetry:
   enabled: false
+
+# Code server heartbeat configuration for long-running operations
+code_servers:
+  local_startup_timeout: 180
+  heartbeat_ttl: 120
