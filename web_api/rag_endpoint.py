@@ -238,7 +238,10 @@ async def rag_query(request: RAGRequest) -> RAGResponse:
         search_start = time.time()
         
         # Embed query
+        embed_start = time.time()
         query_vec = embedder.embed_queries([question_text])[0]
+        embed_time = (time.time() - embed_start) * 1000
+        logger.info(f"Embedding took {embed_time:.0f}ms")
         
         # Build filter
         filter_dict = {}
@@ -256,6 +259,7 @@ async def rag_query(request: RAGRequest) -> RAGResponse:
         )
         
         search_time = (time.time() - search_start) * 1000  # Convert to ms
+        logger.info(f"Total search (embed+qdrant) took {search_time:.0f}ms")
         
         # 2. FORMAT CONTEXT
         chunks = []
