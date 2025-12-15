@@ -32,6 +32,9 @@ RUN npm install
 COPY web_api/frontend/ ./
 RUN npm run build
 
+# Save the dist folder
+RUN cp -r dist /tmp/frontend-dist
+
 # Back to app root
 WORKDIR /app
 
@@ -42,6 +45,9 @@ COPY pyproject.toml .
 COPY README.md .
 COPY web_api/ ./web_api/
 COPY dagster_project/ ./dagster_project/
+
+# Restore the built frontend
+RUN cp -r /tmp/frontend-dist ./web_api/frontend/dist
 
 # Install package
 RUN pip install -e .
