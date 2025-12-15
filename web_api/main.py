@@ -149,7 +149,7 @@ SAMPLE_DATA_DIR = Path(__file__).parent.parent / "data" / "raw"
 SAMPLE_DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 # Import optimized RAG endpoint
-from web_api.rag_endpoint import rag_query, simple_search, RAGRequest, RAGResponse
+from web_api.rag_endpoint import rag_query, simple_search, get_collection_info, RAGRequest, RAGResponse
 
 app.add_middleware(
     CORSMiddleware,
@@ -451,6 +451,13 @@ async def rag_search_only(query: str, top_k: int = 5, source_id: Optional[str] =
     if variable:
         filters["variable"] = variable
     return await simple_search(query, top_k, filters if filters else None)
+
+@app.get("/rag/info")
+async def rag_info():
+    """
+    Get collection info: variables, sources, count. Instant - no embedding/LLM.
+    """
+    return await get_collection_info()
 
 # --- RAG (LEGACY - for backwards compatibility) ---
 

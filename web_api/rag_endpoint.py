@@ -362,6 +362,80 @@ async def rag_query(request: RAGRequest) -> RAGResponse:
 
 
 # ====================================================================================
+# FAST INFO ENDPOINT (no embedding, no LLM)
+# ====================================================================================
+
+_CACHED_INFO: Optional[Dict[str, Any]] = None
+_CACHED_INFO_TS: float = 0.0
+_INFO_LOCK = threading.Lock()
+
+
+async def get_collection_info() -> Dict[str, Any]:
+    """
+    Return cached collection info: variables, sources, count.
+    No embeddings, no LLM - instant response.
+    """
+    global _CACHED_INFO, _CACHED_INFO_TS
+    now = time.time()
+    
+    # Return cache if fresh (5 min)
+    if _CACHED_INFO and (now - _CACHED_INFO_TS) < 300:
+        return _CACHED_INFO
+    
+    with _INFO_LOCK:
+        if _CACHED_INFO and (time.time() - _CACHED_INFO_TS) < 300:
+            return _CACHED_INFO
+        
+        _config, db, _embedder = _get_components()
+        
+        variables = set()
+        sources = set()
+        count = 0
+        
+        client = getattr(db, "client", None)
+        collection = getattr(db, "collection_name", None)
+        
+        if client and collection:
+            try:
+                # Get count
+                info = client.get_collection(collection)
+                count = info.points_count
+                
+                # Scroll to get unique variables/sources
+                offset = None
+                rounds = 0
+                while rounds < 20 and len(variables) < 200:
+                    points, offset = client.scroll(
+                        collection_name=collection,
+                        limit=500,
+                        offset=offset,
+                        with_vectors=False,
+                        with_payload={"include": ["variable", "source_id", "dataset_name"]},
+                    )
+                    rounds += 1
+                    for p in points:
+                        payload = getattr(p, "payload", None) or {}
+                        if payload.get("variable"):
+                            variables.add(payload["variable"])
+                        src = payload.get("source_id") or payload.get("dataset_name")
+                        if src:
+                            sources.add(src)
+                    if offset is None:
+                        break
+            except Exception as e:
+                logger.error(f"get_collection_info error: {e}")
+        
+        _CACHED_INFO = {
+            "total_embeddings": count,
+            "variables": sorted(variables),
+            "sources": sorted(sources),
+            "collection_name": collection or "climate_data",
+        }
+        _CACHED_INFO_TS = time.time()
+        return _CACHED_INFO
+
+
+# ====================================================================================
 # SIMPLE SEARCH (no LLM)
 # ====================================================================================
 
