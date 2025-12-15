@@ -27,36 +27,23 @@ _VARIABLES_LOCK = threading.Lock()
 
 
 def _get_llm_client():
-    """Get the best available LLM client: OpenRouter > Groq > Ollama."""
+    """Get LLM client - OpenRouter only."""
     import os
     
-    # Priority 1: OpenRouter (access to many models, free tier available)
-    if os.getenv("OPENROUTER_API_KEY"):
-        try:
-            from src.llm.openrouter_client import OpenRouterClient
-            client = OpenRouterClient()
-            if client.is_available():
-                logger.info(f"Using OpenRouter API with model: {client.model}")
-                return client, "openrouter"
-        except Exception as e:
-            logger.warning(f"OpenRouter client init failed: {e}")
+    # OpenRouter only - no fallback to slow Ollama
+    api_key = os.getenv("OPENROUTER_API_KEY")
+    if not api_key:
+        logger.error("OPENROUTER_API_KEY not set! LLM will not work.")
+        raise ValueError("OPENROUTER_API_KEY environment variable is required")
     
-    # Priority 2: Groq (very fast, free tier)
-    if os.getenv("GROQ_API_KEY"):
-        try:
-            from src.llm.groq_client import GroqClient
-            client = GroqClient()
-            if client.is_available():
-                logger.info(f"Using Groq API with model: {client.model}")
-                return client, "groq"
-        except Exception as e:
-            logger.warning(f"Groq client init failed: {e}")
-    
-    # Fallback: Ollama (local, slower on CPU)
-    from src.llm.ollama_client import OllamaClient
-    client = OllamaClient()
-    logger.info(f"Using Ollama with model: {client.model}")
-    return client, "ollama"
+    try:
+        from src.llm.openrouter_client import OpenRouterClient
+        client = OpenRouterClient()
+        logger.info(f"Using OpenRouter API with model: {client.model}")
+        return client, "openrouter"
+    except Exception as e:
+        logger.error(f"OpenRouter client init failed: {e}")
+        raise ValueError(f"Failed to initialize OpenRouter: {e}")
 
 
 def _get_components():
