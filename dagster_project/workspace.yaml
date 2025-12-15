@@ -8,3 +8,6 @@ load_from:
       module_name: dagster_project.repository
       working_directory: /app
       attribute: climate_etl_repository
+      # Increase heartbeat tolerance for long-running operations
+      code_server_heartbeat_timeout: 120  # seconds (default is 20)
+      code_server_heartbeat_ttl: 180  # seconds

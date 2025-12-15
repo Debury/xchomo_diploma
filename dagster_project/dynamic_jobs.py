@@ -16,7 +16,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.append(str(PROJECT_ROOT))
 
-from dagster import job, op, Out, OpExecutionContext
+from dagster import job, op, Out, OpExecutionContext, Output, AssetMaterialization, EventMetadataEntry
 from dagster_project.resources import ConfigLoaderResource, LoggerResource, DataPathResource
 
 # --- IMPORTS ---
@@ -33,7 +33,7 @@ from src.sources import get_source_store
     tags={"phase": "5", "type": "complete_pipeline"},
     required_resource_keys={"logger", "data_paths", "config_loader"}
 )
-def process_all_sources(context: OpExecutionContext) -> List[Dict[str, Any]]:
+def process_all_sources(context: OpExecutionContext):
     logger = context.resources.logger
     data_paths = context.resources.data_paths
     config_loader = context.resources.config_loader
@@ -88,24 +88,51 @@ def process_all_sources(context: OpExecutionContext) -> List[Dict[str, Any]]:
                     
                     downloaded = 0
                     last_log = time.time()
+                    last_heartbeat = time.time()
                     with open(filepath, 'wb') as f:
                         for chunk in response.iter_content(chunk_size=8192):
                             f.write(chunk)
                             downloaded += len(chunk)
+                            
+                            # Log progress every 5 seconds
                             if time.time() - last_log > 5:
                                 logger.info(f"Downloading... {downloaded / 1024 / 1024:.1f} MB")
                                 last_log = time.time()
+                            
+                            # Yield heartbeat every 10 seconds to keep Dagster alive
+                            if time.time() - last_heartbeat > 10:
+                                yield AssetMaterialization(
+                                    asset_key=f"download_progress_{source_id}",
+                                    description=f"Downloading {source_id}",
+                                    metadata={
+                                        "downloaded_mb": downloaded / 1024 / 1024,
+                                        "source_id": source_id
+                                    }
+                                )
+                                last_heartbeat = time.time()
                                 
                 if filepath.stat().st_size < 500: raise Exception("File too small")
                 logger.info(f"✓ Downloaded {filepath.name}")
             
             # --- 2. LOAD & STATS ---
             logger.info("Loading & Calculating Stats...")
+            yield AssetMaterialization(
+                asset_key=f"loading_{source_id}",
+                description=f"Loading raster data for {source_id}",
+                metadata={"source_id": source_id, "filepath": str(filepath)}
+            )
+            
             raster_result = load_raster_auto(
                 filepath,
                 chunks="auto",
                 variables=source.variables,
                 bbox=tuple(source.spatial_bbox) if source.spatial_bbox else None,
+            )
+            
+            yield AssetMaterialization(
+                asset_key=f"computing_stats_{source_id}",
+                description=f"Computing statistics for {source_id}",
+                metadata={"source_id": source_id}
             )
             
             stat_embeddings = raster_to_embeddings(
@@ -128,7 +155,19 @@ def process_all_sources(context: OpExecutionContext) -> List[Dict[str, Any]]:
             
             for i in range(0, total_chunks, BATCH_SIZE):
                 batch_slice = stat_embeddings[i : i + BATCH_SIZE]
-                if i % 100 == 0: logger.info(f"Processing {i}/{total_chunks}...")
+                if i % 100 == 0: 
+                    logger.info(f"Processing {i}/{total_chunks}...")
+                    # Yield heartbeat every 100 chunks to keep Dagster alive
+                    yield AssetMaterialization(
+                        asset_key=f"embedding_progress_{source_id}",
+                        description=f"Processing embeddings for {source_id}",
+                        metadata={
+                            "processed_chunks": i,
+                            "total_chunks": total_chunks,
+                            "progress_percent": round((i / total_chunks) * 100, 2),
+                            "source_id": source_id
+                        }
+                    )
                 
                 # Use the new text generation module for consistent, configurable descriptions
                 from src.climate_embeddings.text_generation import generate_batch_descriptions
@@ -180,14 +219,40 @@ def process_all_sources(context: OpExecutionContext) -> List[Dict[str, Any]]:
 
             logger.info(f"✓ Stored {total_chunks} vectors.")
             store.update_processing_status(source_id, "completed")
+            
+            # Yield completion event
+            yield AssetMaterialization(
+                asset_key=f"completed_{source_id}",
+                description=f"Successfully processed {source_id}",
+                metadata={
+                    "source_id": source_id,
+                    "total_chunks": total_chunks,
+                    "status": "success"
+                }
+            )
+            
             results.append({"source_id": source_id, "status": "success"})
             
         except Exception as e:
             logger.error(f"✗ FAILED {source_id}: {e}")
             logger.error(traceback.format_exc())
             store.update_processing_status(source_id, "failed", error_message=str(e))
+            
+            # Yield failure event (don't stop on error, continue with next source)
+            yield AssetMaterialization(
+                asset_key=f"failed_{source_id}",
+                description=f"Failed to process {source_id}",
+                metadata={
+                    "source_id": source_id,
+                    "error": str(e),
+                    "status": "failed"
+                }
+            )
+            
+            results.append({"source_id": source_id, "status": "failed", "error": str(e)})
 
-    return results
+    # Final yield with results
+    yield Output(results)
 
 @job(
     resource_defs={
