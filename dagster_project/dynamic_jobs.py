@@ -10,6 +10,7 @@ import traceback
 from datetime import datetime
 from typing import Dict, Any, List, Optional
 import numpy as np
+import threading
 
 # --- PATH SETUP ---
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -25,6 +26,48 @@ from src.climate_embeddings.loaders.detect_format import detect_format_from_url
 from src.climate_embeddings.embeddings.text_models import TextEmbedder
 from src.embeddings.database import VectorDatabase
 from src.sources import get_source_store
+
+
+def run_with_heartbeat(context, func, *args, operation_name="operation", **kwargs):
+    """
+    Run a blocking function while yielding periodic heartbeats.
+    Returns a generator that yields heartbeats and finally the result.
+    """
+    result = [None]
+    exception = [None]
+    completed = [False]
+    
+    def worker():
+        try:
+            result[0] = func(*args, **kwargs)
+        except Exception as e:
+            exception[0] = e
+        finally:
+            completed[0] = True
+    
+    # Start the blocking operation in a thread
+    thread = threading.Thread(target=worker)
+    thread.start()
+    
+    # Yield heartbeats every 5 seconds while waiting
+    last_heartbeat = time.time()
+    while not completed[0]:
+        time.sleep(1)
+        if time.time() - last_heartbeat > 5:
+            yield AssetMaterialization(
+                asset_key=f"heartbeat_{operation_name}",
+                description=f"Processing: {operation_name}",
+                metadata={"status": "in_progress", "elapsed_seconds": int(time.time() - last_heartbeat)}
+            )
+            last_heartbeat = time.time()
+    
+    thread.join()
+    
+    # Raise exception if one occurred
+    if exception[0]:
+        raise exception[0]
+    
+    return result[0]
 
 
 @op(
@@ -116,31 +159,36 @@ def process_all_sources(context: OpExecutionContext):
             
             # --- 2. LOAD & STATS ---
             logger.info("Loading & Calculating Stats...")
-            yield AssetMaterialization(
-                asset_key=f"loading_{source_id}",
-                description=f"Loading raster data for {source_id}",
-                metadata={"source_id": source_id, "filepath": str(filepath)}
-            )
             
-            raster_result = load_raster_auto(
+            # Load raster with heartbeat
+            for event in run_with_heartbeat(
+                context,
+                load_raster_auto,
                 filepath,
+                operation_name=f"load_raster_{source_id}",
                 chunks="auto",
                 variables=source.variables,
                 bbox=tuple(source.spatial_bbox) if source.spatial_bbox else None,
-            )
+            ):
+                if isinstance(event, AssetMaterialization):
+                    yield event
+                else:
+                    raster_result = event
             
-            yield AssetMaterialization(
-                asset_key=f"computing_stats_{source_id}",
-                description=f"Computing statistics for {source_id}",
-                metadata={"source_id": source_id}
-            )
-            
-            stat_embeddings = raster_to_embeddings(
+            # Compute embeddings with heartbeat
+            for event in run_with_heartbeat(
+                context,
+                raster_to_embeddings,
                 raster_result,
+                operation_name=f"compute_stats_{source_id}",
                 normalization="zscore",
                 spatial_pooling=True,
                 seed=42,
-            )
+            ):
+                if isinstance(event, AssetMaterialization):
+                    yield event
+                else:
+                    stat_embeddings = event
             
             total_chunks = len(stat_embeddings)
             if not stat_embeddings:
