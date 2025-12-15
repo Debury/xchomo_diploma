@@ -20,6 +20,9 @@ _INIT_LOCK = threading.Lock()
 _CACHED_CONFIG: Optional[Dict[str, Any]] = None
 _CACHED_DB = None
 _CACHED_EMBEDDER = None
+_CACHED_VARIABLES: List[str] = []
+_CACHED_VARIABLES_TS: float = 0.0
+_VARIABLES_LOCK = threading.Lock()
 
 
 def _get_components():
@@ -42,6 +45,49 @@ def _get_components():
         _CACHED_EMBEDDER = TextEmbedder()
 
     return _CACHED_CONFIG, _CACHED_DB, _CACHED_EMBEDDER
+
+
+def _get_variable_list(db, force_refresh: bool = False, max_vars: int = 500) -> List[str]:
+    """Collect distinct variable names quickly using Qdrant scroll; cache results."""
+    global _CACHED_VARIABLES, _CACHED_VARIABLES_TS
+    now = time.time()
+    if not force_refresh and _CACHED_VARIABLES and (now - _CACHED_VARIABLES_TS) < 300:
+        return _CACHED_VARIABLES
+
+    with _VARIABLES_LOCK:
+        if not force_refresh and _CACHED_VARIABLES and (time.time() - _CACHED_VARIABLES_TS) < 300:
+            return _CACHED_VARIABLES
+
+        client_attr = getattr(db, "client", None)
+        collection = getattr(db, "collection_name", None)
+        seen = set()
+
+        if client_attr is not None and collection:
+            try:
+                offset = None
+                rounds = 0
+                while rounds < 10 and len(seen) < max_vars:
+                    points, offset = client_attr.scroll(
+                        collection_name=collection,
+                        limit=500,
+                        offset=offset,
+                        with_vectors=False,
+                        with_payload=True,
+                    )
+                    rounds += 1
+                    for p in points:
+                        payload = getattr(p, "payload", None) or {}
+                        var = payload.get("variable")
+                        if var:
+                            seen.add(str(var))
+                    if offset is None:
+                        break
+            except Exception:
+                pass
+
+        _CACHED_VARIABLES = sorted(seen)[:max_vars]
+        _CACHED_VARIABLES_TS = time.time()
+        return _CACHED_VARIABLES
 
 
 _VARIABLE_LIST_RE = re.compile(
@@ -143,6 +189,21 @@ async def rag_query(request: RAGRequest) -> RAGResponse:
             raise HTTPException(status_code=400, detail="Question is required")
 
         _config, db, embedder = _get_components()
+
+        # Fast path: variable listing without embeddings/LLM
+        if _is_variable_list_question(question_text) and request.use_llm is False:
+            vars_cached = _get_variable_list(db)
+            if vars_cached:
+                answer = "Available climate variables (cached):\n" + ", ".join(vars_cached[:80])
+                return RAGResponse(
+                    question=question_text,
+                    answer=answer,
+                    chunks=[],
+                    references=[],
+                    llm_used=False,
+                    search_time_ms=0,
+                    llm_time_ms=None,
+                )
         
         # 1. VECTOR SEARCH (fast - should take <500ms)
         search_start = time.time()
@@ -158,9 +219,10 @@ async def rag_query(request: RAGRequest) -> RAGResponse:
             filter_dict["variable"] = request.variable
         
         # Search Qdrant
+        effective_top_k = max(1, min(request.top_k, 8))
         results = db.search(
             query_vector=query_vec.tolist(),
-            limit=request.top_k,
+            limit=effective_top_k,
             filter_dict=filter_dict if filter_dict else None
         )
         
@@ -204,7 +266,9 @@ async def rag_query(request: RAGRequest) -> RAGResponse:
         # Fast path: variable listing questions (no LLM needed)
         if _is_variable_list_question(question_text) and chunks:
             variables = sorted({c.get("variable") for c in chunks if c.get("variable")})
-            answer = "Available climate variables (from top matches):\n" + ", ".join(variables[:50])
+            if not variables:
+                variables = _get_variable_list(db)
+            answer = "Available climate variables (from matches):\n" + ", ".join(variables[:80])
             return RAGResponse(
                 question=question_text,
                 answer=answer,
@@ -215,7 +279,7 @@ async def rag_query(request: RAGRequest) -> RAGResponse:
                 llm_time_ms=None,
             )
 
-        context_text = "\n".join(llm_context_lines)
+        context_text = "\n".join(llm_context_lines[:5])
         if len(context_text) > 4000:
             context_text = context_text[:4000] + "\n..."
         
