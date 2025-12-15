@@ -20,31 +20,41 @@ _INIT_LOCK = threading.Lock()
 _CACHED_CONFIG: Optional[Dict[str, Any]] = None
 _CACHED_DB = None
 _CACHED_EMBEDDER = None
+_CACHED_LLM = None
 _CACHED_VARIABLES: List[str] = []
 _CACHED_VARIABLES_TS: float = 0.0
 _VARIABLES_LOCK = threading.Lock()
 
 
 def _get_components():
-    """Lazy init + cache heavy components (config, DB client, embedder)."""
-    global _CACHED_CONFIG, _CACHED_DB, _CACHED_EMBEDDER
-    if _CACHED_CONFIG is not None and _CACHED_DB is not None and _CACHED_EMBEDDER is not None:
-        return _CACHED_CONFIG, _CACHED_DB, _CACHED_EMBEDDER
+    """Lazy init + cache heavy components (config, DB client, embedder, LLM)."""
+    global _CACHED_CONFIG, _CACHED_DB, _CACHED_EMBEDDER, _CACHED_LLM
+    if _CACHED_CONFIG is not None and _CACHED_DB is not None and _CACHED_EMBEDDER is not None and _CACHED_LLM is not None:
+        return _CACHED_CONFIG, _CACHED_DB, _CACHED_EMBEDDER, _CACHED_LLM
 
     with _INIT_LOCK:
-        if _CACHED_CONFIG is not None and _CACHED_DB is not None and _CACHED_EMBEDDER is not None:
-            return _CACHED_CONFIG, _CACHED_DB, _CACHED_EMBEDDER
+        if _CACHED_CONFIG is not None and _CACHED_DB is not None and _CACHED_EMBEDDER is not None and _CACHED_LLM is not None:
+            return _CACHED_CONFIG, _CACHED_DB, _CACHED_EMBEDDER, _CACHED_LLM
 
         from src.utils.config_loader import ConfigLoader
         from src.embeddings.database import VectorDatabase
         from src.climate_embeddings.embeddings.text_models import TextEmbedder
+        from src.llm.ollama_client import OllamaClient
 
         config_loader = ConfigLoader("config/pipeline_config.yaml")
         _CACHED_CONFIG = config_loader.load()
         _CACHED_DB = VectorDatabase(config=_CACHED_CONFIG)
         _CACHED_EMBEDDER = TextEmbedder()
+        _CACHED_LLM = OllamaClient()
+        
+        # Warm up embedder with a dummy query
+        try:
+            _CACHED_EMBEDDER.embed_queries(["warmup"])
+            logger.info("Embedder warmed up")
+        except Exception as e:
+            logger.warning(f"Embedder warmup failed: {e}")
 
-    return _CACHED_CONFIG, _CACHED_DB, _CACHED_EMBEDDER
+    return _CACHED_CONFIG, _CACHED_DB, _CACHED_EMBEDDER, _CACHED_LLM
 
 
 def _get_variable_list(db, force_refresh: bool = False, max_vars: int = 500) -> List[str]:
@@ -137,13 +147,15 @@ def _format_hit_summary(meta: Dict[str, Any], score: float) -> str:
 
 
 def _default_max_tokens(question: str) -> int:
-    # Keep answers short by default on CPU-only servers.
+    # Keep answers SHORT on slow CPU servers
     q = (question or "").strip()
     if _is_variable_list_question(q):
-        return 120
-    if len(q) <= 80:
-        return 160
-    return 240
+        return 60
+    if len(q) <= 50:
+        return 80
+    if len(q) <= 100:
+        return 100
+    return 120
 
 # ====================================================================================
 # MODELS
@@ -182,13 +194,11 @@ async def rag_query(request: RAGRequest) -> RAGResponse:
     Optimized RAG pipeline with proper timeout handling.
     """
     try:
-        from src.llm.ollama_client import OllamaClient
-
         question_text = (request.question or "").strip()
         if not question_text:
             raise HTTPException(status_code=400, detail="Question is required")
 
-        _config, db, embedder = _get_components()
+        _config, db, embedder, llm_client = _get_components()
 
         # Fast path: variable listing without embeddings/LLM
         if _is_variable_list_question(question_text) and request.use_llm is False:
@@ -292,38 +302,23 @@ async def rag_query(request: RAGRequest) -> RAGResponse:
             try:
                 llm_start = time.time()
                 
-                # Try Ollama with timeout
-                client = OllamaClient()
-                
-                # Build conversation context if history provided
-                conversation_context = ""
-                if request.conversation_history:
-                    conversation_context = "\n".join([
-                        f"{msg.role.upper()}: {msg.content}"
-                        for msg in request.conversation_history[-3:]  # Last 3 messages for context
-                    ])
-                    conversation_context += "\n\n"
-                
-                # Build compact prompt; long prompts + 500 tokens are slow on CPU.
-                prompt = (
-                    f"{conversation_context}You are a climate data assistant. "
-                    "Answer concisely using ONLY the provided context. "
-                    "If context is insufficient, say what is missing.\n\n"
-                    f"Context:\n{context_text}\n\n"
-                    f"Question: {question_text}\n\n"
-                    "Answer:"
-                )
+                # Build minimal prompt - every token counts on slow CPU
+                prompt = f"""Answer in 1-2 sentences using ONLY this data:
+{context_text}
+
+Q: {question_text}
+A:"""
 
                 max_tokens = _default_max_tokens(question_text)
                 
-                # Async timeout wrapper with custom prompt
+                # Async timeout wrapper
                 answer = await asyncio.wait_for(
                     asyncio.to_thread(
-                        lambda: client.generate(
+                        lambda: llm_client.generate(
                             prompt=prompt,
-                            temperature=request.temperature,
+                            temperature=0.3,  # Lower temp = faster, more focused
                             max_tokens=max_tokens,
-                            timeout_s=min(max(request.timeout, 5) + 10, 300),
+                            timeout_s=min(request.timeout, 60),
                         )
                     ),
                     timeout=request.timeout
