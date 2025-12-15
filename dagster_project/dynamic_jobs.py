@@ -16,7 +16,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.append(str(PROJECT_ROOT))
 
-from dagster import job, op, Out, OpExecutionContext, Output, AssetMaterialization, EventMetadataEntry
+from dagster import job, op, Out, OpExecutionContext, Output, AssetMaterialization
 from dagster_project.resources import ConfigLoaderResource, LoggerResource, DataPathResource
 
 # --- IMPORTS ---
