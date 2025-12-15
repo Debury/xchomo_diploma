@@ -570,7 +570,6 @@ async def rag_info():
 async def rag_chat_legacy(request: RAGChatRequest):
     try:
         from src.climate_embeddings.embeddings.text_models import TextEmbedder
-        from src.llm.ollama_client import OllamaClient
         from src.embeddings.database import VectorDatabase
         from src.utils.config_loader import ConfigLoader
         
@@ -793,12 +792,30 @@ async def rag_chat_legacy(request: RAGChatRequest):
         
         if request.use_llm:
             try:
-                client = OllamaClient()
-                if client.check_health():
-                    answer = client.generate_rag_answer(request.question, context_chunks, request.temperature)
-                    llm_used = True
+                # Use OpenRouter instead of Ollama
+                import os
+                from src.llm.openrouter_client import OpenRouterClient
+                
+                if not os.getenv("OPENROUTER_API_KEY"):
+                    raise ValueError("OPENROUTER_API_KEY not set")
+                
+                client = OpenRouterClient()
+                
+                # Build prompt
+                context_text = "\n".join([
+                    f"- {c['metadata'].get('variable', '?')}: {c['metadata'].get('stats_mean', '?')} (source: {c['metadata'].get('source_id', '?')})"
+                    for c in context_chunks[:10]
+                ])
+                prompt = f"""Based on this climate data:
+{context_text}
+
+Answer briefly: {request.question}"""
+                
+                answer = client.generate(prompt=prompt, temperature=request.temperature, max_tokens=150)
+                llm_used = True
             except Exception as e:
                 print(f"LLM Error: {e}")
+                answer = f"LLM Error: {e}"
         
         if not answer:
             if not context_chunks:
