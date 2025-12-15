@@ -42,3 +42,6 @@ export default defineConfig({
   base: '/app/',  // Important: matches FastAPI route
   build: {
     outDir: 'dist',
+    emptyOutDir: true
+  }
+})
