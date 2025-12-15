@@ -31,11 +31,12 @@ from src.sources import get_source_store
 def run_with_heartbeat(context, func, *args, operation_name="operation", **kwargs):
     """
     Run a blocking function while yielding periodic heartbeats.
-    Returns a generator that yields heartbeats and finally the result.
+    Returns a generator that yields heartbeats and finally the result as the last item.
     """
     result = [None]
     exception = [None]
     completed = [False]
+    start_time = time.time()
     
     def worker():
         try:
@@ -57,7 +58,10 @@ def run_with_heartbeat(context, func, *args, operation_name="operation", **kwarg
             yield AssetMaterialization(
                 asset_key=f"heartbeat_{operation_name}",
                 description=f"Processing: {operation_name}",
-                metadata={"status": "in_progress", "elapsed_seconds": int(time.time() - last_heartbeat)}
+                metadata={
+                    "status": "in_progress", 
+                    "elapsed_seconds": int(time.time() - start_time)
+                }
             )
             last_heartbeat = time.time()
     
@@ -67,7 +71,8 @@ def run_with_heartbeat(context, func, *args, operation_name="operation", **kwarg
     if exception[0]:
         raise exception[0]
     
-    return result[0]
+    # Yield the result as the last item (marked with special type)
+    yield ("RESULT", result[0])
 
 
 @op(
@@ -161,6 +166,7 @@ def process_all_sources(context: OpExecutionContext):
             logger.info("Loading & Calculating Stats...")
             
             # Load raster with heartbeat
+            raster_result = None
             for event in run_with_heartbeat(
                 context,
                 load_raster_auto,
@@ -172,10 +178,11 @@ def process_all_sources(context: OpExecutionContext):
             ):
                 if isinstance(event, AssetMaterialization):
                     yield event
-                else:
-                    raster_result = event
+                elif isinstance(event, tuple) and event[0] == "RESULT":
+                    raster_result = event[1]
             
             # Compute embeddings with heartbeat
+            stat_embeddings = None
             for event in run_with_heartbeat(
                 context,
                 raster_to_embeddings,
@@ -187,8 +194,8 @@ def process_all_sources(context: OpExecutionContext):
             ):
                 if isinstance(event, AssetMaterialization):
                     yield event
-                else:
-                    stat_embeddings = event
+                elif isinstance(event, tuple) and event[0] == "RESULT":
+                    stat_embeddings = event[1]
             
             total_chunks = len(stat_embeddings)
             if not stat_embeddings:
