@@ -26,6 +26,39 @@ _CACHED_VARIABLES_TS: float = 0.0
 _VARIABLES_LOCK = threading.Lock()
 
 
+def _get_llm_client():
+    """Get the best available LLM client: OpenRouter > Groq > Ollama."""
+    import os
+    
+    # Priority 1: OpenRouter (access to many models, free tier available)
+    if os.getenv("OPENROUTER_API_KEY"):
+        try:
+            from src.llm.openrouter_client import OpenRouterClient
+            client = OpenRouterClient()
+            if client.is_available():
+                logger.info(f"Using OpenRouter API with model: {client.model}")
+                return client, "openrouter"
+        except Exception as e:
+            logger.warning(f"OpenRouter client init failed: {e}")
+    
+    # Priority 2: Groq (very fast, free tier)
+    if os.getenv("GROQ_API_KEY"):
+        try:
+            from src.llm.groq_client import GroqClient
+            client = GroqClient()
+            if client.is_available():
+                logger.info(f"Using Groq API with model: {client.model}")
+                return client, "groq"
+        except Exception as e:
+            logger.warning(f"Groq client init failed: {e}")
+    
+    # Fallback: Ollama (local, slower on CPU)
+    from src.llm.ollama_client import OllamaClient
+    client = OllamaClient()
+    logger.info(f"Using Ollama with model: {client.model}")
+    return client, "ollama"
+
+
 def _get_components():
     """Lazy init + cache heavy components (config, DB client, embedder, LLM)."""
     global _CACHED_CONFIG, _CACHED_DB, _CACHED_EMBEDDER, _CACHED_LLM
@@ -39,13 +72,12 @@ def _get_components():
         from src.utils.config_loader import ConfigLoader
         from src.embeddings.database import VectorDatabase
         from src.climate_embeddings.embeddings.text_models import TextEmbedder
-        from src.llm.ollama_client import OllamaClient
 
         config_loader = ConfigLoader("config/pipeline_config.yaml")
         _CACHED_CONFIG = config_loader.load()
         _CACHED_DB = VectorDatabase(config=_CACHED_CONFIG)
         _CACHED_EMBEDDER = TextEmbedder()
-        _CACHED_LLM = OllamaClient()
+        _CACHED_LLM, llm_type = _get_llm_client()
         
         # Warm up embedder with a dummy query
         try:
