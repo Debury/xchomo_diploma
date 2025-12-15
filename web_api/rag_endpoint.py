@@ -25,7 +25,7 @@ class RAGRequest(BaseModel):
     temperature: float = 0.7
     source_id: Optional[str] = None
     variable: Optional[str] = None
-    timeout: int = 60  # LLM timeout in seconds (increased for complex queries)
+    timeout: int = 180  # LLM timeout in seconds (increased for slow servers)
     conversation_history: Optional[List[RAGMessage]] = None  # For multi-turn conversations
 
 class RAGResponse(BaseModel):
