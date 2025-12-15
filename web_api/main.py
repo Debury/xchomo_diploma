@@ -258,6 +258,13 @@ async def serve_frontend():
         raise HTTPException(404, "Frontend not found")
     return FileResponse(FRONTEND_DIR / "index.html")
 
+@app.get("/chat", response_class=FileResponse)
+async def serve_chat():
+    chat_file = FRONTEND_DIR / "chat.html"
+    if not chat_file.exists():
+        raise HTTPException(404, "Chat UI not found")
+    return FileResponse(chat_file)
+
 @app.get("/health", response_model=HealthResponse)
 async def health_check():
     dagster_up = False

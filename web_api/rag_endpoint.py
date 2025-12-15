@@ -14,6 +14,10 @@ logger = logging.getLogger(__name__)
 # MODELS
 # ====================================================================================
 
+class RAGMessage(BaseModel):
+    role: str  # "user" or "assistant"
+    content: str
+
 class RAGRequest(BaseModel):
     question: str
     top_k: int = 5
@@ -21,7 +25,8 @@ class RAGRequest(BaseModel):
     temperature: float = 0.7
     source_id: Optional[str] = None
     variable: Optional[str] = None
-    timeout: int = 30  # LLM timeout in seconds
+    timeout: int = 60  # LLM timeout in seconds (increased for complex queries)
+    conversation_history: Optional[List[RAGMessage]] = None  # For multi-turn conversations
 
 class RAGResponse(BaseModel):
     question: str
@@ -31,6 +36,7 @@ class RAGResponse(BaseModel):
     llm_used: bool
     search_time_ms: float
     llm_time_ms: Optional[float] = None
+    conversation_id: Optional[str] = None  # For tracking conversations
 
 # ====================================================================================
 # RAG PIPELINE
@@ -59,7 +65,7 @@ async def rag_query(request: RAGRequest) -> RAGResponse:
         search_start = time.time()
         
         # Embed query
-        query_vec = embedder.embed_query(request.question)
+        query_vec = embedder.embed_queries([request.question])[0]
         
         # Build filter
         filter_dict = {}
@@ -111,7 +117,7 @@ async def rag_query(request: RAGRequest) -> RAGResponse:
             references.add(f"{source_id}:{variable}")
             context_text += f"\n[{i}] {text}\n"
         
-        # 3. LLM GENERATION (with timeout)
+        # 3. LLM GENERATION (with timeout and conversation history)
         llm_used = False
         llm_time = None
         answer = ""
@@ -123,13 +129,40 @@ async def rag_query(request: RAGRequest) -> RAGResponse:
                 # Try Ollama with timeout
                 client = OllamaClient()
                 
-                # Async timeout wrapper
+                # Build conversation context if history provided
+                conversation_context = ""
+                if request.conversation_history:
+                    conversation_context = "\n".join([
+                        f"{msg.role.upper()}: {msg.content}"
+                        for msg in request.conversation_history[-3:]  # Last 3 messages for context
+                    ])
+                    conversation_context += "\n\n"
+                
+                # Build enhanced prompt with conversation context
+                prompt = f"""{conversation_context}Based on the following climate data, answer the user's question comprehensively.
+
+Climate Data Context:
+{context_text}
+
+Question: {request.question}
+
+Instructions:
+- Answer directly and concisely for simple questions
+- Provide detailed analysis for complex queries
+- Reference specific data points when relevant
+- If comparing variables, analyze both
+- If data is insufficient, say so clearly
+
+Answer:"""
+                
+                # Async timeout wrapper with custom prompt
                 answer = await asyncio.wait_for(
                     asyncio.to_thread(
-                        client.generate_rag_answer,
-                        query=request.question,
-                        context_hits=chunks,
-                        temperature=request.temperature
+                        lambda: client.generate(
+                            prompt=prompt,
+                            temperature=request.temperature,
+                            max_tokens=500  # Reasonable limit
+                        )
                     ),
                     timeout=request.timeout
                 )
@@ -139,10 +172,10 @@ async def rag_query(request: RAGRequest) -> RAGResponse:
                 
             except asyncio.TimeoutError:
                 logger.warning(f"LLM timeout after {request.timeout}s")
-                answer = f"Found {len(chunks)} relevant results. (LLM timed out - consider reducing context or using faster model)"
+                answer = f"⏱️ Found {len(chunks)} relevant results but LLM timed out. Try: 1) Simpler question, 2) Reduce top_k, or 3) Use search-only mode."
             except Exception as e:
                 logger.error(f"LLM error: {e}")
-                answer = f"Found {len(chunks)} relevant results. (LLM error: {str(e)[:100]})"
+                answer = f"⚠️ Found {len(chunks)} relevant results. LLM error: {str(e)[:100]}. Showing search results instead."
         
         # Fallback answer if no LLM
         if not answer:
@@ -186,7 +219,7 @@ async def simple_search(query: str, top_k: int = 5, filters: Optional[Dict] = No
         embedder = TextEmbedder()
         
         # Search
-        query_vec = embedder.embed_query(query)
+        query_vec = embedder.embed_queries([query])[0]
         results = db.search(
             query_vector=query_vec.tolist(),
             limit=top_k,

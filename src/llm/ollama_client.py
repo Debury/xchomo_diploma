@@ -428,6 +428,49 @@ Solutions:
         except Exception as e:
             return f"LLM Error: {str(e)}"
 
+    def generate(
+        self,
+        prompt: str,
+        temperature: float = 0.7,
+        max_tokens: int = 500
+    ) -> str:
+        """
+        Simple text generation without RAG context formatting.
+        Used for custom prompts with pre-formatted context.
+        
+        Args:
+            prompt: Complete prompt text
+            temperature: Sampling temperature
+            max_tokens: Maximum tokens to generate
+            
+        Returns:
+            Generated text
+        """
+        payload = {
+            "model": self.model,
+            "prompt": prompt,
+            "temperature": temperature,
+            "stream": False,
+            "options": {
+                "num_predict": max_tokens,
+                "num_ctx": 4096
+            }
+        }
+        
+        try:
+            resp = requests.post(
+                f"{self.base_url}/api/generate",
+                json=payload,
+                timeout=120  # 2 minute timeout
+            )
+            resp.raise_for_status()
+            result = resp.json()
+            return result.get("response", "").strip()
+        except requests.exceptions.Timeout:
+            raise TimeoutError(f"Ollama generation timed out after 120s")
+        except Exception as e:
+            raise Exception(f"Ollama generate error: {e}")
+    
     def check_health(self) -> bool:
         """Check if Ollama service is available and model is installed."""
         try:
