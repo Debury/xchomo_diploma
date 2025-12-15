@@ -148,6 +148,9 @@ FRONTEND_DIR = Path(__file__).parent / "frontend"
 SAMPLE_DATA_DIR = Path(__file__).parent.parent / "data" / "raw"
 SAMPLE_DATA_DIR.mkdir(parents=True, exist_ok=True)
 
+# Import optimized RAG endpoint
+from web_api.rag_endpoint import rag_query, simple_search, RAGRequest, RAGResponse
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -420,10 +423,32 @@ async def delete_source(source_id: str):
 
 # ... (rest of file remains unchanged) ...
 
-# --- RAG ---
+# --- RAG (OPTIMIZED) ---
+
+@app.post("/rag/query", response_model=RAGResponse)
+async def rag_query_endpoint(request: RAGRequest):
+    """
+    Optimized RAG endpoint with timeout handling.
+    Fast vector search + optional LLM generation.
+    """
+    return await rag_query(request)
+
+@app.get("/rag/search")
+async def rag_search_only(query: str, top_k: int = 5, source_id: Optional[str] = None, variable: Optional[str] = None):
+    """
+    Fast vector search without LLM - for testing and debugging.
+    """
+    filters = {}
+    if source_id:
+        filters["source_id"] = source_id
+    if variable:
+        filters["variable"] = variable
+    return await simple_search(query, top_k, filters if filters else None)
+
+# --- RAG (LEGACY - for backwards compatibility) ---
 
 @app.post("/rag/chat", response_model=RAGChatResponse)
-async def rag_chat(request: RAGChatRequest):
+async def rag_chat_legacy(request: RAGChatRequest):
     try:
         from src.climate_embeddings.embeddings.text_models import TextEmbedder
         from src.llm.ollama_client import OllamaClient
