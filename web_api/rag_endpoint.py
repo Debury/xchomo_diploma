@@ -2,13 +2,102 @@
 Optimized RAG Endpoint - Best Practices
 Fast, reliable RAG with proper error handling and timeouts
 """
+from __future__ import annotations
+
 import logging
 from typing import List, Dict, Any, Optional
 from pydantic import BaseModel
 from fastapi import HTTPException
 import asyncio
+import threading
+import time
+import re
 
 logger = logging.getLogger(__name__)
+
+
+_INIT_LOCK = threading.Lock()
+_CACHED_CONFIG: Optional[Dict[str, Any]] = None
+_CACHED_DB = None
+_CACHED_EMBEDDER = None
+
+
+def _get_components():
+    """Lazy init + cache heavy components (config, DB client, embedder)."""
+    global _CACHED_CONFIG, _CACHED_DB, _CACHED_EMBEDDER
+    if _CACHED_CONFIG is not None and _CACHED_DB is not None and _CACHED_EMBEDDER is not None:
+        return _CACHED_CONFIG, _CACHED_DB, _CACHED_EMBEDDER
+
+    with _INIT_LOCK:
+        if _CACHED_CONFIG is not None and _CACHED_DB is not None and _CACHED_EMBEDDER is not None:
+            return _CACHED_CONFIG, _CACHED_DB, _CACHED_EMBEDDER
+
+        from src.utils.config_loader import ConfigLoader
+        from src.embeddings.database import VectorDatabase
+        from src.climate_embeddings.embeddings.text_models import TextEmbedder
+
+        config_loader = ConfigLoader("config/pipeline_config.yaml")
+        _CACHED_CONFIG = config_loader.load()
+        _CACHED_DB = VectorDatabase(config=_CACHED_CONFIG)
+        _CACHED_EMBEDDER = TextEmbedder()
+
+    return _CACHED_CONFIG, _CACHED_DB, _CACHED_EMBEDDER
+
+
+_VARIABLE_LIST_RE = re.compile(
+    r"\b(what|which)\b.*\b(variable|variables|var)\b.*\b(available|in|does|are)\b",
+    re.IGNORECASE,
+)
+
+
+def _is_variable_list_question(question: str) -> bool:
+    q = (question or "").strip()
+    if not q:
+        return False
+    if _VARIABLE_LIST_RE.search(q):
+        return True
+    # Common short variants
+    lowered = q.lower()
+    return "variables" in lowered and ("available" in lowered or "list" in lowered)
+
+
+def _format_hit_summary(meta: Dict[str, Any], score: float) -> str:
+    """Create a compact, stable summary for LLM context (avoid huge prompts)."""
+    source_id = meta.get("source_id", "unknown")
+    dataset = meta.get("dataset_name") or source_id
+    variable = meta.get("variable", "unknown")
+    unit = meta.get("unit") or meta.get("units") or ""
+    time_start = meta.get("time_start")
+    time_end = meta.get("time_end")
+
+    parts = [f"source={dataset}", f"var={variable}", f"score={score:.3f}"]
+    if unit:
+        parts.append(f"unit={unit}")
+    if time_start:
+        if time_end and time_end != time_start:
+            parts.append(f"time={time_start}..{time_end}")
+        else:
+            parts.append(f"time={time_start}")
+
+    # Only include a tiny bit of stats if present
+    for key in ("stats_mean", "stats_min", "stats_max"):
+        if key in meta and meta[key] is not None:
+            try:
+                parts.append(f"{key.replace('stats_', '')}={float(meta[key]):.3g}")
+            except Exception:
+                pass
+
+    return ", ".join(parts)
+
+
+def _default_max_tokens(question: str) -> int:
+    # Keep answers short by default on CPU-only servers.
+    q = (question or "").strip()
+    if _is_variable_list_question(q):
+        return 120
+    if len(q) <= 80:
+        return 160
+    return 240
 
 # ====================================================================================
 # MODELS
@@ -46,26 +135,20 @@ async def rag_query(request: RAGRequest) -> RAGResponse:
     """
     Optimized RAG pipeline with proper timeout handling.
     """
-    import time
-    from src.climate_embeddings.embeddings.text_models import TextEmbedder
-    from src.embeddings.database import VectorDatabase
-    from src.llm.ollama_client import OllamaClient
-    from src.utils.config_loader import ConfigLoader
-    
     try:
-        # Load config
-        config_loader = ConfigLoader("config/pipeline_config.yaml")
-        config = config_loader.load()
-        
-        # Initialize components
-        db = VectorDatabase(config=config)
-        embedder = TextEmbedder()
+        from src.llm.ollama_client import OllamaClient
+
+        question_text = (request.question or "").strip()
+        if not question_text:
+            raise HTTPException(status_code=400, detail="Question is required")
+
+        _config, db, embedder = _get_components()
         
         # 1. VECTOR SEARCH (fast - should take <500ms)
         search_start = time.time()
         
         # Embed query
-        query_vec = embedder.embed_queries([request.question])[0]
+        query_vec = embedder.embed_queries([question_text])[0]
         
         # Build filter
         filter_dict = {}
@@ -86,7 +169,8 @@ async def rag_query(request: RAGRequest) -> RAGResponse:
         # 2. FORMAT CONTEXT
         chunks = []
         references = set()
-        context_text = ""
+        # Keep LLM context compact; UI can still show full chunk text.
+        llm_context_lines: List[str] = []
         
         for i, hit in enumerate(results, 1):
             # Extract payload
@@ -115,7 +199,25 @@ async def rag_query(request: RAGRequest) -> RAGResponse:
             })
             
             references.add(f"{source_id}:{variable}")
-            context_text += f"\n[{i}] {text}\n"
+            llm_context_lines.append(f"[{i}] {_format_hit_summary(meta, float(score))}")
+
+        # Fast path: variable listing questions (no LLM needed)
+        if _is_variable_list_question(question_text) and chunks:
+            variables = sorted({c.get("variable") for c in chunks if c.get("variable")})
+            answer = "Available climate variables (from top matches):\n" + ", ".join(variables[:50])
+            return RAGResponse(
+                question=question_text,
+                answer=answer,
+                chunks=chunks,
+                references=sorted(list(references)),
+                llm_used=False,
+                search_time_ms=round(search_time, 2),
+                llm_time_ms=None,
+            )
+
+        context_text = "\n".join(llm_context_lines)
+        if len(context_text) > 4000:
+            context_text = context_text[:4000] + "\n..."
         
         # 3. LLM GENERATION (with timeout and conversation history)
         llm_used = False
@@ -138,22 +240,17 @@ async def rag_query(request: RAGRequest) -> RAGResponse:
                     ])
                     conversation_context += "\n\n"
                 
-                # Build enhanced prompt with conversation context
-                prompt = f"""{conversation_context}Based on the following climate data, answer the user's question comprehensively.
+                # Build compact prompt; long prompts + 500 tokens are slow on CPU.
+                prompt = (
+                    f"{conversation_context}You are a climate data assistant. "
+                    "Answer concisely using ONLY the provided context. "
+                    "If context is insufficient, say what is missing.\n\n"
+                    f"Context:\n{context_text}\n\n"
+                    f"Question: {question_text}\n\n"
+                    "Answer:"
+                )
 
-Climate Data Context:
-{context_text}
-
-Question: {request.question}
-
-Instructions:
-- Answer directly and concisely for simple questions
-- Provide detailed analysis for complex queries
-- Reference specific data points when relevant
-- If comparing variables, analyze both
-- If data is insufficient, say so clearly
-
-Answer:"""
+                max_tokens = _default_max_tokens(question_text)
                 
                 # Async timeout wrapper with custom prompt
                 answer = await asyncio.wait_for(
@@ -161,7 +258,8 @@ Answer:"""
                         lambda: client.generate(
                             prompt=prompt,
                             temperature=request.temperature,
-                            max_tokens=500  # Reasonable limit
+                            max_tokens=max_tokens,
+                            timeout_s=min(max(request.timeout, 5) + 10, 300),
                         )
                     ),
                     timeout=request.timeout

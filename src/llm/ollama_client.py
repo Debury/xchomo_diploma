@@ -432,7 +432,8 @@ Solutions:
         self,
         prompt: str,
         temperature: float = 0.7,
-        max_tokens: int = 500
+        max_tokens: int = 500,
+        timeout_s: int = 120,
     ) -> str:
         """
         Simple text generation without RAG context formatting.
@@ -461,13 +462,13 @@ Solutions:
             resp = requests.post(
                 f"{self.base_url}/api/generate",
                 json=payload,
-                timeout=120  # 2 minute timeout
+                timeout=timeout_s
             )
             resp.raise_for_status()
             result = resp.json()
             return result.get("response", "").strip()
         except requests.exceptions.Timeout:
-            raise TimeoutError(f"Ollama generation timed out after 120s")
+            raise TimeoutError(f"Ollama generation timed out after {timeout_s}s")
         except Exception as e:
             raise Exception(f"Ollama generate error: {e}")
     
