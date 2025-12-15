@@ -284,6 +284,21 @@ async def serve_chat():
 # Vue SPA dist directory
 VUE_DIST_DIR = FRONTEND_DIR / "dist"
 
+# Debug endpoint to check frontend paths
+@app.get("/app/debug")
+async def debug_frontend():
+    """Debug endpoint to check frontend file paths"""
+    import os
+    return {
+        "FRONTEND_DIR": str(FRONTEND_DIR),
+        "FRONTEND_DIR_exists": FRONTEND_DIR.exists(),
+        "VUE_DIST_DIR": str(VUE_DIST_DIR),
+        "VUE_DIST_DIR_exists": VUE_DIST_DIR.exists(),
+        "frontend_contents": os.listdir(FRONTEND_DIR) if FRONTEND_DIR.exists() else [],
+        "dist_contents": os.listdir(VUE_DIST_DIR) if VUE_DIST_DIR.exists() else [],
+        "cwd": os.getcwd()
+    }
+
 # Serve Vue SPA static assets (JS, CSS, etc.)
 @app.get("/app/assets/{file_path:path}")
 async def serve_vue_assets(file_path: str):
