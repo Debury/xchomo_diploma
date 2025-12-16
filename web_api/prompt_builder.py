@@ -34,6 +34,7 @@ def build_rag_prompt(
     context_lines = []
     seen_vars = set()
     seen_sources = set()
+    time_periods = set()  # Collect ALL unique time periods
     
     for i, chunk in enumerate(context_chunks[:15], 1):  # Use top 15 chunks
         meta = chunk.get('metadata', {})
@@ -51,9 +52,20 @@ def build_rag_prompt(
         if meta.get('stats_min') is not None and meta.get('stats_max') is not None:
             stats_parts.append(f"range=[{meta['stats_min']:.2f}, {meta['stats_max']:.2f}]")
         
-        time_info = meta.get('time_start', '')
-        if time_info:
-            time_str = str(time_info)[:10]  # Just date part
+        # Extract time range (both start and end if available)
+        time_start = meta.get('time_start', '')
+        time_end = meta.get('time_end', '')
+        
+        if time_start:
+            time_start_str = str(time_start)[:10]  # Just date part (YYYY-MM-DD)
+            time_periods.add(time_start_str)
+            
+            if time_end and str(time_end)[:10] != time_start_str:
+                time_end_str = str(time_end)[:10]
+                time_periods.add(time_end_str)
+                time_str = f"{time_start_str} to {time_end_str}"
+            else:
+                time_str = time_start_str
         else:
             time_str = ""
         
@@ -67,6 +79,15 @@ def build_rag_prompt(
         context_lines.append(summary)
     
     context_text = "\n".join(context_lines)
+    
+    # Build time periods summary
+    time_periods_info = ""
+    if time_periods:
+        sorted_periods = sorted(time_periods)
+        if len(sorted_periods) > 1:
+            time_periods_info = f"\n\nAVAILABLE TIME PERIODS IN DATA: {len(sorted_periods)} unique dates from {sorted_periods[0]} to {sorted_periods[-1]}\nAll dates: {', '.join(sorted_periods[:20])}{'...' if len(sorted_periods) > 20 else ''}"
+        else:
+            time_periods_info = f"\n\nAVAILABLE TIME PERIOD: {sorted_periods[0]}"
     
     # Build sources info
     sources_info = ""
@@ -164,7 +185,7 @@ ANSWER:"""
     elif question_type == "statistical":
         prompt = f"""You are a climate data assistant. Provide statistical analysis based on the data.
 
-{variables_info}{sources_info}
+{variables_info}{sources_info}{time_periods_info}
 
 CONTEXT (retrieved data):
 {context_text}
@@ -172,14 +193,16 @@ CONTEXT (retrieved data):
 QUESTION: {question}
 
 INSTRUCTIONS:
-- Use exact statistical values from the context
-- Reference mean, min, max, or other stats when available
-- Mention the variable and source
-- Be precise with numbers
-- If data is missing, say so
+- Use ALL available time periods from the data, not just one date
+- If asked about a time range (e.g., "summer", "June to August"), use data from ALL dates in that range
+- Aggregate statistics across ALL time periods when appropriate
+- Use exact statistical values from the context (mean, min, max)
+- Reference the variable and source
+- Be precise with numbers and mention the time range covered
+- If the question asks about a specific period but data covers more, mention the full range available
 
 ANSWER:"""
-        max_tokens = 200
+        max_tokens = 300
         
     elif question_type == "temporal":
         prompt = f"""You are a climate data assistant. Answer questions about temporal patterns in the data.
@@ -203,7 +226,7 @@ ANSWER:"""
     else:  # general
         prompt = f"""You are a climate data assistant. Answer the question accurately using ONLY the provided data.
 
-{variables_info}{sources_info}
+{variables_info}{sources_info}{time_periods_info}
 
 CONTEXT (retrieved data):
 {context_text}
@@ -212,13 +235,16 @@ QUESTION: {question}
 
 INSTRUCTIONS:
 - Answer based ONLY on the context provided above
-- Reference specific values, variables, and sources
+- Use ALL available time periods when answering, not just one date
+- If asked about a time range, use data from ALL dates in that range
+- Reference specific values, variables, sources, and time periods
 - Be accurate and precise
 - If information is not in the context, say "I don't have that information in the provided data"
 - Do NOT make up or invent information
+- If the question asks about a period (e.g., "summer", "June to August"), aggregate across ALL dates in that period
 
 ANSWER:"""
-        max_tokens = 200
+        max_tokens = 300
     
     return prompt, max_tokens
 
