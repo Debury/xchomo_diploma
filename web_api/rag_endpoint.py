@@ -250,15 +250,27 @@ async def rag_query(request: RAGRequest) -> RAGResponse:
         embed_time = (time.time() - embed_start) * 1000
         logger.info(f"Embedding took {embed_time:.0f}ms")
         
-        # Build filter
+        # Build filter - DYNAMIC: No hardcoded variable names
         filter_dict = {}
         if request.source_id:
             filter_dict["source_id"] = request.source_id
         if request.variable:
             filter_dict["variable"] = request.variable
         
-        # Search Qdrant
-        effective_top_k = max(1, min(request.top_k, 8))
+        # DYNAMIC: For questions asking about multiple variables or statistics,
+        # increase top_k to get more diverse results (all relevant variables)
+        # Don't hardcode variable names - let semantic search find relevant ones
+        question_lower = question_text.lower()
+        # If question asks for statistics/multiple variables, get more results
+        needs_more_results = any(phrase in question_lower for phrase in [
+            "statistics", "all", "compare", "range", "show me", "list"
+        ])
+        
+        if needs_more_results:
+            effective_top_k = max(20, request.top_k)  # Get more results for comprehensive answers
+        else:
+            effective_top_k = max(1, min(request.top_k, 15))  # Standard search
+        
         results = db.search(
             query_vector=query_vec.tolist(),
             limit=effective_top_k,

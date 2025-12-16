@@ -37,6 +37,15 @@ def build_rag_prompt(
     time_periods = set()  # Collect ALL unique time periods
     seen_stations = set()  # Collect ALL unique stations
     
+    # CRITICAL: For temperature questions, ensure we show ALL temperature variables
+    # Even if they're not in top search results, we should mention them
+    temperature_vars_in_context = set()
+    for chunk in context_chunks:
+        meta = chunk.get('metadata', {})
+        var = meta.get('variable', 'unknown')
+        if var in ['TAVG', 'TMAX', 'TMIN']:
+            temperature_vars_in_context.add(var)
+    
     for i, chunk in enumerate(context_chunks[:15], 1):  # Use top 15 chunks
         meta = chunk.get('metadata', {})
         var = meta.get('variable', 'unknown')
@@ -90,17 +99,13 @@ def build_rag_prompt(
             time_str = ""
         
         # Build PRECISE summary with station info if available
-        # Add variable meaning for clarity
-        var_meaning = {
-            "TAVG": "Average Temperature",
-            "TMAX": "Maximum Temperature", 
-            "TMIN": "Minimum Temperature",
-            "PRCP": "Precipitation",
-            "SNOW": "Snowfall",
-            "hurs": "Relative Humidity",
-        }.get(var, var)
-        
-        summary = f"[{i}] Variable: {var} ({var_meaning}) | Source: {source}"
+        # DYNAMIC: Get variable meaning from metadata (long_name) if available
+        var_meaning = meta.get('long_name') or meta.get('standard_name') or var
+        # If we have a meaning, show it; otherwise just show variable name
+        if var_meaning and var_meaning != var:
+            summary = f"[{i}] Variable: {var} ({var_meaning}) | Source: {source}"
+        else:
+            summary = f"[{i}] Variable: {var} | Source: {source}"
         if station_name:
             summary += f" | Station: {station_name}"
         elif station_id:
@@ -147,29 +152,29 @@ def build_rag_prompt(
     if sources:
         sources_info = f"\n\nDATA SOURCES ({len(sources)}): {', '.join(sources)}"
     
-    # Build variables info - CRITICAL: Always show ALL variables with their meanings
+    # Build variables info - DYNAMIC: Extract meanings from context chunks metadata
     variables_info = ""
-    # Variable name mapping for better understanding
-    var_meanings = {
-        "TAVG": "Average Temperature (mean temperature)",
-        "TMAX": "Maximum Temperature",
-        "TMIN": "Minimum Temperature",
-        "PRCP": "Precipitation",
-        "SNOW": "Snowfall",
-        "hurs": "Relative Humidity",
-        "AWND": "Average Wind Speed",
-        "WSF2": "Wind Speed Fastest 2-minute",
-        "WSF5": "Wind Speed Fastest 5-minute",
-        "WDF2": "Wind Direction Fastest 2-minute",
-        "WDF5": "Wind Direction Fastest 5-minute",
-    }
+    
+    # DYNAMIC: Collect variable meanings from context chunks (long_name, standard_name)
+    var_meanings_from_context = {}
+    for chunk in context_chunks:
+        meta = chunk.get('metadata', {})
+        var = meta.get('variable', '')
+        if var:
+            # Prefer long_name, then standard_name, then variable name itself
+            long_name = meta.get('long_name', '')
+            standard_name = meta.get('standard_name', '')
+            if long_name:
+                var_meanings_from_context[var] = long_name
+            elif standard_name:
+                var_meanings_from_context[var] = standard_name
     
     if question_type == "variable_list" and all_variables:
         # For variable list questions, ALWAYS show ALL variables from database
-        # Format as a clear numbered list with meanings for better LLM comprehension
+        # Format as a clear numbered list with meanings (from context or just variable name)
         var_list = []
         for i, var in enumerate(all_variables):
-            meaning = var_meanings.get(var, "Climate variable")
+            meaning = var_meanings_from_context.get(var, "Climate variable")
             var_list.append(f"{i+1}. {var} ({meaning})")
         var_list_str = "\n".join(var_list)
         variables_info = f"""
@@ -182,31 +187,31 @@ COMPLETE LIST OF ALL {len(all_variables)} AVAILABLE VARIABLES IN THE DATASET:
 IMPORTANT: The dataset contains EXACTLY {len(all_variables)} variables. You MUST list ALL of them.
 ═══════════════════════════════════════════════════════════════════════════════"""
     elif all_variables:
-        # Show variables with meanings
+        # Show variables with meanings from context
         var_list_with_meanings = []
         for var in all_variables:
-            meaning = var_meanings.get(var, "")
+            meaning = var_meanings_from_context.get(var, "")
             if meaning:
                 var_list_with_meanings.append(f"{var} ({meaning})")
             else:
                 var_list_with_meanings.append(var)
         variables_info = f"\n\nAVAILABLE VARIABLES ({len(all_variables)}): {', '.join(var_list_with_meanings)}"
-        variables_info += "\n\nVARIABLE MAPPING GUIDE:"
-        variables_info += "\n- 'average temperature' or 'mean temperature' = TAVG"
-        variables_info += "\n- 'minimum temperature' = TMIN"
-        variables_info += "\n- 'maximum temperature' = TMAX"
+        variables_info += "\n\nVARIABLE MAPPING GUIDE (use variable names from the list above):"
+        variables_info += "\n- If question asks for 'average' or 'mean', look for variables with 'average' or 'mean' in their name/description"
+        variables_info += "\n- If question asks for 'minimum' or 'min', look for variables with 'minimum' or 'min' in their name/description"
+        variables_info += "\n- If question asks for 'maximum' or 'max', look for variables with 'maximum' or 'max' in their name/description"
     elif seen_vars:
         variables_info = f"\n\nVARIABLES IN CONTEXT (limited sample): {', '.join(sorted(seen_vars))}"
-        # Add meanings for seen variables
+        # Add meanings for seen variables from context
         seen_meanings = []
         for var in sorted(seen_vars):
-            meaning = var_meanings.get(var, "")
+            meaning = var_meanings_from_context.get(var, "")
             if meaning:
                 seen_meanings.append(f"{var} ({meaning})")
             else:
                 seen_meanings.append(var)
         if seen_meanings:
-            variables_info += f"\nVariable meanings: {', '.join(seen_meanings)}"
+            variables_info += f"\nVariable meanings (from metadata): {', '.join(seen_meanings)}"
     
     # Build prompt based on question type
     if question_type == "variable_list":
@@ -301,16 +306,15 @@ ANSWER:"""
         dynamic_instructions.append("- Include data point counts (row_count) when available to show data volume")
         dynamic_instructions.append("- For time periods, mention the exact date range and number of days")
         
-        # CRITICAL: Variable mapping instructions
+        # DYNAMIC: Variable mapping instructions (no hardcoded names)
         dynamic_instructions.append("")
-        dynamic_instructions.append("VARIABLE MAPPING (CRITICAL - Use correct variable):")
-        dynamic_instructions.append("- 'average temperature' or 'mean temperature' = TAVG (NOT TMIN or TMAX)")
-        dynamic_instructions.append("- 'minimum temperature' or 'min temperature' = TMIN")
-        dynamic_instructions.append("- 'maximum temperature' or 'max temperature' = TMAX")
-        dynamic_instructions.append("- 'temperature' without qualifier = TAVG (average temperature)")
-        dynamic_instructions.append("- If question asks for 'average' or 'mean', you MUST use TAVG variable")
-        dynamic_instructions.append("- If question asks for 'minimum' or 'min', you MUST use TMIN variable")
-        dynamic_instructions.append("- If question asks for 'maximum' or 'max', you MUST use TMAX variable")
+        dynamic_instructions.append("VARIABLE MAPPING (CRITICAL - Use correct variable from available list):")
+        dynamic_instructions.append("- Look at the AVAILABLE VARIABLES list above to find the correct variable")
+        dynamic_instructions.append("- If question asks for 'average' or 'mean', find variable with 'average' or 'mean' in its name/description")
+        dynamic_instructions.append("- If question asks for 'minimum' or 'min', find variable with 'minimum' or 'min' in its name/description")
+        dynamic_instructions.append("- If question asks for 'maximum' or 'max', find variable with 'maximum' or 'max' in its name/description")
+        dynamic_instructions.append("- Match the question's intent to the variable name/description from the AVAILABLE VARIABLES list")
+        dynamic_instructions.append("- DO NOT confuse different variables (e.g., minimum vs average vs maximum)")
         dynamic_instructions.append("")
         
         # CRITICAL: Time filtering instructions with examples
