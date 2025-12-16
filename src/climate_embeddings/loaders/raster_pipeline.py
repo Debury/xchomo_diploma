@@ -281,10 +281,25 @@ def _load_csv(path: Path, **kwargs) -> Iterator[RasterChunk]:
         
         # COMPLETELY DYNAMIC: No hardcoded column names
         # Classify columns purely by data type and content, not by name
+        # CRITICAL: Latitude/longitude are numeric but should be treated as metadata
         numeric_cols = []
         non_numeric_cols = []
+        spatial_cols = []  # Track latitude/longitude columns separately
         
         for col in sample_df.columns:
+            col_lower = str(col).lower()
+            # CRITICAL: Check if column is latitude/longitude by name first
+            if 'lat' in col_lower and 'lon' not in col_lower:
+                # Latitude column - treat as metadata, not variable
+                spatial_cols.append(col)
+                non_numeric_cols.append(col)
+                continue
+            elif 'lon' in col_lower:
+                # Longitude column - treat as metadata, not variable
+                spatial_cols.append(col)
+                non_numeric_cols.append(col)
+                continue
+            
             try:
                 # Try to convert to numeric
                 numeric_series = pd.to_numeric(sample_df[col], errors='coerce')
@@ -402,19 +417,24 @@ def _load_csv(path: Path, **kwargs) -> Iterator[RasterChunk]:
                                         except:
                                             pass
                             
-                            # Also check numeric columns for spatial info (fallback)
+                            # Also check numeric columns for spatial info (CRITICAL: use filtered data, not full dataset)
                             for col in numeric_cols:
                                 if col == var_col:
                                     continue
                                 col_lower = str(col).lower()
-                                # Check by column name first (more reliable)
+                                # Check by column name first (more reliable) - CRITICAL: use df_filtered, not df_full
                                 if 'lat' in col_lower and 'lon' not in col_lower:
                                     try:
                                         col_values = pd.to_numeric(df_filtered[col], errors='coerce').dropna()
                                         if len(col_values) > 0:
                                             min_val = float(col_values.min())
                                             max_val = float(col_values.max())
-                                            if -90 <= min_val <= 90 and -90 <= max_val <= 90:
+                                            # CRITICAL: If all values are the same (single station), use that value
+                                            if min_val == max_val:
+                                                meta["lat_min"] = min_val
+                                                meta["lat_max"] = min_val
+                                            elif -90 <= min_val <= 90 and -90 <= max_val <= 90:
+                                                # Multiple stations - use range
                                                 meta["lat_min"] = min_val
                                                 meta["lat_max"] = max_val
                                     except:
@@ -425,28 +445,14 @@ def _load_csv(path: Path, **kwargs) -> Iterator[RasterChunk]:
                                         if len(col_values) > 0:
                                             min_val = float(col_values.min())
                                             max_val = float(col_values.max())
-                                            if -180 <= min_val <= 180 and -180 <= max_val <= 180:
+                                            # CRITICAL: If all values are the same (single station), use that value
+                                            if min_val == max_val:
+                                                meta["lon_min"] = min_val
+                                                meta["lon_max"] = min_val
+                                            elif -180 <= min_val <= 180 and -180 <= max_val <= 180:
+                                                # Multiple stations - use range
                                                 meta["lon_min"] = min_val
                                                 meta["lon_max"] = max_val
-                                    except:
-                                        pass
-                                else:
-                                    # For other numeric columns, check by value range (less reliable)
-                                    try:
-                                        col_values = pd.to_numeric(df_filtered[col], errors='coerce').dropna()
-                                        if len(col_values) > 0:
-                                            min_val = float(col_values.min())
-                                            max_val = float(col_values.max())
-                                            # Only if not already set and values are in valid ranges
-                                            if "lat_min" not in meta and -90 <= min_val <= 90 and -90 <= max_val <= 90:
-                                                # Check if values are reasonable for latitude (not just any number in range)
-                                                if abs(max_val - min_val) < 1.0:  # Small range suggests coordinates
-                                                    meta["lat_min"] = min_val
-                                                    meta["lat_max"] = max_val
-                                            elif "lon_min" not in meta and -180 <= min_val <= 180 and -180 <= max_val <= 180:
-                                                if abs(max_val - min_val) < 1.0:  # Small range suggests coordinates
-                                                    meta["lon_min"] = min_val
-                                                    meta["lon_max"] = max_val
                                     except:
                                         pass
                             
