@@ -7,6 +7,7 @@ Endpoints allow listing jobs, triggering runs, and checking status.
 
 import os
 import sys
+import logging
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime
@@ -17,6 +18,8 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 import httpx
+
+logger = logging.getLogger(__name__)
 
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -583,6 +586,85 @@ async def rag_chat_legacy(request: RAGChatRequest):
         # 1. Detect query type and extract mentioned variables for intelligent retrieval
         question_lower = request.question.lower()
         
+        # IMPORTANT: Check if this is a variable list question FIRST
+        # Import the detection function from rag_endpoint
+        from web_api.rag_endpoint import _is_variable_list_question, _get_variable_list, get_collection_info
+        
+        # Fast path: variable listing questions - ALWAYS get ALL variables from database
+        if _is_variable_list_question(request.question):
+            # Get ALL variables from database, not just from search results
+            all_variables = _get_variable_list(db, force_refresh=False)
+            if not all_variables:
+                # Fallback: try to get from collection info
+                try:
+                    collection_info = await get_collection_info()
+                    all_variables = collection_info.get("variables", [])
+                except Exception as e:
+                    logger.warning(f"Failed to get collection info: {e}")
+                    all_variables = []
+            
+            # Get sources info
+            sources_text = ""
+            try:
+                collection_info = await get_collection_info()
+                sources = collection_info.get("sources", [])
+                if sources:
+                    sources_text = f" from {len(sources)} source(s): {', '.join(sources)}"
+            except Exception as e:
+                logger.warning(f"Failed to get sources info: {e}")
+            
+            # Build answer with ALL variables
+            answer = f"Available climate variables{sources_text}:\n" + ", ".join(all_variables)
+            
+            # Still do a search to get some context chunks for the response
+            # Build filter dict if filters provided
+            filter_dict = {}
+            if request.source_id:
+                filter_dict["source_id"] = request.source_id
+            if request.variable:
+                filter_dict["variable"] = request.variable
+            
+            query_vec = embedder.embed_queries([request.question])[0]
+            search_result = db.search(
+                query_vector=query_vec.tolist(),
+                limit=10,
+                filter_dict=filter_dict if filter_dict else None
+            )
+            
+            # Build chunks for response
+            chunks_model = []
+            refs = set()
+            for hit in search_result[:10]:
+                if hasattr(hit, 'payload'):
+                    meta = hit.payload if isinstance(hit.payload, dict) else {}
+                else:
+                    meta = getattr(hit, 'payload', {}) if hasattr(hit, 'payload') else (hit if isinstance(hit, dict) else {})
+                
+                score = getattr(hit, 'score', 0.0) if hasattr(hit, 'score') else (hit.get('score', 0.0) if isinstance(hit, dict) else 0.0)
+                text = meta.get('text_content', '') if isinstance(meta, dict) else str(meta)
+                
+                s_id = meta.get('source_id', 'unknown')
+                var = meta.get('variable', 'unknown')
+                ref = f"{s_id}:{var}"
+                refs.add(ref)
+                
+                chunks_model.append(RAGChunk(
+                    source_id=s_id,
+                    variable=var,
+                    similarity=score,
+                    text=text[:200] + "..." if len(text) > 200 else text,
+                    metadata=meta
+                ))
+            
+            logger.info(f"Fast path: Returning {len(all_variables)} variables for variable list question")
+            return RAGChatResponse(
+                question=request.question,
+                answer=answer,
+                references=sorted(list(refs)),
+                chunks=chunks_model,
+                llm_used=False  # Don't use LLM for variable list questions
+            )
+        
         # Detect temperature range queries
         is_temp_range_query = any(phrase in question_lower for phrase in [
             "temperature range", "temp range", "range of temperature",
@@ -795,26 +877,54 @@ async def rag_chat_legacy(request: RAGChatRequest):
                 # Use OpenRouter instead of Ollama
                 import os
                 from src.llm.openrouter_client import OpenRouterClient
+                from web_api.prompt_builder import build_rag_prompt, detect_question_type
+                from web_api.rag_endpoint import _get_variable_list, get_collection_info
                 
                 if not os.getenv("OPENROUTER_API_KEY"):
                     raise ValueError("OPENROUTER_API_KEY not set")
                 
                 client = OpenRouterClient()
                 
-                # Build prompt
-                context_text = "\n".join([
-                    f"- {c['metadata'].get('variable', '?')}: {c['metadata'].get('stats_mean', '?')} (source: {c['metadata'].get('source_id', '?')})"
-                    for c in context_chunks[:10]
-                ])
-                prompt = f"""Based on this climate data:
-{context_text}
-
-Answer briefly: {request.question}"""
+                # Detect question type
+                question_type = detect_question_type(request.question)
                 
-                answer = client.generate(prompt=prompt, temperature=request.temperature, max_tokens=150)
+                # Get all variables and sources for context (if needed)
+                all_variables = None
+                sources = None
+                
+                if question_type == "variable_list":
+                    # Always get all variables for variable list questions
+                    all_variables = _get_variable_list(db, force_refresh=False)
+                
+                # Get sources info (useful for all question types)
+                try:
+                    collection_info = await get_collection_info()
+                    sources = collection_info.get("sources", [])
+                    if not all_variables and question_type != "variable_list":
+                        # For other questions, we can optionally include variables in context
+                        all_variables = collection_info.get("variables", [])
+                except Exception as e:
+                    logger.warning(f"Failed to get collection info: {e}")
+                
+                # Build dynamic prompt based on question type
+                prompt, max_tokens = build_rag_prompt(
+                    question=request.question,
+                    context_chunks=context_chunks,
+                    all_variables=all_variables,
+                    sources=sources,
+                    question_type=question_type
+                )
+                
+                logger.info(f"Question type: {question_type}, Max tokens: {max_tokens}")
+                
+                answer = client.generate(
+                    prompt=prompt, 
+                    temperature=request.temperature, 
+                    max_tokens=max_tokens
+                )
                 llm_used = True
             except Exception as e:
-                print(f"LLM Error: {e}")
+                logger.error(f"LLM Error: {e}")
                 answer = f"LLM Error: {e}"
         
         if not answer:

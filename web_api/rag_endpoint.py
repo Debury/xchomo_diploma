@@ -76,8 +76,12 @@ def _get_components():
     return _CACHED_CONFIG, _CACHED_DB, _CACHED_EMBEDDER, _CACHED_LLM
 
 
-def _get_variable_list(db, force_refresh: bool = False, max_vars: int = 500) -> List[str]:
-    """Collect distinct variable names quickly using Qdrant scroll; cache results."""
+def _get_variable_list(db, force_refresh: bool = False, max_vars: int = 1000) -> List[str]:
+    """Collect distinct variable names quickly using Qdrant scroll; cache results.
+    
+    This function scrolls through ALL points in the collection to get a complete
+    list of unique variables, not just from search results.
+    """
     global _CACHED_VARIABLES, _CACHED_VARIABLES_TS
     now = time.time()
     if not force_refresh and _CACHED_VARIABLES and (now - _CACHED_VARIABLES_TS) < 300:
@@ -95,7 +99,8 @@ def _get_variable_list(db, force_refresh: bool = False, max_vars: int = 500) -> 
             try:
                 offset = None
                 rounds = 0
-                while rounds < 10 and len(seen) < max_vars:
+                # Increase rounds to scan more of the database
+                while rounds < 50 and len(seen) < max_vars:
                     points, offset = client_attr.scroll(
                         collection_name=collection,
                         limit=500,
@@ -111,16 +116,18 @@ def _get_variable_list(db, force_refresh: bool = False, max_vars: int = 500) -> 
                             seen.add(str(var))
                     if offset is None:
                         break
-            except Exception:
-                pass
+                logger.info(f"Scanned {rounds} rounds, found {len(seen)} unique variables")
+            except Exception as e:
+                logger.error(f"Error getting variable list: {e}")
 
         _CACHED_VARIABLES = sorted(seen)[:max_vars]
         _CACHED_VARIABLES_TS = time.time()
+        logger.info(f"Cached {len(_CACHED_VARIABLES)} variables")
         return _CACHED_VARIABLES
 
 
 _VARIABLE_LIST_RE = re.compile(
-    r"\b(what|which)\b.*\b(variable|variables|var)\b.*\b(available|in|does|are)\b",
+    r"\b(what|which|list|show|tell|give)\b.*\b(variable|variables|var|data|fields|columns)\b.*\b(available|in|does|are|have|contains|include)\b",
     re.IGNORECASE,
 )
 
@@ -296,16 +303,35 @@ async def rag_query(request: RAGRequest) -> RAGResponse:
             references.add(f"{source_id}:{variable}")
             llm_context_lines.append(f"[{i}] {_format_hit_summary(meta, float(score))}")
 
-        # Fast path: variable listing questions (no LLM needed)
-        if _is_variable_list_question(question_text) and chunks:
-            variables = sorted({c.get("variable") for c in chunks if c.get("variable")})
-            if not variables:
-                variables = _get_variable_list(db)
-            answer = "Available climate variables (from matches):\n" + ", ".join(variables[:80])
+        # Fast path: variable listing questions - ALWAYS get ALL variables from database
+        if _is_variable_list_question(question_text):
+            # Get ALL variables from database, not just from search results
+            all_variables = _get_variable_list(db, force_refresh=False)
+            if not all_variables:
+                # Fallback: try to get from collection info
+                try:
+                    collection_info = await get_collection_info()
+                    all_variables = collection_info.get("variables", [])
+                except Exception as e:
+                    logger.warning(f"Failed to get collection info: {e}")
+                    # Last resort: use variables from chunks
+                    all_variables = sorted({c.get("variable") for c in chunks if c.get("variable")})
+            
+            # Get sources info (reuse collection_info if we already have it, otherwise fetch)
+            sources_text = ""
+            try:
+                collection_info = await get_collection_info()
+                sources = collection_info.get("sources", [])
+                if sources:
+                    sources_text = f" from {len(sources)} source(s): {', '.join(sources)}"
+            except Exception as e:
+                logger.warning(f"Failed to get sources info: {e}")
+            
+            answer = f"Available climate variables{sources_text}:\n" + ", ".join(all_variables)
             return RAGResponse(
                 question=question_text,
                 answer=answer,
-                chunks=chunks,
+                chunks=chunks[:10],  # Include some chunks for context
                 references=sorted(list(references)),
                 llm_used=False,
                 search_time_ms=round(search_time, 2),
@@ -325,14 +351,35 @@ async def rag_query(request: RAGRequest) -> RAGResponse:
             try:
                 llm_start = time.time()
                 
-                # Build minimal prompt - every token counts on slow CPU
-                prompt = f"""Answer in 1-2 sentences using ONLY this data:
+                # For variable list questions, include ALL variables in context
+                if _is_variable_list_question(question_text):
+                    all_variables = _get_variable_list(db, force_refresh=False)
+                    try:
+                        collection_info = await get_collection_info()
+                        sources = collection_info.get("sources", [])
+                        sources_text = f" from {len(sources)} source(s): {', '.join(sources)}" if sources else ""
+                    except:
+                        sources_text = ""
+                    
+                    # Build comprehensive prompt with ALL variables
+                    prompt = f"""You are a climate data assistant. Answer the question using the complete dataset information.
+
+AVAILABLE VARIABLES{sources_text.upper()}: {', '.join(all_variables)}
+
+SEARCH RESULTS (sample data):
+{context_text}
+
+Q: {question_text}
+A: List ALL available variables from the dataset above."""
+                    max_tokens = min(200, len(all_variables) * 3)  # Enough tokens for all variables
+                else:
+                    # Build minimal prompt - every token counts on slow CPU
+                    prompt = f"""Answer in 1-2 sentences using ONLY this data:
 {context_text}
 
 Q: {question_text}
 A:"""
-
-                max_tokens = _default_max_tokens(question_text)
+                    max_tokens = _default_max_tokens(question_text)
                 
                 # Async timeout wrapper
                 answer = await asyncio.wait_for(

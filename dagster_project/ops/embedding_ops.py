@@ -16,8 +16,9 @@ from pydantic import Field
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from dagster_project.resources import ConfigLoaderResource, LoggerResource, DataPathResource
-from src.embeddings.pipeline import EmbeddingPipeline
-from src.embeddings.search import semantic_search
+# Legacy imports - commented out as these modules don't exist
+# from src.embeddings.pipeline import EmbeddingPipeline
+# from src.embeddings.search import semantic_search
 
 
 class EmbeddingConfig(Config):
