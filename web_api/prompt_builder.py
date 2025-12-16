@@ -102,6 +102,22 @@ def build_rag_prompt(
         elif station_id:
             summary += f" | Station ID: {station_id}"
         
+        # DYNAMIC: Add spatial coordinates if available (for location comparisons)
+        lat_min = meta.get('latitude_min') or meta.get('lat_min')
+        lat_max = meta.get('latitude_max') or meta.get('lat_max')
+        lon_min = meta.get('longitude_min') or meta.get('lon_min')
+        lon_max = meta.get('longitude_max') or meta.get('lon_max')
+        if lat_min is not None and lat_max is not None:
+            if lat_min == lat_max:
+                summary += f" | Latitude: {lat_min:.4f}°"
+            else:
+                summary += f" | Latitude: {lat_min:.4f}° to {lat_max:.4f}°"
+        if lon_min is not None and lon_max is not None:
+            if lon_min == lon_max:
+                summary += f" | Longitude: {lon_min:.4f}°"
+            else:
+                summary += f" | Longitude: {lon_min:.4f}° to {lon_max:.4f}°"
+        
         # Add row count if available (shows data volume)
         row_count = meta.get('row_count')
         if row_count:
@@ -186,11 +202,17 @@ IMPORTANT: The dataset contains EXACTLY {len(all_variables)} variables. You MUST
                 var_list_with_meanings.append(f"{var} ({meaning})")
             else:
                 var_list_with_meanings.append(var)
-        variables_info = f"\n\nAVAILABLE VARIABLES ({len(all_variables)}): {', '.join(var_list_with_meanings)}"
-        variables_info += "\n\nVARIABLE MAPPING GUIDE (use variable names from the list above):"
-        variables_info += "\n- If question asks for 'average' or 'mean', look for variables with 'average' or 'mean' in their name/description"
-        variables_info += "\n- If question asks for 'minimum' or 'min', look for variables with 'minimum' or 'min' in their name/description"
-        variables_info += "\n- If question asks for 'maximum' or 'max', look for variables with 'maximum' or 'max' in their name/description"
+        variables_info = f"""
+
+═══════════════════════════════════════════════════════════════════════════════
+COMPLETE LIST OF ALL {len(all_variables)} AVAILABLE VARIABLES IN THE DATASET:
+═══════════════════════════════════════════════════════════════════════════════
+{', '.join(var_list_with_meanings)}
+═══════════════════════════════════════════════════════════════════════════════
+CRITICAL: These are ALL variables that exist in the database.
+If a variable is listed here but NOT in the CONTEXT chunks below, it still exists in the database.
+You should mention this if asked about a variable that's in this list but not in context.
+═══════════════════════════════════════════════════════════════════════════════"""
     elif seen_vars:
         variables_info = f"\n\nVARIABLES IN CONTEXT (limited sample): {', '.join(sorted(seen_vars))}"
         # Add meanings for seen variables from context
@@ -298,41 +320,52 @@ ANSWER:"""
         dynamic_instructions.append("- For time periods, mention the exact date range and number of days")
         
         # DYNAMIC: Variable mapping instructions (no hardcoded names)
-        dynamic_instructions.append("")
-        dynamic_instructions.append("VARIABLE MAPPING (CRITICAL - Use correct variable from available list):")
-        dynamic_instructions.append("- Look at the AVAILABLE VARIABLES list above to find the correct variable")
-        dynamic_instructions.append("- If question asks for 'average' or 'mean', find variable with 'average' or 'mean' in its name/description")
-        dynamic_instructions.append("- If question asks for 'minimum' or 'min', find variable with 'minimum' or 'min' in its name/description")
-        dynamic_instructions.append("- If question asks for 'maximum' or 'max', find variable with 'maximum' or 'max' in its name/description")
-        dynamic_instructions.append("- Match the question's intent to the variable name/description from the AVAILABLE VARIABLES list")
-        dynamic_instructions.append("- DO NOT confuse different variables (e.g., minimum vs average vs maximum)")
-        dynamic_instructions.append("")
+        if all_variables:
+            dynamic_instructions.append("")
+            dynamic_instructions.append("VARIABLE MAPPING (CRITICAL - Use correct variable from available list):")
+            dynamic_instructions.append(f"- Look at the AVAILABLE VARIABLES list above ({len(all_variables)} variables) to find the correct variable")
+            dynamic_instructions.append("- Match the question's intent to variable names/descriptions from the AVAILABLE VARIABLES list")
+            dynamic_instructions.append("- If question asks for 'average' or 'mean', search for variables with 'average' or 'mean' in their name/description")
+            dynamic_instructions.append("- If question asks for 'minimum' or 'min', search for variables with 'minimum' or 'min' in their name/description")
+            dynamic_instructions.append("- If question asks for 'maximum' or 'max', search for variables with 'maximum' or 'max' in their name/description")
+            dynamic_instructions.append("- IMPORTANT: If a variable exists in AVAILABLE VARIABLES but is NOT in the CONTEXT chunks, it still exists in the database")
+            dynamic_instructions.append("- If question asks for a variable that's in AVAILABLE VARIABLES but not in CONTEXT, state that the variable exists but data may not be in the provided context")
+            dynamic_instructions.append("- DO NOT confuse different variables - check variable names and descriptions carefully")
+            dynamic_instructions.append("")
         
-        # CRITICAL: Time filtering instructions with examples
+        # DYNAMIC: Time filtering instructions (no hardcoded dates or variable names)
         if time_periods:
             dynamic_instructions.append("TIME FILTERING (CRITICAL - Filter correctly):")
-            dynamic_instructions.append("- Extract month/year from question and match to time_start/time_end in context")
+            dynamic_instructions.append("- Extract month/year/season from question and match to time_start/time_end in context")
             dynamic_instructions.append("- ONLY use data chunks where the time period overlaps with the requested period")
-            dynamic_instructions.append("")
-            dynamic_instructions.append("EXAMPLES OF CORRECT FILTERING:")
-            dynamic_instructions.append("  Question: 'What is the average temperature in summer 2023?'")
-            dynamic_instructions.append("  → Use chunks where time period includes June, July, or August 2023")
-            dynamic_instructions.append("  → Variable: TAVG (average temperature), NOT TMIN or TMAX")
-            dynamic_instructions.append("")
-            dynamic_instructions.append("  Question: 'What was the temperature range in August 2023?'")
-            dynamic_instructions.append("  → Use chunks where time_start >= '2023-08-01' AND time_end <= '2023-08-31'")
-            dynamic_instructions.append("  → OR chunks where time period overlaps with August (e.g., '2023-06-21 to 2023-08-31' includes August)")
-            dynamic_instructions.append("  → DO NOT use chunks that end before August (e.g., '2023-06-01 to 2023-08-10' does NOT fully cover August)")
-            dynamic_instructions.append("")
-            dynamic_instructions.append("  Question: 'Show me temperature statistics for Slovakia in summer 2023'")
-            dynamic_instructions.append("  → Use ALL temperature variables (TAVG, TMAX, TMIN) where time period overlaps with summer 2023")
-            dynamic_instructions.append("  → Summer 2023 = June, July, August 2023")
+            dynamic_instructions.append("- If question asks for a specific month, use chunks where that month is included in time_start to time_end range")
+            dynamic_instructions.append("- If question asks for a season (e.g., 'summer'), identify the months and use chunks covering those months")
+            dynamic_instructions.append("- If a chunk's time period partially overlaps with requested period, you CAN use it if it includes the requested dates")
+            dynamic_instructions.append("- If a chunk's time period ends before the requested period starts, DO NOT use it")
             dynamic_instructions.append("")
         
-        if seen_stations:
+        # DYNAMIC: Location filtering instructions (extract from metadata, not hardcoded)
+        location_metadata_found = False
+        location_fields = []
+        for chunk in context_chunks:
+            meta = chunk.get('metadata', {})
+            # Check for any location-related fields dynamically
+            for key in meta.keys():
+                key_lower = str(key).lower()
+                if any(term in key_lower for term in ['station', 'location', 'city', 'place', 'site', 'lat', 'lon']):
+                    if key not in location_fields:
+                        location_fields.append(key)
+                        location_metadata_found = True
+        
+        if seen_stations or location_metadata_found:
             dynamic_instructions.append("LOCATION FILTERING:")
-            dynamic_instructions.append("- If asked about a specific location/station, filter data by station_name or station_id from the context")
-            dynamic_instructions.append("- Match location names from the question to station_name or station_id in the context")
+            if seen_stations:
+                dynamic_instructions.append("- If asked about a specific location/station, filter data by station_name or station_id from the context")
+                dynamic_instructions.append("- Match location names from the question to station_name or station_id in the context")
+            if location_metadata_found:
+                dynamic_instructions.append(f"- Location metadata fields available in context: {', '.join(location_fields[:10])}")
+                dynamic_instructions.append("- If question asks to compare locations, use latitude/longitude or station identifiers from context")
+                dynamic_instructions.append("- Extract location names from question and match to location fields in context metadata")
             dynamic_instructions.append("- If location is mentioned, use only data matching that location")
             dynamic_instructions.append("")
         
