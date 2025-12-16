@@ -90,7 +90,17 @@ def build_rag_prompt(
             time_str = ""
         
         # Build PRECISE summary with station info if available
-        summary = f"[{i}] Variable: {var} | Source: {source}"
+        # Add variable meaning for clarity
+        var_meaning = {
+            "TAVG": "Average Temperature",
+            "TMAX": "Maximum Temperature", 
+            "TMIN": "Minimum Temperature",
+            "PRCP": "Precipitation",
+            "SNOW": "Snowfall",
+            "hurs": "Relative Humidity",
+        }.get(var, var)
+        
+        summary = f"[{i}] Variable: {var} ({var_meaning}) | Source: {source}"
         if station_name:
             summary += f" | Station: {station_name}"
         elif station_id:
@@ -101,11 +111,14 @@ def build_rag_prompt(
         if row_count:
             summary += f" | Data points: {row_count}"
         
-        if stats_parts:
-            summary += f" | Stats: {', '.join(stats_parts)}"
+        # Time period FIRST (important for filtering)
         if time_str:
-            summary += f" | Time: {time_str}"
-        summary += f" | Relevance: {score:.3f}"
+            summary += f" | Time period: {time_str}"
+        
+        if stats_parts:
+            summary += f" | Statistics: {', '.join(stats_parts)}"
+        
+        summary += f" | Relevance score: {score:.3f}"
         
         context_lines.append(summary)
     
@@ -134,25 +147,66 @@ def build_rag_prompt(
     if sources:
         sources_info = f"\n\nDATA SOURCES ({len(sources)}): {', '.join(sources)}"
     
-    # Build variables info - CRITICAL: Always show ALL variables for variable_list questions
+    # Build variables info - CRITICAL: Always show ALL variables with their meanings
     variables_info = ""
+    # Variable name mapping for better understanding
+    var_meanings = {
+        "TAVG": "Average Temperature (mean temperature)",
+        "TMAX": "Maximum Temperature",
+        "TMIN": "Minimum Temperature",
+        "PRCP": "Precipitation",
+        "SNOW": "Snowfall",
+        "hurs": "Relative Humidity",
+        "AWND": "Average Wind Speed",
+        "WSF2": "Wind Speed Fastest 2-minute",
+        "WSF5": "Wind Speed Fastest 5-minute",
+        "WDF2": "Wind Direction Fastest 2-minute",
+        "WDF5": "Wind Direction Fastest 5-minute",
+    }
+    
     if question_type == "variable_list" and all_variables:
         # For variable list questions, ALWAYS show ALL variables from database
-        # Format as a clear numbered list for better LLM comprehension
-        var_list = "\n".join([f"{i+1}. {var}" for i, var in enumerate(all_variables)])
+        # Format as a clear numbered list with meanings for better LLM comprehension
+        var_list = []
+        for i, var in enumerate(all_variables):
+            meaning = var_meanings.get(var, "Climate variable")
+            var_list.append(f"{i+1}. {var} ({meaning})")
+        var_list_str = "\n".join(var_list)
         variables_info = f"""
 
 ═══════════════════════════════════════════════════════════════════════════════
 COMPLETE LIST OF ALL {len(all_variables)} AVAILABLE VARIABLES IN THE DATASET:
 ═══════════════════════════════════════════════════════════════════════════════
-{var_list}
+{var_list_str}
 ═══════════════════════════════════════════════════════════════════════════════
 IMPORTANT: The dataset contains EXACTLY {len(all_variables)} variables. You MUST list ALL of them.
 ═══════════════════════════════════════════════════════════════════════════════"""
     elif all_variables:
-        variables_info = f"\n\nAVAILABLE VARIABLES ({len(all_variables)}): {', '.join(all_variables)}"
+        # Show variables with meanings
+        var_list_with_meanings = []
+        for var in all_variables:
+            meaning = var_meanings.get(var, "")
+            if meaning:
+                var_list_with_meanings.append(f"{var} ({meaning})")
+            else:
+                var_list_with_meanings.append(var)
+        variables_info = f"\n\nAVAILABLE VARIABLES ({len(all_variables)}): {', '.join(var_list_with_meanings)}"
+        variables_info += "\n\nVARIABLE MAPPING GUIDE:"
+        variables_info += "\n- 'average temperature' or 'mean temperature' = TAVG"
+        variables_info += "\n- 'minimum temperature' = TMIN"
+        variables_info += "\n- 'maximum temperature' = TMAX"
     elif seen_vars:
         variables_info = f"\n\nVARIABLES IN CONTEXT (limited sample): {', '.join(sorted(seen_vars))}"
+        # Add meanings for seen variables
+        seen_meanings = []
+        for var in sorted(seen_vars):
+            meaning = var_meanings.get(var, "")
+            if meaning:
+                seen_meanings.append(f"{var} ({meaning})")
+            else:
+                seen_meanings.append(var)
+        if seen_meanings:
+            variables_info += f"\nVariable meanings: {', '.join(seen_meanings)}"
     
     # Build prompt based on question type
     if question_type == "variable_list":
@@ -247,17 +301,51 @@ ANSWER:"""
         dynamic_instructions.append("- Include data point counts (row_count) when available to show data volume")
         dynamic_instructions.append("- For time periods, mention the exact date range and number of days")
         
+        # CRITICAL: Variable mapping instructions
+        dynamic_instructions.append("")
+        dynamic_instructions.append("VARIABLE MAPPING (CRITICAL - Use correct variable):")
+        dynamic_instructions.append("- 'average temperature' or 'mean temperature' = TAVG (NOT TMIN or TMAX)")
+        dynamic_instructions.append("- 'minimum temperature' or 'min temperature' = TMIN")
+        dynamic_instructions.append("- 'maximum temperature' or 'max temperature' = TMAX")
+        dynamic_instructions.append("- 'temperature' without qualifier = TAVG (average temperature)")
+        dynamic_instructions.append("- If question asks for 'average' or 'mean', you MUST use TAVG variable")
+        dynamic_instructions.append("- If question asks for 'minimum' or 'min', you MUST use TMIN variable")
+        dynamic_instructions.append("- If question asks for 'maximum' or 'max', you MUST use TMAX variable")
+        dynamic_instructions.append("")
+        
+        # CRITICAL: Time filtering instructions with examples
         if time_periods:
-            dynamic_instructions.append("- If asked about a specific time period (e.g., 'July', 'August', 'summer'), filter data by time_start/time_end from the context")
-            dynamic_instructions.append("- If asked about a time range, use data from ALL dates in that range")
-            dynamic_instructions.append("- Mention the specific time period(s) used in your answer")
+            dynamic_instructions.append("TIME FILTERING (CRITICAL - Filter correctly):")
+            dynamic_instructions.append("- Extract month/year from question and match to time_start/time_end in context")
+            dynamic_instructions.append("- ONLY use data chunks where the time period overlaps with the requested period")
+            dynamic_instructions.append("")
+            dynamic_instructions.append("EXAMPLES OF CORRECT FILTERING:")
+            dynamic_instructions.append("  Question: 'What is the average temperature in summer 2023?'")
+            dynamic_instructions.append("  → Use chunks where time period includes June, July, or August 2023")
+            dynamic_instructions.append("  → Variable: TAVG (average temperature), NOT TMIN or TMAX")
+            dynamic_instructions.append("")
+            dynamic_instructions.append("  Question: 'What was the temperature range in August 2023?'")
+            dynamic_instructions.append("  → Use chunks where time_start >= '2023-08-01' AND time_end <= '2023-08-31'")
+            dynamic_instructions.append("  → OR chunks where time period overlaps with August (e.g., '2023-06-21 to 2023-08-31' includes August)")
+            dynamic_instructions.append("  → DO NOT use chunks that end before August (e.g., '2023-06-01 to 2023-08-10' does NOT fully cover August)")
+            dynamic_instructions.append("")
+            dynamic_instructions.append("  Question: 'Show me temperature statistics for Slovakia in summer 2023'")
+            dynamic_instructions.append("  → Use ALL temperature variables (TAVG, TMAX, TMIN) where time period overlaps with summer 2023")
+            dynamic_instructions.append("  → Summer 2023 = June, July, August 2023")
+            dynamic_instructions.append("")
         
         if seen_stations:
+            dynamic_instructions.append("LOCATION FILTERING:")
             dynamic_instructions.append("- If asked about a specific location/station, filter data by station_name or station_id from the context")
+            dynamic_instructions.append("- Match location names from the question to station_name or station_id in the context")
             dynamic_instructions.append("- If location is mentioned, use only data matching that location")
+            dynamic_instructions.append("")
         
+        dynamic_instructions.append("RESPONSE REQUIREMENTS:")
         dynamic_instructions.append("- If the question asks about a specific period/location but data covers more, mention what data is available")
         dynamic_instructions.append("- If data is insufficient for the requested filter, state what data is available")
+        dynamic_instructions.append("- If multiple variables are available (TAVG, TMAX, TMIN), mention ALL relevant ones")
+        dynamic_instructions.append("- DO NOT confuse TMIN (minimum) with TAVG (average) - they are different variables")
         
         instructions_text = "\n".join(dynamic_instructions)
         
@@ -319,17 +407,35 @@ ANSWER:"""
         dynamic_instructions.append("- If information is not in the context, say 'I don't have that information in the provided data'")
         dynamic_instructions.append("- Do NOT make up or invent information")
         
+        # CRITICAL: Variable mapping instructions
+        dynamic_instructions.append("")
+        dynamic_instructions.append("VARIABLE MAPPING (CRITICAL - Use correct variable):")
+        dynamic_instructions.append("- 'average temperature' or 'mean temperature' = TAVG (NOT TMIN or TMAX)")
+        dynamic_instructions.append("- 'minimum temperature' or 'min temperature' = TMIN")
+        dynamic_instructions.append("- 'maximum temperature' or 'max temperature' = TMAX")
+        dynamic_instructions.append("- 'temperature' without qualifier = TAVG (average temperature)")
+        dynamic_instructions.append("- If question asks for 'average' or 'mean', you MUST use TAVG variable")
+        dynamic_instructions.append("")
+        
+        # CRITICAL: Time filtering instructions
         if time_periods:
-            dynamic_instructions.append("- If asked about a specific time period (e.g., 'July', 'August', 'summer'), filter data by time_start/time_end from the context")
-            dynamic_instructions.append("- Extract dates/months from the question and match to time_start/time_end in context")
-            dynamic_instructions.append("- If asked about a time range, use data from ALL dates in that range")
+            dynamic_instructions.append("TIME FILTERING (CRITICAL - Filter correctly):")
+            dynamic_instructions.append("- If asked about 'summer 2023', use data where time_start >= '2023-06-01' AND time_end <= '2023-08-31'")
+            dynamic_instructions.append("- If asked about 'August 2023', use data where time_start >= '2023-08-01' AND time_end <= '2023-08-31'")
+            dynamic_instructions.append("- Extract month/year from question and match to time_start/time_end in context")
+            dynamic_instructions.append("- ONLY use data chunks where the time period overlaps with the requested period")
+            dynamic_instructions.append("")
         
         if seen_stations:
+            dynamic_instructions.append("LOCATION FILTERING:")
             dynamic_instructions.append("- If asked about a specific location/station, filter data by station_name or station_id from the context")
             dynamic_instructions.append("- Match location names from the question to station_name or station_id in the context")
+            dynamic_instructions.append("")
         
+        dynamic_instructions.append("RESPONSE REQUIREMENTS:")
         dynamic_instructions.append("- If the question asks about a specific period/location, use only data matching those filters")
         dynamic_instructions.append("- If filtered data is insufficient, state what data is available")
+        dynamic_instructions.append("- DO NOT confuse TMIN (minimum) with TAVG (average) - they are different variables")
         
         instructions_text = "\n".join(dynamic_instructions)
         
