@@ -382,8 +382,8 @@ async def rag_query(request: RAGRequest) -> RAGResponse:
                 except:
                     pass
                 
-                # Use dynamic prompt builder (not simple prompt)
-                from web_api.prompt_builder import build_rag_prompt, detect_question_type
+                # Use dynamic prompt builder with multi-prompting
+                from web_api.prompt_builder import build_rag_prompt, detect_question_type, build_variable_selection_prompt
                 
                 question_type = detect_question_type(question_text)
                 
@@ -396,13 +396,57 @@ async def rag_query(request: RAGRequest) -> RAGResponse:
                         "text": chunk.get("text", "")
                     })
                 
-                # Build comprehensive prompt with ALL variables
+                # MULTI-PROMPTING: First, select relevant variables
+                selected_variables = None
+                if all_variables and len(all_variables) > 3:  # Only use multi-prompting if we have multiple variables
+                    try:
+                        # Extract variable meanings from chunks
+                        var_meanings = {}
+                        for chunk in formatted_chunks:
+                            meta = chunk.get("metadata", {})
+                            var = meta.get("variable", "")
+                            if var:
+                                long_name = meta.get("long_name") or meta.get("standard_name")
+                                if long_name:
+                                    var_meanings[var] = long_name
+                        
+                        # First prompt: Select relevant variables
+                        var_selection_prompt = build_variable_selection_prompt(
+                            question=question_text,
+                            all_variables=all_variables,
+                            var_meanings=var_meanings
+                        )
+                        
+                        # Get variable selection from LLM (short, fast)
+                        var_selection_response = await asyncio.wait_for(
+                            asyncio.to_thread(
+                                lambda: llm_client.generate(
+                                    prompt=var_selection_prompt,
+                                    temperature=0.1,  # Low temp for precise selection
+                                    max_tokens=50,  # Just variable names
+                                    timeout_s=10,
+                                )
+                            ),
+                            timeout=10
+                        )
+                        
+                        # Parse selected variables
+                        selected_vars_text = var_selection_response.strip()
+                        # Extract variable names (handle comma-separated list)
+                        selected_variables = [v.strip() for v in selected_vars_text.split(",") if v.strip() in all_variables]
+                        logger.info(f"Selected variables from first prompt: {selected_variables}")
+                    except Exception as e:
+                        logger.warning(f"Variable selection prompt failed: {e}, continuing without it")
+                        selected_variables = None
+                
+                # Build comprehensive prompt with ALL variables and selected variables
                 prompt, max_tokens = build_rag_prompt(
                     question=question_text,
                     context_chunks=formatted_chunks,
                     all_variables=all_variables,  # CRITICAL: Always include ALL variables
                     sources=sources,
-                    question_type=question_type
+                    question_type=question_type,
+                    selected_variables=selected_variables  # Pass selected variables to highlight them
                 )
                 
                 # Async timeout wrapper

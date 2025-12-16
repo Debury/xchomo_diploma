@@ -1169,13 +1169,55 @@ async def rag_chat_legacy(request: RAGChatRequest):
                 except Exception as e:
                     logger.warning(f"Failed to get collection info: {e}")
                 
+                # MULTI-PROMPTING: First, select relevant variables (if we have multiple variables)
+                selected_variables = None
+                if all_variables and len(all_variables) > 3:
+                    try:
+                        from web_api.prompt_builder import build_variable_selection_prompt
+                        import os
+                        from src.llm.openrouter_client import OpenRouterClient
+                        
+                        # Extract variable meanings from chunks
+                        var_meanings = {}
+                        for chunk in context_chunks:
+                            meta = chunk.get("metadata", {})
+                            var = meta.get("variable", "")
+                            if var:
+                                long_name = meta.get("long_name") or meta.get("standard_name")
+                                if long_name:
+                                    var_meanings[var] = long_name
+                        
+                        # First prompt: Select relevant variables
+                        var_selection_prompt = build_variable_selection_prompt(
+                            question=request.question,
+                            all_variables=all_variables,
+                            var_meanings=var_meanings
+                        )
+                        
+                        # Get variable selection from LLM
+                        var_selection_client = OpenRouterClient()
+                        var_selection_response = var_selection_client.generate(
+                            prompt=var_selection_prompt,
+                            temperature=0.1,
+                            max_tokens=50,
+                        )
+                        
+                        # Parse selected variables
+                        selected_vars_text = var_selection_response.strip()
+                        selected_variables = [v.strip() for v in selected_vars_text.split(",") if v.strip() in all_variables]
+                        logger.info(f"Selected variables from first prompt: {selected_variables}")
+                    except Exception as e:
+                        logger.warning(f"Variable selection prompt failed: {e}, continuing without it")
+                        selected_variables = None
+                
                 # Build dynamic prompt based on question type
                 prompt, max_tokens = build_rag_prompt(
                     question=request.question,
                     context_chunks=context_chunks,
                     all_variables=all_variables,
                     sources=sources,
-                    question_type=question_type
+                    question_type=question_type,
+                    selected_variables=selected_variables
                 )
                 
                 logger.info(f"Question type: {question_type}, Max tokens: {max_tokens}")

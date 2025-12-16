@@ -1,12 +1,54 @@
 """
 Dynamic prompt builder for RAG system.
 Adapts prompts based on question type, available data, and context.
+Supports multi-prompting: first select relevant variables, then answer question.
 """
 
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 import logging
 
 logger = logging.getLogger(__name__)
+
+
+def build_variable_selection_prompt(
+    question: str,
+    all_variables: List[str],
+    var_meanings: Dict[str, str]
+) -> str:
+    """
+    First prompt: Select relevant variables from all available variables.
+    This helps ensure we don't miss variables that aren't in search results.
+    
+    Returns:
+        Prompt string for variable selection
+    """
+    var_list = []
+    for var in all_variables:
+        meaning = var_meanings.get(var, "")
+        if meaning:
+            var_list.append(f"- {var}: {meaning}")
+        else:
+            var_list.append(f"- {var}")
+    
+    prompt = f"""You are analyzing a climate data question. Your task is to identify which variables from the dataset are relevant to answer this question.
+
+QUESTION: {question}
+
+AVAILABLE VARIABLES IN DATASET ({len(all_variables)} total):
+{chr(10).join(var_list)}
+
+INSTRUCTIONS:
+1. Read the question carefully
+2. Identify which variable(s) from the list above are needed to answer the question
+3. If the question asks for "average" or "mean", look for variables with "average" or "mean" in their name/description
+4. If the question asks for "minimum" or "min", look for variables with "minimum" or "min" in their name/description
+5. If the question asks for "maximum" or "max", look for variables with "maximum" or "max" in their name/description
+6. If the question asks for "statistics" or "all", include all relevant variables
+7. Return ONLY a comma-separated list of variable names (e.g., "TAVG, TMAX, TMIN")
+
+RELEVANT VARIABLES:"""
+    
+    return prompt
 
 
 def build_rag_prompt(
@@ -14,7 +56,8 @@ def build_rag_prompt(
     context_chunks: List[Dict[str, Any]],
     all_variables: Optional[List[str]] = None,
     sources: Optional[List[str]] = None,
-    question_type: str = "general"
+    question_type: str = "general",
+    selected_variables: Optional[List[str]] = None
 ) -> tuple[str, int]:
     """
     Build dynamic prompt based on question type and available data.
@@ -25,6 +68,7 @@ def build_rag_prompt(
         all_variables: All available variables in the dataset (for variable questions)
         sources: List of data sources
         question_type: Type of question (variable_list, comparison, statistical, general)
+        selected_variables: Variables selected by first prompt (if using multi-prompting)
     
     Returns:
         Tuple of (prompt, max_tokens)
@@ -202,6 +246,16 @@ IMPORTANT: The dataset contains EXACTLY {len(all_variables)} variables. You MUST
                 var_list_with_meanings.append(f"{var} ({meaning})")
             else:
                 var_list_with_meanings.append(var)
+        
+        # If we have selected_variables from first prompt, highlight them
+        if selected_variables:
+            selected_info = f"\n\nSELECTED RELEVANT VARIABLES (from question analysis): {', '.join(selected_variables)}"
+            selected_info += "\nCRITICAL: These variables were identified as relevant to the question."
+            selected_info += "\nIf any of these variables are NOT in the CONTEXT chunks below, they still exist in the database."
+            selected_info += "\nYou MUST search for or mention these variables even if they're not in the provided context."
+        else:
+            selected_info = ""
+        
         variables_info = f"""
 
 ═══════════════════════════════════════════════════════════════════════════════
@@ -212,6 +266,7 @@ COMPLETE LIST OF ALL {len(all_variables)} AVAILABLE VARIABLES IN THE DATASET:
 CRITICAL: These are ALL variables that exist in the database.
 If a variable is listed here but NOT in the CONTEXT chunks below, it still exists in the database.
 You should mention this if asked about a variable that's in this list but not in context.
+{selected_info}
 ═══════════════════════════════════════════════════════════════════════════════"""
     elif seen_vars:
         variables_info = f"\n\nVARIABLES IN CONTEXT (limited sample): {', '.join(sorted(seen_vars))}"
