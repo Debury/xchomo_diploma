@@ -271,23 +271,54 @@ def process_all_sources(context: OpExecutionContext):
                 
                 ids, embeddings, metadatas, texts_for_embedding = [], [], [], []
                 
-                for j, stat_item in enumerate(batch_slice):
-                    uid = f"{source_id}_{timestamp}_{i+j}"
-                    ids.append(uid)
-                    
+                # DYNAMIC: Enrich variable metadata with LLM (optional, graceful degradation)
+                # Collect variable metadata for batch enrichment
+                variable_metadata_batch = []
+                for stat_item in batch_slice:
                     stats_vector = stat_item["vector"]
                     raw_meta = stat_item["metadata"]
                     
-                    # Create normalized metadata
+                    # Create normalized metadata first
                     normalized_meta = ClimateChunkMetadata.from_chunk_metadata(
                         raw_metadata=raw_meta,
                         stats_vector=stats_vector,
                         source_id=source_id,
-                        dataset_name=source_id  # Can be customized per source
+                        dataset_name=source_id
                     )
                     
-                    # Convert to dict for storage
                     payload = normalized_meta.to_dict()
+                    variable_metadata_batch.append(payload)
+                
+                # Try to enrich with LLM (optional - if fails, use original)
+                try:
+                    from src.climate_embeddings.enrichment.variable_enricher import enrich_variable_metadata_batch
+                    # Try to get LLM client (optional)
+                    llm_client = None
+                    try:
+                        import os
+                        if os.getenv("OPENROUTER_API_KEY"):
+                            from src.llm.openrouter_client import OpenRouterClient
+                            llm_client = OpenRouterClient()
+                    except:
+                        pass
+                    
+                    # Enrich metadata with LLM-inferred meanings
+                    enriched_metadata = enrich_variable_metadata_batch(
+                        variable_metadata_batch,
+                        llm_client=llm_client,
+                        batch_size=10
+                    )
+                    variable_metadata_batch = enriched_metadata
+                    logger.info(f"✓ Enriched {len(enriched_metadata)} variables with LLM")
+                except Exception as e:
+                    logger.warning(f"Variable enrichment failed (using original metadata): {e}")
+                    # Continue with original metadata if enrichment fails
+                
+                # Process enriched metadata
+                for j, payload in enumerate(variable_metadata_batch):
+                    uid = f"{source_id}_{timestamp}_{i+j}"
+                    ids.append(uid)
+                    
                     metadatas.append(payload)
                     
                     # Generate text ONLY for embedding (not stored in DB)

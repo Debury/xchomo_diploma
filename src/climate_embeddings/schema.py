@@ -194,9 +194,29 @@ def generate_human_readable_text(metadata: Dict[str, Any], verbosity: str = "med
     standard_name = metadata.get("standard_name")
     unit = metadata.get("unit", "")
     
+    # DYNAMIC: Build variable description ONLY from available metadata
+    # NO HARDCODED MAPPINGS - rely on what's in the data itself
+    var_desc_parts = []
+    
+    # Use long_name if available (from dataset metadata)
     if long_name:
+        var_desc_parts.append(long_name)
+    
+    # Use standard_name if available (CF convention standard names)
+    if standard_name and standard_name != long_name:
+        var_desc_parts.append(standard_name)
+    
+    # Build final variable description - ONLY use what's in metadata
+    if var_desc_parts:
+        var_desc = ", ".join(var_desc_parts)
+        parts.append(f"Climate variable: {var_desc} ({variable})")
+        parts.append(f"Variable code: {variable} | Meaning: {var_desc_parts[0]}")
+    elif long_name:
         parts.append(f"Climate variable: {long_name} ({variable})")
+        parts.append(f"Variable code: {variable} | Meaning: {long_name}")
     else:
+        # If no metadata available, just use variable name
+        # LLM during RAG query will infer meaning from context
         parts.append(f"Climate variable: {variable}")
     
     if standard_name and verbosity in ["medium", "high"]:
