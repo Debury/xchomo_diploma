@@ -271,20 +271,22 @@ async def rag_query(request: RAGRequest) -> RAGResponse:
         else:
             effective_top_k = max(1, min(request.top_k, 15))  # Standard search
         
-        # First search: semantic search
+        # DYNAMIC: Get all variables first to enable smart multi-search
+        all_variables = _get_variable_list(db, force_refresh=False)
+        
+        # First search: semantic search (general)
         results = db.search(
             query_vector=query_vec.tolist(),
             limit=effective_top_k,
             filter_dict=filter_dict if filter_dict else None
         )
         
-        # DYNAMIC: Get all variables and do targeted searches based on first prompt analysis
-        all_variables = _get_variable_list(db, force_refresh=False)
-        if all_variables:
+        # DYNAMIC: Analyze question to identify relevant variable types, then do parallel searches
+        if all_variables and len(all_variables) > 1:
             try:
-                # Get sample metadata to extract available locations and time periods
+                # Get sample metadata to extract variable meanings
                 sample_meta = []
-                for hit in results[:5]:  # Use first 5 results as samples
+                for hit in results[:5]:
                     if hasattr(hit, 'payload'):
                         sample_meta.append(hit.payload)
                     else:
@@ -299,10 +301,9 @@ async def rag_query(request: RAGRequest) -> RAGResponse:
                         if long_name:
                             var_meanings[var] = long_name
                 
-                # Use first prompt to select variables, locations, time periods
+                # Use first prompt to select variables
                 from web_api.prompt_builder import build_data_selection_prompt
                 
-                # Get available locations and time periods from sample metadata
                 available_locations = sample_meta
                 available_time_periods = []
                 for meta in sample_meta:
@@ -338,28 +339,18 @@ async def rag_query(request: RAGRequest) -> RAGResponse:
                 
                 # Parse data selection
                 selected_vars = []
-                selected_locations = []
-                selected_time_periods = []
-                
                 for line in data_selection_response.strip().split('\n'):
                     line = line.strip()
                     if line.startswith('VARIABLES:'):
                         vars_text = line.replace('VARIABLES:', '').strip()
                         if vars_text.upper() != 'NONE':
                             selected_vars = [v.strip() for v in vars_text.split(',') if v.strip() in all_variables]
-                    elif line.startswith('LOCATIONS:'):
-                        locs_text = line.replace('LOCATIONS:', '').strip()
-                        if locs_text.upper() != 'NONE':
-                            selected_locations = [l.strip() for l in locs_text.split(',')]
-                    elif line.startswith('TIME_PERIODS:'):
-                        time_text = line.replace('TIME_PERIODS:', '').strip()
-                        if time_text.upper() != 'NONE':
-                            selected_time_periods = [t.strip() for t in time_text.split(',')]
                 
-                logger.info(f"Data selection: vars={selected_vars}, locations={selected_locations}, time_periods={selected_time_periods}")
+                logger.info(f"Data selection identified variables: {selected_vars}")
                 
-                # Perform additional targeted searches for selected variables
+                # Get existing variables from first search
                 existing_vars = set()
+                existing_ids = set()
                 for hit in results:
                     if hasattr(hit, 'payload'):
                         meta = hit.payload
@@ -368,44 +359,64 @@ async def rag_query(request: RAGRequest) -> RAGResponse:
                     var = meta.get('variable', '')
                     if var:
                         existing_vars.add(var)
+                    # Collect IDs to avoid duplicates
+                    hit_id = getattr(hit, 'id', None) if hasattr(hit, 'id') else (hit.get('id') if isinstance(hit, dict) else None)
+                    if hit_id:
+                        existing_ids.add(hit_id)
                 
+                # Perform parallel targeted searches for selected variables that aren't in results
                 for var in selected_vars:
                     if var not in existing_vars:
                         try:
-                            logger.info(f"Additional search for variable: {var}")
+                            logger.info(f"Performing targeted search for variable: {var}")
                             var_results = db.search(
                                 query_vector=query_vec.tolist(),
-                                limit=10,  # Get more results for missing variables
+                                limit=15,  # Get more results for missing variables
                                 filter_dict={"variable": var}
                             )
-                            # Add to results (avoid duplicates by ID)
-                            existing_ids = set()
-                            for hit in results:
-                                if hasattr(hit, 'id'):
-                                    existing_ids.add(hit.id)
-                                elif isinstance(hit, dict) and 'id' in hit:
-                                    existing_ids.add(hit['id'])
                             
+                            # Add to results (avoid duplicates by ID)
                             added_count = 0
                             for hit in var_results:
                                 hit_id = getattr(hit, 'id', None) if hasattr(hit, 'id') else (hit.get('id') if isinstance(hit, dict) else None)
-                                if hit_id not in existing_ids:
+                                if hit_id and hit_id not in existing_ids:
                                     results.append(hit)
                                     existing_ids.add(hit_id)
                                     added_count += 1
+                                elif not hit_id:  # If no ID, check by content
+                                    # Compare payload to avoid exact duplicates
+                                    if hasattr(hit, 'payload'):
+                                        hit_meta = hit.payload
+                                    else:
+                                        hit_meta = hit.get('payload', {})
+                                    hit_var = hit_meta.get('variable', '')
+                                    hit_time = hit_meta.get('time_start', '')
+                                    # Check if we already have this variable+time combination
+                                    is_duplicate = False
+                                    for existing_hit in results:
+                                        if hasattr(existing_hit, 'payload'):
+                                            existing_meta = existing_hit.payload
+                                        else:
+                                            existing_meta = existing_hit.get('payload', {})
+                                        if existing_meta.get('variable') == hit_var and existing_meta.get('time_start') == hit_time:
+                                            is_duplicate = True
+                                            break
+                                    if not is_duplicate:
+                                        results.append(hit)
+                                        added_count += 1
                             
                             if added_count > 0:
-                                logger.info(f"Added {added_count} results for variable {var} to context")
+                                logger.info(f"✓ Added {added_count} results for variable {var} to context")
                             else:
-                                logger.warning(f"No new results found for variable {var}")
+                                logger.warning(f"✗ No results found for variable {var} in database")
                         except Exception as e:
-                            logger.warning(f"Additional search for {var} failed: {e}")
+                            logger.warning(f"Targeted search for {var} failed: {e}")
                 
             except Exception as e:
                 logger.warning(f"Data selection prompt failed: {e}, continuing with initial search results")
         
-        # Re-sort results by score
-        results = sorted(results, key=lambda x: getattr(x, 'score', 0.0) if hasattr(x, 'score') else (x.get('score', 0.0) if isinstance(x, dict) else 0.0), reverse=True)[:effective_top_k * 2]  # Allow more results after additional searches
+        # Re-sort results by score and limit
+        results = sorted(results, key=lambda x: getattr(x, 'score', 0.0) if hasattr(x, 'score') else (x.get('score', 0.0) if isinstance(x, dict) else 0.0), reverse=True)[:effective_top_k * 3]  # Allow more results after targeted searches
         
         search_time = (time.time() - search_start) * 1000  # Convert to ms
         logger.info(f"Total search (embed+qdrant+targeted) took {search_time:.0f}ms, found {len(results)} results")

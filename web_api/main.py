@@ -1252,6 +1252,81 @@ async def rag_chat_legacy(request: RAGChatRequest):
         raise HTTPException(500, str(e))
 
 
+@app.get("/debug/variable/{variable_name}")
+async def debug_variable(variable_name: str):
+    """Debug endpoint to check if a variable exists in database and get sample data"""
+    try:
+        from src.utils.config_loader import ConfigLoader
+        from src.embeddings.database import VectorDatabase
+        from src.climate_embeddings.embeddings.text_models import TextEmbedder
+        
+        config_loader = ConfigLoader("config/pipeline_config.yaml")
+        config = config_loader.load()
+        db = VectorDatabase(config=config)
+        embedder = TextEmbedder()
+        
+        # Search for the variable with filter
+        query_text = f"{variable_name} climate data"
+        query_vec = embedder.embed_queries([query_text])[0]
+        
+        results_with_filter = db.search(
+            query_vector=query_vec.tolist(),
+            limit=10,
+            filter_dict={"variable": variable_name}
+        )
+        
+        # Also search without filter to see what variables are in top results
+        results_without_filter = db.search(
+            query_vector=query_vec.tolist(),
+            limit=20,
+            filter_dict=None
+        )
+        
+        # Extract variables from all results
+        vars_in_top_20 = set()
+        for hit in results_without_filter:
+            if hasattr(hit, 'payload'):
+                meta = hit.payload
+            else:
+                meta = hit.get('payload', {})
+            var = meta.get('variable', '')
+            if var:
+                vars_in_top_20.add(var)
+        
+        # Format filtered results
+        filtered_results = []
+        for hit in results_with_filter:
+            if hasattr(hit, 'payload'):
+                meta = hit.payload
+                score = hit.score
+            else:
+                meta = hit.get('payload', {})
+                score = hit.get('score', 0.0)
+            filtered_results.append({
+                "variable": meta.get('variable'),
+                "source_id": meta.get('source_id'),
+                "time_start": meta.get('time_start'),
+                "time_end": meta.get('time_end'),
+                "score": float(score),
+                "stats_mean": meta.get('stats_mean'),
+            })
+        
+        return {
+            "variable": variable_name,
+            "found_with_filter": len(results_with_filter),
+            "results": filtered_results,
+            "all_variables_in_top_20": sorted(list(vars_in_top_20)),
+            "variable_in_top_20": variable_name in vars_in_top_20,
+            "message": f"Variable {variable_name} {'found' if len(results_with_filter) > 0 else 'NOT found'} in database with filter"
+        }
+    except Exception as e:
+        import traceback
+        return {
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        }
+
+
         
 if __name__ == "__main__":
     import uvicorn
