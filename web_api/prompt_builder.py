@@ -325,6 +325,19 @@ You should mention this if asked about a variable that's in this list but not in
         if seen_meanings:
             variables_info += f"\nVariable meanings (from metadata): {', '.join(seen_meanings)}"
     
+    # CRITICAL: Always start with a concise summary before detailed data
+    summary_instruction = """
+IMPORTANT: Your response MUST follow this structure:
+1. **SUMMARY** (2-3 sentences): Provide a concise, direct answer to the question first
+2. **DETAILED DATA**: Then provide detailed statistics, time periods, and sources
+
+Example structure:
+**Summary:** [Direct answer in 2-3 sentences]
+
+**Detailed Analysis:**
+[Detailed data with statistics]
+"""
+    
     # Build prompt based on question type
     if question_type == "variable_list":
         if all_variables:
@@ -395,6 +408,8 @@ ANSWER:"""
         instructions_text = "\n".join(dynamic_instructions)
         
         prompt = f"""You are a climate data assistant. Compare and analyze the data accurately.
+
+{summary_instruction}
 
 {variables_info}{sources_info}{time_periods_info}{stations_info}
 
@@ -490,6 +505,8 @@ ANSWER:"""
         
         prompt = f"""You are a climate data assistant. Provide statistical analysis based on the data.
 
+{summary_instruction}
+
 {variables_info}{sources_info}{time_periods_info}{stations_info}
 
 CONTEXT (retrieved data):
@@ -523,6 +540,8 @@ ANSWER:"""
         instructions_text = "\n".join(dynamic_instructions)
         
         prompt = f"""You are a climate data assistant. Answer questions about temporal patterns in the data.
+
+{summary_instruction}
 
 {variables_info}{sources_info}{time_periods_info}{stations_info}
 
@@ -579,6 +598,8 @@ ANSWER:"""
         instructions_text = "\n".join(dynamic_instructions)
         
         prompt = f"""You are a climate data assistant. Answer the question accurately using ONLY the provided data.
+
+{summary_instruction}
 
 {variables_info}{sources_info}{time_periods_info}{stations_info}
 

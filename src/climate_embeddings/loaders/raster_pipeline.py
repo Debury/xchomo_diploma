@@ -375,31 +375,80 @@ def _load_csv(path: Path, **kwargs) -> Iterator[RasterChunk]:
                                     meta["time_start"] = str(time_vals.iloc[0])
                                     meta["time_end"] = str(time_vals.iloc[-1])
                             
-                            # Store other metadata
+                            # Store other metadata and detect spatial info
                             for meta_col in non_numeric_cols:
                                 if meta_col == time_col or meta_col == station_col:
                                     continue
                                 meta_values = df_filtered[meta_col].dropna().unique()
                                 if len(meta_values) == 1:
                                     meta[str(meta_col)] = str(meta_values[0])
+                                    
+                                    # DYNAMIC: Check if this metadata column is latitude/longitude by name
+                                    meta_col_lower = str(meta_col).lower()
+                                    if 'lat' in meta_col_lower and 'lon' not in meta_col_lower:
+                                        try:
+                                            lat_val = float(meta_values[0])
+                                            if -90 <= lat_val <= 90:
+                                                meta["lat_min"] = lat_val
+                                                meta["lat_max"] = lat_val
+                                        except:
+                                            pass
+                                    elif 'lon' in meta_col_lower:
+                                        try:
+                                            lon_val = float(meta_values[0])
+                                            if -180 <= lon_val <= 180:
+                                                meta["lon_min"] = lon_val
+                                                meta["lon_max"] = lon_val
+                                        except:
+                                            pass
                             
-                            # Extract spatial info
+                            # Also check numeric columns for spatial info (fallback)
                             for col in numeric_cols:
                                 if col == var_col:
                                     continue
-                                try:
-                                    col_values = pd.to_numeric(df_filtered[col], errors='coerce').dropna()
-                                    if len(col_values) > 0:
-                                        min_val = float(col_values.min())
-                                        max_val = float(col_values.max())
-                                        if -90 <= min_val <= 90 and -90 <= max_val <= 90:
-                                            meta["lat_min"] = min_val
-                                            meta["lat_max"] = max_val
-                                        elif -180 <= min_val <= 180 and -180 <= max_val <= 180:
-                                            meta["lon_min"] = min_val
-                                            meta["lon_max"] = max_val
-                                except:
-                                    pass
+                                col_lower = str(col).lower()
+                                # Check by column name first (more reliable)
+                                if 'lat' in col_lower and 'lon' not in col_lower:
+                                    try:
+                                        col_values = pd.to_numeric(df_filtered[col], errors='coerce').dropna()
+                                        if len(col_values) > 0:
+                                            min_val = float(col_values.min())
+                                            max_val = float(col_values.max())
+                                            if -90 <= min_val <= 90 and -90 <= max_val <= 90:
+                                                meta["lat_min"] = min_val
+                                                meta["lat_max"] = max_val
+                                    except:
+                                        pass
+                                elif 'lon' in col_lower:
+                                    try:
+                                        col_values = pd.to_numeric(df_filtered[col], errors='coerce').dropna()
+                                        if len(col_values) > 0:
+                                            min_val = float(col_values.min())
+                                            max_val = float(col_values.max())
+                                            if -180 <= min_val <= 180 and -180 <= max_val <= 180:
+                                                meta["lon_min"] = min_val
+                                                meta["lon_max"] = max_val
+                                    except:
+                                        pass
+                                else:
+                                    # For other numeric columns, check by value range (less reliable)
+                                    try:
+                                        col_values = pd.to_numeric(df_filtered[col], errors='coerce').dropna()
+                                        if len(col_values) > 0:
+                                            min_val = float(col_values.min())
+                                            max_val = float(col_values.max())
+                                            # Only if not already set and values are in valid ranges
+                                            if "lat_min" not in meta and -90 <= min_val <= 90 and -90 <= max_val <= 90:
+                                                # Check if values are reasonable for latitude (not just any number in range)
+                                                if abs(max_val - min_val) < 1.0:  # Small range suggests coordinates
+                                                    meta["lat_min"] = min_val
+                                                    meta["lat_max"] = max_val
+                                            elif "lon_min" not in meta and -180 <= min_val <= 180 and -180 <= max_val <= 180:
+                                                if abs(max_val - min_val) < 1.0:  # Small range suggests coordinates
+                                                    meta["lon_min"] = min_val
+                                                    meta["lon_max"] = max_val
+                                    except:
+                                        pass
                             
                             meta["row_count"] = len(df_filtered)
                             
