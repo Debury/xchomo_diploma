@@ -307,97 +307,253 @@ def _load_csv(path: Path, **kwargs) -> Iterator[RasterChunk]:
             logger.warning(f"No numeric columns found in CSV: {path.name}")
             return
         
-        # Read full CSV in chunks
-        chunk_iter = pd.read_csv(
-            path, 
-            delimiter=delimiter,
-            chunksize=chunk_size,
-            low_memory=False,
-            iterator=True
-        )
+        # Detect if this is time-series data (has a time/date column)
+        has_time_column = False
+        time_col = None
+        for col in non_numeric_cols:
+            try:
+                # Try to parse first value as date
+                test_val = sample_df[col].dropna().iloc[0] if len(sample_df[col].dropna()) > 0 else None
+                if test_val:
+                    pd.to_datetime(str(test_val))
+                    has_time_column = True
+                    time_col = col
+                    break
+            except:
+                pass
         
-        for chunk_idx, df_chunk in enumerate(chunk_iter):
-            # Process each numeric column as a separate variable
-            for var_col in numeric_cols:
-                # Extract numeric values, handling missing data
-                values = pd.to_numeric(df_chunk[var_col], errors='coerce').values
-                values = values[~np.isnan(values)]  # Remove NaN
-                
-                if len(values) == 0:
+        # BEST PRACTICE: For time-series CSV, create ONE embedding per variable (or variable + station combination)
+        # This is more efficient and provides better context for RAG queries
+        if has_time_column:
+            logger.info(f"Detected time-series data, using variable-based chunking (one embedding per variable)")
+            
+            # Read entire CSV
+            df_full = pd.read_csv(path, delimiter=delimiter, low_memory=False)
+            
+            # Detect if there are station/location columns (non-numeric metadata that might identify locations)
+            station_cols = []
+            for meta_col in non_numeric_cols:
+                if meta_col == time_col:
                     continue
-                
-                # Convert to 2D array for consistency with raster pipeline
-                # Reshape to (1, n) to match expected format
-                data = values.reshape(1, -1).astype('float32')
-                
-                # Extract metadata - COMPLETELY DYNAMIC: Store ALL non-numeric columns as metadata
-                # No assumptions about column names - works for ANY dataset structure
-                meta = {
-                    "variable": str(var_col),
-                    "source": str(path.name),
-                    "format": "csv",
-                }
-                
-                # Store ALL non-numeric columns as metadata (no hardcoded names)
-                for meta_col in non_numeric_cols:
-                    if meta_col in df_chunk.columns:
-                        # Get unique values
-                        meta_values = df_chunk[meta_col].dropna().unique()
-                        if len(meta_values) > 0:
-                            val = meta_values[0]
-                            # Try to detect if it looks like a date/time (heuristic, not hardcoded)
-                            val_str = str(val)
-                            try:
-                                # Try parsing as date
-                                from datetime import datetime
-                                pd.to_datetime(val_str)
-                                # If successful, it's likely a time column
-                                meta["time_start"] = val_str
-                                time_vals = df_chunk[meta_col].dropna()
-                                if len(time_vals) > 1:
+                # If this column has multiple unique values, it might be stations/locations
+                unique_vals = df_full[meta_col].dropna().unique()
+                if 1 < len(unique_vals) <= 100:  # Reasonable number of stations
+                    station_cols.append(meta_col)
+            
+            # Process each variable
+            for var_col in numeric_cols:
+                # If we have station columns, create one embedding per variable + station combination
+                if station_cols:
+                    for station_col in station_cols:
+                        stations = df_full[station_col].dropna().unique()
+                        for station in stations:
+                            # Filter data for this variable + station
+                            df_filtered = df_full[df_full[station_col] == station].copy()
+                            
+                            # Extract values for this variable + station
+                            values = pd.to_numeric(df_filtered[var_col], errors='coerce').values
+                            values = values[~np.isnan(values)]
+                            
+                            if len(values) == 0:
+                                continue
+                            
+                            # Convert to 2D array
+                            data = values.reshape(1, -1).astype('float32')
+                            
+                            # Extract metadata
+                            meta = {
+                                "variable": str(var_col),
+                                "source": str(path.name),
+                                "format": "csv",
+                                str(station_col): str(station),
+                            }
+                            
+                            # Extract time range
+                            if time_col and time_col in df_filtered.columns:
+                                time_vals = df_filtered[time_col].dropna()
+                                if len(time_vals) > 0:
+                                    meta["time_start"] = str(time_vals.iloc[0])
                                     meta["time_end"] = str(time_vals.iloc[-1])
-                            except:
-                                # Not a date - store with original column name
+                            
+                            # Store other metadata
+                            for meta_col in non_numeric_cols:
+                                if meta_col == time_col or meta_col == station_col:
+                                    continue
+                                meta_values = df_filtered[meta_col].dropna().unique()
                                 if len(meta_values) == 1:
-                                    meta[str(meta_col)] = val_str
-                                else:
-                                    meta[str(meta_col)] = val_str
-                                    meta[f"{meta_col}_count"] = len(meta_values)
-                                    if len(meta_values) <= 10:
-                                        meta[f"{meta_col}_all"] = [str(v) for v in meta_values]
-                
-                # For numeric columns that aren't the variable itself, check if they might be spatial
-                # Detect by value range, not by name
-                for col in numeric_cols:
-                    if col == var_col:
+                                    meta[str(meta_col)] = str(meta_values[0])
+                            
+                            # Extract spatial info
+                            for col in numeric_cols:
+                                if col == var_col:
+                                    continue
+                                try:
+                                    col_values = pd.to_numeric(df_filtered[col], errors='coerce').dropna()
+                                    if len(col_values) > 0:
+                                        min_val = float(col_values.min())
+                                        max_val = float(col_values.max())
+                                        if -90 <= min_val <= 90 and -90 <= max_val <= 90:
+                                            meta["lat_min"] = min_val
+                                            meta["lat_max"] = max_val
+                                        elif -180 <= min_val <= 180 and -180 <= max_val <= 180:
+                                            meta["lon_min"] = min_val
+                                            meta["lon_max"] = max_val
+                                except:
+                                    pass
+                            
+                            meta["row_count"] = len(df_filtered)
+                            
+                            yield RasterChunk(data=data, metadata=meta)
+                else:
+                    # No station columns - create one embedding per variable for entire dataset
+                    values = pd.to_numeric(df_full[var_col], errors='coerce').values
+                    values = values[~np.isnan(values)]
+                    
+                    if len(values) == 0:
                         continue
-                    try:
-                        col_values = pd.to_numeric(df_chunk[col], errors='coerce').dropna()
-                        if len(col_values) > 0:
-                            min_val = float(col_values.min())
-                            max_val = float(col_values.max())
-                            # Latitude range: -90 to 90
-                            if -90 <= min_val <= 90 and -90 <= max_val <= 90:
-                                meta["lat_min"] = min_val
-                                meta["lat_max"] = max_val
-                            # Longitude range: -180 to 180
-                            elif -180 <= min_val <= 180 and -180 <= max_val <= 180:
-                                meta["lon_min"] = min_val
-                                meta["lon_max"] = max_val
-                            # Store any other numeric metadata
-                            else:
-                                meta[f"{col}_min"] = min_val
-                                meta[f"{col}_max"] = max_val
-                                if len(col_values) == 1:
-                                    meta[col] = min_val
-                    except:
-                        pass
-                
-                # Add chunk index
-                meta["chunk_index"] = chunk_idx
-                meta["row_count"] = len(df_chunk)
-                
-                yield RasterChunk(data=data, metadata=meta)
+                    
+                    # Convert to 2D array
+                    data = values.reshape(1, -1).astype('float32')
+                    
+                    # Extract metadata
+                    meta = {
+                        "variable": str(var_col),
+                        "source": str(path.name),
+                        "format": "csv",
+                    }
+                    
+                    # Extract time range for entire dataset
+                    if time_col and time_col in df_full.columns:
+                        time_vals = df_full[time_col].dropna()
+                        if len(time_vals) > 0:
+                            meta["time_start"] = str(time_vals.iloc[0])
+                            meta["time_end"] = str(time_vals.iloc[-1])
+                    
+                    # Store all metadata
+                    for meta_col in non_numeric_cols:
+                        if meta_col == time_col:
+                            continue
+                        meta_values = df_full[meta_col].dropna().unique()
+                        if len(meta_values) == 1:
+                            meta[str(meta_col)] = str(meta_values[0])
+                        elif len(meta_values) <= 10:
+                            meta[f"{meta_col}_all"] = [str(v) for v in meta_values]
+                            meta[f"{meta_col}_count"] = len(meta_values)
+                    
+                    # Extract spatial info
+                    for col in numeric_cols:
+                        if col == var_col:
+                            continue
+                        try:
+                            col_values = pd.to_numeric(df_full[col], errors='coerce').dropna()
+                            if len(col_values) > 0:
+                                min_val = float(col_values.min())
+                                max_val = float(col_values.max())
+                                if -90 <= min_val <= 90 and -90 <= max_val <= 90:
+                                    meta["lat_min"] = min_val
+                                    meta["lat_max"] = max_val
+                                elif -180 <= min_val <= 180 and -180 <= max_val <= 180:
+                                    meta["lon_min"] = min_val
+                                    meta["lon_max"] = max_val
+                        except:
+                            pass
+                    
+                    meta["row_count"] = len(df_full)
+                    
+                    yield RasterChunk(data=data, metadata=meta)
+        else:
+            # Non-time-series: use original chunking strategy (larger chunks)
+            logger.info("Non-time-series data, using variable-based chunking")
+            chunk_iter = pd.read_csv(
+                path, 
+                delimiter=delimiter,
+                chunksize=chunk_size,
+                low_memory=False,
+                iterator=True
+            )
+            
+            for chunk_idx, df_chunk in enumerate(chunk_iter):
+                # Process each numeric column as a separate variable
+                for var_col in numeric_cols:
+                    # Extract numeric values, handling missing data
+                    values = pd.to_numeric(df_chunk[var_col], errors='coerce').values
+                    values = values[~np.isnan(values)]  # Remove NaN
+                    
+                    if len(values) == 0:
+                        continue
+                    
+                    # Convert to 2D array for consistency with raster pipeline
+                    # Reshape to (1, n) to match expected format
+                    data = values.reshape(1, -1).astype('float32')
+                    
+                    # Extract metadata - COMPLETELY DYNAMIC: Store ALL non-numeric columns as metadata
+                    # No assumptions about column names - works for ANY dataset structure
+                    meta = {
+                        "variable": str(var_col),
+                        "source": str(path.name),
+                        "format": "csv",
+                    }
+                    
+                    # Store ALL non-numeric columns as metadata (no hardcoded names)
+                    for meta_col in non_numeric_cols:
+                        if meta_col in df_chunk.columns:
+                            # Get unique values
+                            meta_values = df_chunk[meta_col].dropna().unique()
+                            if len(meta_values) > 0:
+                                val = meta_values[0]
+                                # Try to detect if it looks like a date/time (heuristic, not hardcoded)
+                                val_str = str(val)
+                                try:
+                                    # Try parsing as date
+                                    from datetime import datetime
+                                    pd.to_datetime(val_str)
+                                    # If successful, it's likely a time column
+                                    meta["time_start"] = val_str
+                                    time_vals = df_chunk[meta_col].dropna()
+                                    if len(time_vals) > 1:
+                                        meta["time_end"] = str(time_vals.iloc[-1])
+                                except:
+                                    # Not a date - store with original column name
+                                    if len(meta_values) == 1:
+                                        meta[str(meta_col)] = val_str
+                                    else:
+                                        meta[str(meta_col)] = val_str
+                                        meta[f"{meta_col}_count"] = len(meta_values)
+                                        if len(meta_values) <= 10:
+                                            meta[f"{meta_col}_all"] = [str(v) for v in meta_values]
+                    
+                    # For numeric columns that aren't the variable itself, check if they might be spatial
+                    # Detect by value range, not by name
+                    for col in numeric_cols:
+                        if col == var_col:
+                            continue
+                        try:
+                            col_values = pd.to_numeric(df_chunk[col], errors='coerce').dropna()
+                            if len(col_values) > 0:
+                                min_val = float(col_values.min())
+                                max_val = float(col_values.max())
+                                # Latitude range: -90 to 90
+                                if -90 <= min_val <= 90 and -90 <= max_val <= 90:
+                                    meta["lat_min"] = min_val
+                                    meta["lat_max"] = max_val
+                                # Longitude range: -180 to 180
+                                elif -180 <= min_val <= 180 and -180 <= max_val <= 180:
+                                    meta["lon_min"] = min_val
+                                    meta["lon_max"] = max_val
+                                # Store any other numeric metadata
+                                else:
+                                    meta[f"{col}_min"] = min_val
+                                    meta[f"{col}_max"] = max_val
+                                    if len(col_values) == 1:
+                                        meta[col] = min_val
+                        except:
+                            pass
+                    
+                    # Add chunk index
+                    meta["chunk_index"] = chunk_idx
+                    meta["row_count"] = len(df_chunk)
+                    
+                    yield RasterChunk(data=data, metadata=meta)
         
         logger.info(f"Successfully processed CSV: {path.name}")
         

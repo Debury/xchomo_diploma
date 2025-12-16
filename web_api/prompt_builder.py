@@ -54,12 +54,23 @@ def build_rag_prompt(
         elif station_id:
             seen_stations.add(station_id)
         
-        # Build compact summary
+        # Build PRECISE summary with all available statistics (for expert users)
         stats_parts = []
+        unit = meta.get('unit', '')
+        unit_str = f" {unit}" if unit else ""
+        
         if meta.get('stats_mean') is not None:
-            stats_parts.append(f"mean={meta['stats_mean']:.2f}")
+            stats_parts.append(f"mean={meta['stats_mean']:.2f}{unit_str}")
+        if meta.get('stats_median') is not None:
+            stats_parts.append(f"median={meta['stats_median']:.2f}{unit_str}")
+        if meta.get('stats_std') is not None:
+            stats_parts.append(f"std={meta['stats_std']:.2f}{unit_str}")
         if meta.get('stats_min') is not None and meta.get('stats_max') is not None:
-            stats_parts.append(f"range=[{meta['stats_min']:.2f}, {meta['stats_max']:.2f}]")
+            stats_parts.append(f"range=[{meta['stats_min']:.2f}, {meta['stats_max']:.2f}]{unit_str}")
+        if meta.get('stats_p10') is not None:
+            stats_parts.append(f"p10={meta['stats_p10']:.2f}{unit_str}")
+        if meta.get('stats_p90') is not None:
+            stats_parts.append(f"p90={meta['stats_p90']:.2f}{unit_str}")
         
         # Extract time range (both start and end if available)
         time_start = meta.get('time_start', '')
@@ -78,17 +89,23 @@ def build_rag_prompt(
         else:
             time_str = ""
         
-        # Build summary with station info if available
-        summary = f"[{i}] {var} from {source}"
+        # Build PRECISE summary with station info if available
+        summary = f"[{i}] Variable: {var} | Source: {source}"
         if station_name:
-            summary += f" (station: {station_name})"
+            summary += f" | Station: {station_name}"
         elif station_id:
-            summary += f" (station: {station_id})"
+            summary += f" | Station ID: {station_id}"
+        
+        # Add row count if available (shows data volume)
+        row_count = meta.get('row_count')
+        if row_count:
+            summary += f" | Data points: {row_count}"
+        
         if stats_parts:
-            summary += f" ({', '.join(stats_parts)})"
+            summary += f" | Stats: {', '.join(stats_parts)}"
         if time_str:
-            summary += f" @ {time_str}"
-        summary += f" [score: {score:.3f}]"
+            summary += f" | Time: {time_str}"
+        summary += f" | Relevance: {score:.3f}"
         
         context_lines.append(summary)
     
@@ -224,9 +241,11 @@ ANSWER:"""
     elif question_type == "statistical":
         # Build dynamic instructions based on available metadata
         dynamic_instructions = []
-        dynamic_instructions.append("- Use exact statistical values from the context (mean, min, max, range)")
-        dynamic_instructions.append("- Reference the variable and source for each statistic")
-        dynamic_instructions.append("- Be precise with numbers and units")
+        dynamic_instructions.append("- Use EXACT statistical values from the context (mean, median, std, min, max, percentiles)")
+        dynamic_instructions.append("- Reference the variable, source, and station/location for each statistic")
+        dynamic_instructions.append("- Be PRECISE with numbers and units - use exact values from context")
+        dynamic_instructions.append("- Include data point counts (row_count) when available to show data volume")
+        dynamic_instructions.append("- For time periods, mention the exact date range and number of days")
         
         if time_periods:
             dynamic_instructions.append("- If asked about a specific time period (e.g., 'July', 'August', 'summer'), filter data by time_start/time_end from the context")

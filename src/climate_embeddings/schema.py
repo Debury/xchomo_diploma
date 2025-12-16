@@ -171,6 +171,7 @@ class ClimateChunkMetadata:
 def generate_human_readable_text(metadata: Dict[str, Any], verbosity: str = "medium") -> str:
     """
     Generate human-readable text description from structured metadata.
+    OPTIMIZED FOR PRECISION: Provides detailed, accurate information for expert users.
     
     This is used for:
     1. Embedding generation (text embedding model needs text input)
@@ -183,7 +184,7 @@ def generate_human_readable_text(metadata: Dict[str, Any], verbosity: str = "med
         verbosity: "low", "medium", or "high" - controls detail level
     
     Returns:
-        Human-readable text description optimized for RAG
+        Human-readable text description optimized for RAG with precise data for experts
     """
     parts = []
     
@@ -208,31 +209,57 @@ def generate_human_readable_text(metadata: Dict[str, Any], verbosity: str = "med
     dataset = metadata.get("dataset_name") or metadata.get("source_id", "unknown")
     parts.append(f"Dataset: {dataset}")
     
-    # Temporal
+    # Station/Location information (CRITICAL for CSV data)
+    station_name = metadata.get("station_name")
+    station_id = metadata.get("station_id")
+    if station_name:
+        parts.append(f"Station: {station_name}")
+    elif station_id:
+        parts.append(f"Station ID: {station_id}")
+    
+    # Temporal - PRECISE formatting for experts
     time_start = metadata.get("time_start")
     if time_start:
-        # Try to format nicely
         try:
             from datetime import datetime
-            dt = datetime.fromisoformat(time_start.replace('Z', '+00:00'))
-            time_str = dt.strftime("%B %Y") if verbosity == "low" else time_start
-        except:
-            time_str = time_start
-        parts.append(f"Time: {time_str}")
-        
-        time_end = metadata.get("time_end")
-        if time_end and time_end != time_start:
-            try:
-                from datetime import datetime
-                dt_end = datetime.fromisoformat(time_end.replace('Z', '+00:00'))
+            dt_start = datetime.fromisoformat(str(time_start).replace('Z', '+00:00'))
+            
+            time_end = metadata.get("time_end")
+            if time_end and time_end != time_start:
+                dt_end = datetime.fromisoformat(str(time_end).replace('Z', '+00:00'))
+                # Calculate number of days
+                days = (dt_end - dt_start).days + 1
+                
                 if verbosity == "low":
-                    end_str = dt_end.strftime("%B %Y")
-                    if end_str != time_str:
-                        parts.append(f" to {end_str}")
+                    time_str = f"{dt_start.strftime('%B %Y')} to {dt_end.strftime('%B %Y')}"
                 else:
-                    parts.append(f" to {time_end}")
-            except:
-                parts.append(f" to {time_end}")
+                    time_str = f"{time_start} to {time_end}"
+                
+                parts.append(f"Time period: {time_str} ({days} days)")
+                
+                # Add temporal frequency if available
+                freq = metadata.get("temporal_frequency")
+                if freq:
+                    parts.append(f"Frequency: {freq}")
+            else:
+                if verbosity == "low":
+                    time_str = dt_start.strftime("%B %Y")
+                else:
+                    time_str = time_start
+                parts.append(f"Time: {time_str}")
+        except:
+            # Fallback if parsing fails
+            time_str = str(time_start)
+            time_end = metadata.get("time_end")
+            if time_end and time_end != time_start:
+                parts.append(f"Time period: {time_str} to {time_end}")
+            else:
+                parts.append(f"Time: {time_str}")
+    
+    # Row count (for CSV data - shows data volume)
+    row_count = metadata.get("row_count")
+    if row_count and verbosity in ["medium", "high"]:
+        parts.append(f"Data points: {row_count}")
     
     # Spatial (clearly marked as coordinates, not temperature!)
     lat_min = metadata.get("latitude_min")
@@ -243,43 +270,57 @@ def generate_human_readable_text(metadata: Dict[str, Any], verbosity: str = "med
     spatial_parts = []
     if lat_min is not None and lat_max is not None:
         if lat_min == lat_max:
-            spatial_parts.append(f"Latitude: {lat_min:.2f}°N")
+            spatial_parts.append(f"Latitude: {lat_min:.4f}°N")
         else:
-            spatial_parts.append(f"Latitude: {lat_min:.2f}° to {lat_max:.2f}°N")
+            spatial_parts.append(f"Latitude: {lat_min:.4f}° to {lat_max:.4f}°N")
     
     if lon_min is not None and lon_max is not None:
         if lon_min == lon_max:
-            spatial_parts.append(f"Longitude: {lon_min:.2f}°E")
+            spatial_parts.append(f"Longitude: {lon_min:.4f}°E")
         else:
-            spatial_parts.append(f"Longitude: {lon_min:.2f}° to {lon_max:.2f}°E")
+            spatial_parts.append(f"Longitude: {lon_min:.4f}° to {lon_max:.4f}°E")
     
     if spatial_parts:
         parts.append(f"Geographic coordinates: {' '.join(spatial_parts)}")
     
-    # Statistics (critical for RAG)
+    # Statistics (CRITICAL for RAG - PRECISE formatting for experts)
     stats_parts = []
+    unit_str = f" {unit}" if unit else ""
+    
     if "stats_mean" in metadata:
-        unit_str = f" {unit}" if unit else ""
-        stats_parts.append(f"Mean: {metadata['stats_mean']:.2f}{unit_str}")
+        mean_val = metadata['stats_mean']
+        # Use appropriate precision based on unit
+        if unit and unit.lower() in ['c', '°c', 'f', '°f', 'k']:
+            stats_parts.append(f"Mean: {mean_val:.2f}{unit_str}")
+        else:
+            stats_parts.append(f"Mean: {mean_val:.2f}{unit_str}")
     
     if verbosity in ["medium", "high"] and "stats_std" in metadata:
-        unit_str = f" {unit}" if unit else ""
-        stats_parts.append(f"Standard deviation: {metadata['stats_std']:.2f}{unit_str}")
+        std_val = metadata['stats_std']
+        stats_parts.append(f"Std dev: {std_val:.2f}{unit_str}")
     
     if "stats_min" in metadata and "stats_max" in metadata:
-        unit_str = f" {unit}" if unit else ""
-        stats_parts.append(f"Value range: {metadata['stats_min']:.2f} to {metadata['stats_max']:.2f}{unit_str}")
+        min_val = metadata['stats_min']
+        max_val = metadata['stats_max']
+        stats_parts.append(f"Range: [{min_val:.2f}, {max_val:.2f}]{unit_str}")
+    
+    if verbosity in ["medium", "high"] and "stats_median" in metadata:
+        median_val = metadata['stats_median']
+        stats_parts.append(f"Median: {median_val:.2f}{unit_str}")
     
     if verbosity == "high":
-        if "stats_median" in metadata:
-            unit_str = f" {unit}" if unit else ""
-            stats_parts.append(f"Median: {metadata['stats_median']:.2f}{unit_str}")
+        if "stats_p10" in metadata:
+            p10_val = metadata['stats_p10']
+            stats_parts.append(f"P10: {p10_val:.2f}{unit_str}")
         if "stats_p90" in metadata:
-            unit_str = f" {unit}" if unit else ""
-            stats_parts.append(f"90th percentile: {metadata['stats_p90']:.2f}{unit_str}")
+            p90_val = metadata['stats_p90']
+            stats_parts.append(f"P90: {p90_val:.2f}{unit_str}")
+        if "stats_range" in metadata:
+            range_val = metadata['stats_range']
+            stats_parts.append(f"Range width: {range_val:.2f}{unit_str}")
     
     if stats_parts:
-        parts.append(" | ".join(stats_parts))
+        parts.append("Statistics: " + " | ".join(stats_parts))
     
     # Grid resolution (if available)
     if verbosity in ["medium", "high"] and metadata.get("resolution_deg"):

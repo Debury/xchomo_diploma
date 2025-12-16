@@ -8,8 +8,10 @@
       <button 
         @click="refreshStats"
         :disabled="loading"
-        class="px-4 py-2 bg-dark-hover text-gray-300 rounded-lg hover:bg-gray-600 transition-colors"
+        class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
       >
+        <span v-if="loading">⏳</span>
+        <span v-else>🔄</span>
         {{ loading ? 'Loading...' : 'Refresh' }}
       </button>
     </div>
@@ -142,20 +144,28 @@ const maxCount = computed(() => {
 async function refreshStats() {
   loading.value = true
   try {
-    const resp = await fetch('/rag/info')
-    stats.value = await resp.json()
+    // Force refresh by adding timestamp to bypass cache
+    const resp = await fetch(`/rag/info?t=${Date.now()}`)
+    if (!resp.ok) {
+      throw new Error(`HTTP ${resp.status}`)
+    }
+    const data = await resp.json()
+    stats.value = data
     
     // Generate sample data
-    samples.value = (stats.value.variables || []).slice(0, 5).map((v, i) => ({
+    samples.value = (data.variables || []).slice(0, 5).map((v, i) => ({
       id: i,
       variable: v,
-      source: stats.value.sources?.[0] || 'Unknown',
+      source: data.sources?.[0] || 'Unknown',
       temporal: '2020-2100',
       spatial: '0.5° grid',
       text: `Climate data for ${v} showing trends and patterns across the study region...`
     }))
+    
+    console.log('✅ Stats refreshed:', data)
   } catch (e) {
     console.error('Failed to load stats:', e)
+    alert(`❌ Error refreshing stats: ${e.message}`)
   } finally {
     loading.value = false
   }
