@@ -363,35 +363,47 @@ async def rag_query(request: RAGRequest) -> RAGResponse:
             try:
                 llm_start = time.time()
                 
-                # For variable list questions, include ALL variables in context
-                if _is_variable_list_question(question_text):
-                    all_variables = _get_variable_list(db, force_refresh=False)
+                # CRITICAL: Always get ALL variables from database for context
+                # This ensures LLM knows about ALL available variables, not just those in search results
+                all_variables = _get_variable_list(db, force_refresh=False)
+                if not all_variables:
                     try:
                         collection_info = await get_collection_info()
-                        sources = collection_info.get("sources", [])
-                        sources_text = f" from {len(sources)} source(s): {', '.join(sources)}" if sources else ""
+                        all_variables = collection_info.get("variables", [])
                     except:
-                        sources_text = ""
-                    
-                    # Build comprehensive prompt with ALL variables
-                    prompt = f"""You are a climate data assistant. Answer the question using the complete dataset information.
-
-AVAILABLE VARIABLES{sources_text.upper()}: {', '.join(all_variables)}
-
-SEARCH RESULTS (sample data):
-{context_text}
-
-Q: {question_text}
-A: List ALL available variables from the dataset above."""
-                    max_tokens = min(200, len(all_variables) * 3)  # Enough tokens for all variables
-                else:
-                    # Build minimal prompt - every token counts on slow CPU
-                    prompt = f"""Answer in 1-2 sentences using ONLY this data:
-{context_text}
-
-Q: {question_text}
-A:"""
-                    max_tokens = _default_max_tokens(question_text)
+                        # Fallback: use variables from chunks
+                        all_variables = sorted({c.get("variable") for c in chunks if c.get("variable")})
+                
+                # Get sources info
+                sources = None
+                try:
+                    collection_info = await get_collection_info()
+                    sources = collection_info.get("sources", [])
+                except:
+                    pass
+                
+                # Use dynamic prompt builder (not simple prompt)
+                from web_api.prompt_builder import build_rag_prompt, detect_question_type
+                
+                question_type = detect_question_type(question_text)
+                
+                # Format chunks for prompt builder
+                formatted_chunks = []
+                for chunk in chunks:
+                    formatted_chunks.append({
+                        "metadata": chunk.get("metadata", {}),
+                        "score": chunk.get("score", 0.0),
+                        "text": chunk.get("text", "")
+                    })
+                
+                # Build comprehensive prompt with ALL variables
+                prompt, max_tokens = build_rag_prompt(
+                    question=question_text,
+                    context_chunks=formatted_chunks,
+                    all_variables=all_variables,  # CRITICAL: Always include ALL variables
+                    sources=sources,
+                    question_type=question_type
+                )
                 
                 # Async timeout wrapper
                 answer = await asyncio.wait_for(

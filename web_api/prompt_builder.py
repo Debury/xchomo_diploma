@@ -37,15 +37,6 @@ def build_rag_prompt(
     time_periods = set()  # Collect ALL unique time periods
     seen_stations = set()  # Collect ALL unique stations
     
-    # CRITICAL: For temperature questions, ensure we show ALL temperature variables
-    # Even if they're not in top search results, we should mention them
-    temperature_vars_in_context = set()
-    for chunk in context_chunks:
-        meta = chunk.get('metadata', {})
-        var = meta.get('variable', 'unknown')
-        if var in ['TAVG', 'TMAX', 'TMIN']:
-            temperature_vars_in_context.add(var)
-    
     for i, chunk in enumerate(context_chunks[:15], 1):  # Use top 15 chunks
         meta = chunk.get('metadata', {})
         var = meta.get('variable', 'unknown')

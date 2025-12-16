@@ -1149,21 +1149,23 @@ async def rag_chat_legacy(request: RAGChatRequest):
                 # Detect question type
                 question_type = detect_question_type(request.question)
                 
-                # Get all variables and sources for context (if needed)
-                all_variables = None
-                sources = None
-                
-                if question_type == "variable_list":
-                    # Always get all variables for variable list questions
-                    all_variables = _get_variable_list(db, force_refresh=False)
+                # CRITICAL: Always get ALL variables from database for context
+                # This ensures LLM knows about ALL available variables, not just those in search results
+                all_variables = _get_variable_list(db, force_refresh=False)
+                if not all_variables:
+                    try:
+                        collection_info = await get_collection_info()
+                        all_variables = collection_info.get("variables", [])
+                    except Exception as e:
+                        logger.warning(f"Failed to get collection info: {e}")
+                        # Fallback: use variables from chunks
+                        all_variables = sorted({c.get("variable") for c in context_chunks if c.get("variable")})
                 
                 # Get sources info (useful for all question types)
+                sources = None
                 try:
                     collection_info = await get_collection_info()
                     sources = collection_info.get("sources", [])
-                    if not all_variables and question_type != "variable_list":
-                        # For other questions, we can optionally include variables in context
-                        all_variables = collection_info.get("variables", [])
                 except Exception as e:
                     logger.warning(f"Failed to get collection info: {e}")
                 
