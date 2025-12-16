@@ -34,16 +34,24 @@ def build_data_selection_prompt(
     
     location_info = ""
     if available_locations:
-        location_info = f"\n\nAVAILABLE LOCATIONS IN DATASET:\n"
+        location_info = f"\n\nAVAILABLE LOCATIONS IN DATASET (sample):\n"
+        seen_locations = set()
         for loc in available_locations[:20]:  # Limit to 20
             lat = loc.get('latitude_min') or loc.get('lat_min')
             lon = loc.get('longitude_min') or loc.get('lon_min')
             station = loc.get('station_name') or loc.get('station_id')
-            if lat and lon:
-                location_info += f"- Latitude: {lat}, Longitude: {lon}"
+            location_key = f"{lat}_{lon}_{station}"
+            if location_key not in seen_locations:
+                seen_locations.add(location_key)
+                loc_str = ""
                 if station:
-                    location_info += f", Station: {station}"
-                location_info += "\n"
+                    loc_str += f"Station: {station}"
+                if lat is not None and lon is not None:
+                    if loc_str:
+                        loc_str += f", "
+                    loc_str += f"Coordinates: {lat:.4f}°N, {lon:.4f}°E"
+                if loc_str:
+                    location_info += f"- {loc_str}\n"
     
     time_info = ""
     if available_time_periods:
@@ -61,13 +69,24 @@ AVAILABLE VARIABLES IN DATASET ({len(all_variables)} total):
 
 INSTRUCTIONS:
 1. Read the question carefully
-2. Identify which VARIABLES are needed (match question intent to variable names/descriptions)
-3. Identify which LOCATIONS are mentioned (extract location names, coordinates, or regions from question)
-4. Identify which TIME PERIODS are mentioned (extract dates, months, seasons, years from question)
+2. Identify which VARIABLES are needed:
+   - Match question intent to variable names/descriptions from the AVAILABLE VARIABLES list
+   - If question asks for "average" or "mean", find variables with "average" or "mean" in name/description
+   - If question asks for "minimum" or "min", find variables with "minimum" or "min" in name/description
+   - If question asks for "maximum" or "max", find variables with "maximum" or "max" in name/description
+   - If question asks for "statistics" or "all", include all relevant variables
+3. Identify which LOCATIONS are mentioned:
+   - Extract location names (e.g., "Slovakia", "Bratislava", "Kosice") from question
+   - Extract coordinates if mentioned (e.g., "48.15, 17.11")
+   - Match to locations in AVAILABLE LOCATIONS if provided
+4. Identify which TIME PERIODS are mentioned:
+   - Extract dates, months, seasons, years from question
+   - Convert to date ranges (e.g., "summer 2023" → "2023-06-01 to 2023-08-31")
+   - Match to periods in AVAILABLE TIME PERIODS if provided
 5. Return your answer in this EXACT format (one line per section):
-VARIABLES: comma-separated list (e.g., "TAVG, TMAX, TMIN")
-LOCATIONS: location names or coordinates mentioned in question (e.g., "Slovakia" or "48.15, 17.11" or "Bratislava, Kosice")
-TIME_PERIODS: date range or periods mentioned (e.g., "2023-06-01 to 2023-08-31" or "summer 2023" or "August 2023")
+VARIABLES: comma-separated list of variable names (e.g., "TAVG, TMAX, TMIN")
+LOCATIONS: location names or coordinates mentioned (e.g., "Slovakia" or "48.15, 17.11" or "Bratislava, Kosice")
+TIME_PERIODS: date range or periods (e.g., "2023-06-01 to 2023-08-31" or "summer 2023" or "August 2023")
 
 If a section is not mentioned in the question, write "NONE" for that section.
 

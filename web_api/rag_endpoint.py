@@ -274,12 +274,26 @@ async def rag_query(request: RAGRequest) -> RAGResponse:
         # DYNAMIC: Get all variables first to enable smart multi-search
         all_variables = _get_variable_list(db, force_refresh=False)
         
-        # First search: semantic search (general)
+        # First search: semantic search (general) - get more results to ensure diversity
+        initial_top_k = max(effective_top_k, 20)  # Get more initial results
         results = db.search(
             query_vector=query_vec.tolist(),
-            limit=effective_top_k,
+            limit=initial_top_k,
             filter_dict=filter_dict if filter_dict else None
         )
+        
+        # Check what variables we got in initial search
+        vars_in_initial = set()
+        for hit in results:
+            if hasattr(hit, 'payload'):
+                meta = hit.payload
+            else:
+                meta = hit.get('payload', {})
+            var = meta.get('variable', '')
+            if var:
+                vars_in_initial.add(var)
+        
+        logger.info(f"Initial search found variables: {vars_in_initial}")
         
         # DYNAMIC: Analyze question to identify relevant variable types, then do parallel searches
         if all_variables and len(all_variables) > 1:
@@ -337,80 +351,201 @@ async def rag_query(request: RAGRequest) -> RAGResponse:
                     timeout=10
                 )
                 
-                # Parse data selection
+                # Parse data selection - DYNAMIC: Everything from LLM, no hardcoded logic
                 selected_vars = []
+                selected_locations = []
+                selected_time_periods = []
+                
                 for line in data_selection_response.strip().split('\n'):
                     line = line.strip()
                     if line.startswith('VARIABLES:'):
                         vars_text = line.replace('VARIABLES:', '').strip()
                         if vars_text.upper() != 'NONE':
                             selected_vars = [v.strip() for v in vars_text.split(',') if v.strip() in all_variables]
+                    elif line.startswith('LOCATIONS:'):
+                        locs_text = line.replace('LOCATIONS:', '').strip()
+                        if locs_text.upper() != 'NONE':
+                            selected_locations = [l.strip() for l in locs_text.split(',')]
+                    elif line.startswith('TIME_PERIODS:'):
+                        time_text = line.replace('TIME_PERIODS:', '').strip()
+                        if time_text.upper() != 'NONE':
+                            selected_time_periods = [t.strip() for t in time_text.split(',')]
                 
-                logger.info(f"Data selection identified variables: {selected_vars}")
+                logger.info(f"Data selection: vars={selected_vars}, locations={selected_locations}, time_periods={selected_time_periods}")
                 
                 # Get existing variables from first search
-                existing_vars = set()
+                existing_vars = vars_in_initial.copy()  # Use the set we already built
                 existing_ids = set()
                 for hit in results:
-                    if hasattr(hit, 'payload'):
-                        meta = hit.payload
-                    else:
-                        meta = hit.get('payload', {})
-                    var = meta.get('variable', '')
-                    if var:
-                        existing_vars.add(var)
-                    # Collect IDs to avoid duplicates
                     hit_id = getattr(hit, 'id', None) if hasattr(hit, 'id') else (hit.get('id') if isinstance(hit, dict) else None)
                     if hit_id:
                         existing_ids.add(hit_id)
                 
-                # Perform parallel targeted searches for selected variables that aren't in results
+                # DYNAMIC: Build filters from selected data and perform targeted searches
+                # Search for selected variables with optional location/time filters
                 for var in selected_vars:
-                    if var not in existing_vars:
-                        try:
-                            logger.info(f"Performing targeted search for variable: {var}")
-                            var_results = db.search(
-                                query_vector=query_vec.tolist(),
-                                limit=15,  # Get more results for missing variables
-                                filter_dict={"variable": var}
-                            )
-                            
-                            # Add to results (avoid duplicates by ID)
-                            added_count = 0
+                    try:
+                        # Build filter dynamically based on selected data
+                        var_filter = {"variable": var}
+                        
+                        # DYNAMIC: Parse location filters (city, country, coordinates, station)
+                        location_filters = []
+                        if selected_locations:
+                            for loc_str in selected_locations:
+                                loc_str = loc_str.strip()
+                                # Try to parse as coordinates (e.g., "48.15, 17.11")
+                                if ',' in loc_str:
+                                    try:
+                                        parts = [p.strip() for p in loc_str.split(',')]
+                                        if len(parts) == 2:
+                                            lat = float(parts[0])
+                                            lon = float(parts[1])
+                                            location_filters.append({"type": "coords", "lat": lat, "lon": lon})
+                                            logger.info(f"Parsed location as coordinates: {lat}, {lon}")
+                                            continue
+                                    except ValueError:
+                                        pass
+                                # Otherwise treat as name (city, country, station)
+                                location_filters.append({"type": "name", "value": loc_str})
+                                logger.info(f"Parsed location as name: {loc_str}")
+                        
+                        # DYNAMIC: Parse time period filters
+                        time_filters = []
+                        if selected_time_periods:
+                            for time_str in selected_time_periods:
+                                time_str = time_str.strip()
+                                # Try to parse date ranges (e.g., "2023-06-01 to 2023-08-31")
+                                if ' to ' in time_str or ' - ' in time_str:
+                                    sep = ' to ' if ' to ' in time_str else ' - '
+                                    parts = [p.strip() for p in time_str.split(sep)]
+                                    if len(parts) == 2:
+                                        time_filters.append({"start": parts[0], "end": parts[1]})
+                                        logger.info(f"Parsed time period as range: {parts[0]} to {parts[1]}")
+                                else:
+                                    # Single date or period name
+                                    time_filters.append({"value": time_str})
+                                    logger.info(f"Parsed time period as: {time_str}")
+                        
+                        logger.info(f"Performing targeted search for variable: {var} with filter: {var_filter}")
+                        var_results = db.search(
+                            query_vector=query_vec.tolist(),
+                            limit=30,  # Get more results, we'll filter by location/time after
+                            filter_dict=var_filter
+                        )
+                        
+                        # DYNAMIC: Post-filter by location and time if specified
+                        if location_filters or time_filters:
+                            filtered_results = []
                             for hit in var_results:
-                                hit_id = getattr(hit, 'id', None) if hasattr(hit, 'id') else (hit.get('id') if isinstance(hit, dict) else None)
-                                if hit_id and hit_id not in existing_ids:
-                                    results.append(hit)
-                                    existing_ids.add(hit_id)
-                                    added_count += 1
-                                elif not hit_id:  # If no ID, check by content
-                                    # Compare payload to avoid exact duplicates
-                                    if hasattr(hit, 'payload'):
-                                        hit_meta = hit.payload
-                                    else:
-                                        hit_meta = hit.get('payload', {})
-                                    hit_var = hit_meta.get('variable', '')
-                                    hit_time = hit_meta.get('time_start', '')
-                                    # Check if we already have this variable+time combination
-                                    is_duplicate = False
-                                    for existing_hit in results:
-                                        if hasattr(existing_hit, 'payload'):
-                                            existing_meta = existing_hit.payload
-                                        else:
-                                            existing_meta = existing_hit.get('payload', {})
-                                        if existing_meta.get('variable') == hit_var and existing_meta.get('time_start') == hit_time:
-                                            is_duplicate = True
-                                            break
-                                    if not is_duplicate:
-                                        results.append(hit)
-                                        added_count += 1
+                                if hasattr(hit, 'payload'):
+                                    meta = hit.payload
+                                else:
+                                    meta = hit.get('payload', {})
+                                
+                                # Apply location filters
+                                location_match = True
+                                if location_filters:
+                                    location_match = False
+                                    hit_lat = meta.get('latitude_min') or meta.get('lat_min')
+                                    hit_lon = meta.get('longitude_min') or meta.get('lon_min')
+                                    hit_station = meta.get('station_name') or meta.get('station_id')
+                                    
+                                    for loc_filter in location_filters:
+                                        if loc_filter["type"] == "coords":
+                                            # Check if coordinates are within range (±2 degrees ≈ 200km)
+                                            if hit_lat is not None and hit_lon is not None:
+                                                lat_diff = abs(float(hit_lat) - loc_filter["lat"])
+                                                lon_diff = abs(float(hit_lon) - loc_filter["lon"])
+                                                if lat_diff <= 2.0 and lon_diff <= 2.0:
+                                                    location_match = True
+                                                    break
+                                        elif loc_filter["type"] == "name":
+                                            # Check station name or metadata contains location name
+                                            loc_name_lower = loc_filter["value"].lower()
+                                            if hit_station and loc_name_lower in str(hit_station).lower():
+                                                location_match = True
+                                                break
+                                            # Check metadata fields
+                                            for key, value in meta.items():
+                                                if loc_name_lower in str(value).lower():
+                                                    location_match = True
+                                                    break
+                                            if location_match:
+                                                break
+                                
+                                # Apply time filters
+                                time_match = True
+                                if time_filters:
+                                    time_match = False
+                                    hit_time_start = meta.get('time_start')
+                                    hit_time_end = meta.get('time_end')
+                                    
+                                    for time_filter in time_filters:
+                                        if "start" in time_filter and "end" in time_filter:
+                                            # Range filter: check overlap
+                                            try:
+                                                req_start = time_filter["start"][:10]  # YYYY-MM-DD
+                                                req_end = time_filter["end"][:10]
+                                                hit_start_str = str(hit_time_start)[:10] if hit_time_start else ""
+                                                hit_end_str = str(hit_time_end)[:10] if hit_time_end else ""
+                                                
+                                                # Overlap: hit_start <= req_end AND hit_end >= req_start
+                                                if hit_start_str and hit_end_str:
+                                                    if hit_start_str <= req_end and hit_end_str >= req_start:
+                                                        time_match = True
+                                                        break
+                                            except Exception as e:
+                                                logger.warning(f"Time range parsing failed: {e}")
+                                        elif "value" in time_filter:
+                                            # Single date or period name
+                                            time_value = time_filter["value"].lower()
+                                            hit_time_str = str(hit_time_start).lower() if hit_time_start else ""
+                                            if time_value in hit_time_str or hit_time_str.startswith(time_value[:7]):
+                                                time_match = True
+                                                break
+                                
+                                if location_match and time_match:
+                                    filtered_results.append(hit)
                             
-                            if added_count > 0:
-                                logger.info(f"✓ Added {added_count} results for variable {var} to context")
-                            else:
-                                logger.warning(f"✗ No results found for variable {var} in database")
-                        except Exception as e:
-                            logger.warning(f"Targeted search for {var} failed: {e}")
+                            var_results = filtered_results
+                            logger.info(f"Applied location/time filters: {len(var_results)} results after filtering")
+                        
+                        # Add filtered results to main results (avoid duplicates by ID)
+                        added_count = 0
+                        for hit in var_results:
+                            hit_id = getattr(hit, 'id', None) if hasattr(hit, 'id') else (hit.get('id') if isinstance(hit, dict) else None)
+                            if hit_id and hit_id not in existing_ids:
+                                results.append(hit)
+                                existing_ids.add(hit_id)
+                                added_count += 1
+                            elif not hit_id:  # If no ID, check by content
+                                # Compare payload to avoid exact duplicates
+                                if hasattr(hit, 'payload'):
+                                    hit_meta = hit.payload
+                                else:
+                                    hit_meta = hit.get('payload', {})
+                                hit_var = hit_meta.get('variable', '')
+                                hit_time = hit_meta.get('time_start', '')
+                                # Check if we already have this variable+time combination
+                                is_duplicate = False
+                                for existing_hit in results:
+                                    if hasattr(existing_hit, 'payload'):
+                                        existing_meta = existing_hit.payload
+                                    else:
+                                        existing_meta = existing_hit.get('payload', {})
+                                    if existing_meta.get('variable') == hit_var and existing_meta.get('time_start') == hit_time:
+                                        is_duplicate = True
+                                        break
+                                if not is_duplicate:
+                                    results.append(hit)
+                                    added_count += 1
+                        
+                        if added_count > 0:
+                            logger.info(f"✓ Added {added_count} results for variable {var} to context")
+                        else:
+                            logger.warning(f"✗ No new results found for variable {var} (may already be in context)")
+                    except Exception as e:
+                        logger.warning(f"Targeted search for {var} failed: {e}")
                 
             except Exception as e:
                 logger.warning(f"Data selection prompt failed: {e}, continuing with initial search results")
