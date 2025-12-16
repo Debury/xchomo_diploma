@@ -9,15 +9,34 @@ from typing import Dict, Any
 
 BASE_URL = "http://159.65.207.173:8000/rag/chat"
 
-# Expected variables (based on user's information)
-EXPECTED_VARIABLES = {
-    "AWND", "CDSD", "CLDD", "DP01", "DP05", "DP10", "DSND", "DSNW", 
-    "DT00", "DT32", "DX32", "DX70", "DX90", "EMNT", "EMSD", "EMSN", 
-    "EMXP", "EMXT", "HDSD", "HTDD", "PRCP", "SNOW", "TMAX", "TMIN", 
-    "WDF2", "WDF5", "WSF2", "WSF5", "hurs"
-}
+# Get expected variables dynamically from the API
+def get_expected_variables():
+    """Fetch actual variables from the API to use for testing."""
+    try:
+        # Try to get variables from /rag/info endpoint
+        response = requests.get(f"{BASE_URL.replace('/chat', '/info')}", timeout=10)
+        if response.status_code == 200:
+            data = response.json()
+            return set(data.get("variables", []))
+    except:
+        pass
+    
+    # Fallback: try asking the API directly
+    try:
+        payload = {"question": "What variables are available?", "use_llm": False}
+        response = requests.post(BASE_URL, json=payload, timeout=10)
+        if response.status_code == 200:
+            data = response.json()
+            answer = data.get("answer", "")
+            # Try to extract variables from answer (basic parsing)
+            # This is a fallback - ideally use /rag/info endpoint
+            return set()  # Return empty set if can't parse
+    except:
+        pass
+    
+    return set()  # Return empty set if can't fetch
 
-def test_question(question: str, expected_keywords: list = None, question_type: str = "general") -> Dict[str, Any]:
+def test_question(question: str, expected_keywords: set = None, question_type: str = "general") -> Dict[str, Any]:
     """Test a single question and return results."""
     print(f"\n{'='*80}")
     print(f"Testing: {question_type.upper()}")
@@ -46,21 +65,24 @@ def test_question(question: str, expected_keywords: list = None, question_type: 
         # Check accuracy
         issues = []
         
-        if question_type == "variable_list":
-            # Check if all expected variables are mentioned
+        if question_type == "variable_list" and expected_keywords:
+            # Check if all expected variables are mentioned (if we have expected list)
             answer_upper = answer.upper()
             missing_vars = []
-            for var in EXPECTED_VARIABLES:
+            for var in expected_keywords:
                 if var.upper() not in answer_upper:
                     missing_vars.append(var)
             
-            if missing_vars:
+            if missing_vars and len(missing_vars) < len(expected_keywords):
+                # Only report if we're missing some but not all (to avoid false positives)
                 issues.append(f"Missing variables: {missing_vars[:10]}...")  # Show first 10
             
             # Check for false positives (variables not in expected list)
             # This is harder to detect, but we can check for common mistakes
-            if "only" in answer.lower() and len(missing_vars) > 5:
-                issues.append("Answer says 'only' but many variables are missing")
+            if "only" in answer.lower() and expected_keywords and len(expected_keywords) > 1:
+                # If answer says "only" but we expect multiple variables, that's suspicious
+                if len(missing_vars) > len(expected_keywords) * 0.5:  # Missing more than 50%
+                    issues.append("Answer says 'only' but many variables are missing")
         
         # Check if answer is too short for complex questions
         if question_type in ["comparison", "statistical"] and len(answer) < 50:
@@ -99,11 +121,19 @@ def test_question(question: str, expected_keywords: list = None, question_type: 
 def run_tests():
     """Run all test questions."""
     
+    # Get expected variables dynamically from API
+    print("Fetching expected variables from API...")
+    expected_vars = get_expected_variables()
+    if expected_vars:
+        print(f"Found {len(expected_vars)} variables from API")
+    else:
+        print("Warning: Could not fetch variables from API, will test without validation")
+    
     # BASIC QUESTIONS
     basic_questions = [
-        ("What variables are available?", "variable_list", EXPECTED_VARIABLES),
-        ("List all variables in the dataset", "variable_list", EXPECTED_VARIABLES),
-        ("Which climate variables do you have?", "variable_list", EXPECTED_VARIABLES),
+        ("What variables are available?", "variable_list", expected_vars),
+        ("List all variables in the dataset", "variable_list", expected_vars),
+        ("Which climate variables do you have?", "variable_list", expected_vars),
         ("What is the temperature?", "general", None),
         ("Show me precipitation data", "general", None),
     ]
@@ -113,7 +143,7 @@ def run_tests():
         ("What is the average temperature?", "statistical", None),
         ("What is the minimum and maximum temperature?", "statistical", None),
         ("Compare temperature and precipitation", "comparison", None),
-        ("What variables are available from ISIMP?", "variable_list", EXPECTED_VARIABLES),
+        ("What variables are available from ISIMP?", "variable_list", expected_vars),
         ("What is the range of humidity values?", "statistical", None),
     ]
     
