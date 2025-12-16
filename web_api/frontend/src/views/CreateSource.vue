@@ -180,20 +180,68 @@ async function createSource() {
   submitting.value = true
   
   try {
-    // In a real implementation, this would call the API
+    // Validate required fields
+    if (!form.value.name || !form.value.url) {
+      alert('Please fill in Source Name and Data URL')
+      return
+    }
+
+    // Map form fields to API fields
     const sourceConfig = {
-      ...form.value,
-      variables: form.value.variables.split(',').map(v => v.trim()).filter(Boolean)
+      source_id: form.value.name.trim().toLowerCase().replace(/\s+/g, '_'), // Convert name to source_id
+      url: form.value.url.trim(),
+      format: form.value.type || null, // Map type to format
+      variables: form.value.variables 
+        ? form.value.variables.split(',').map(v => v.trim()).filter(Boolean)
+        : null,
+      description: form.value.description || null,
+      tags: form.value.type ? [form.value.type] : null,
+      time_range: (form.value.startYear || form.value.endYear) 
+        ? {
+            ...(form.value.startYear && { start: `${form.value.startYear}-01-01` }),
+            ...(form.value.endYear && { end: `${form.value.endYear}-12-31` })
+          }
+        : null,
+      is_active: true,
+      embedding_model: "all-MiniLM-L6-v2"
+    }
+
+    // Remove null/empty fields
+    Object.keys(sourceConfig).forEach(key => {
+      if (sourceConfig[key] === null || sourceConfig[key] === undefined || 
+          (Array.isArray(sourceConfig[key]) && sourceConfig[key].length === 0)) {
+        delete sourceConfig[key]
+      }
+    })
+
+    // Clean up time_range if empty
+    if (sourceConfig.time_range && Object.keys(sourceConfig.time_range).length === 0) {
+      delete sourceConfig.time_range
     }
     
     console.log('Creating source:', sourceConfig)
     
-    // Simulate API call
-    await new Promise(resolve => setTimeout(resolve, 1000))
+    // Call the actual API
+    const resp = await fetch('/sources', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(sourceConfig)
+    })
+    
+    if (!resp.ok) {
+      const errorData = await resp.json().catch(() => ({ detail: 'Unknown error' }))
+      throw new Error(errorData.detail || `HTTP ${resp.status}: ${resp.statusText}`)
+    }
+    
+    const result = await resp.json()
+    console.log('Source created:', result)
     
     alert(`Source "${form.value.name}" created successfully!`)
     router.push('/sources')
   } catch (e) {
+    console.error('Error creating source:', e)
     alert(`Error creating source: ${e.message}`)
   } finally {
     submitting.value = false

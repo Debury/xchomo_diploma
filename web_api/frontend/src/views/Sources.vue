@@ -136,23 +136,31 @@ function getSourceIcon(name) {
 async function loadSources() {
   loading.value = true
   try {
-    // Get info from RAG endpoint
-    const resp = await fetch('/rag/info')
+    // Get sources from the sources endpoint
+    const resp = await fetch('/sources?active_only=false')
+    
+    if (!resp.ok) {
+      throw new Error(`Failed to load sources: ${resp.statusText}`)
+    }
+    
     const data = await resp.json()
     
-    // Transform sources data
-    if (data.sources) {
-      sources.value = data.sources.map(name => ({
-        name,
-        enabled: true,
-        description: `Climate data from ${name}`,
-        type: 'NetCDF',
-        variables: data.variables || [],
-        embedding_count: Math.floor((data.total_embeddings || 0) / (data.sources?.length || 1))
-      }))
-    }
+    // Transform API response to match component expectations
+    sources.value = data.map(source => ({
+      name: source.source_id || 'Unknown',
+      enabled: source.is_active !== false,
+      description: source.description || `Data source: ${source.source_id}`,
+      type: source.format || 'NetCDF',
+      variables: source.variables || [],
+      embedding_count: 0, // Will be calculated separately if needed
+      url: source.url,
+      source_id: source.source_id,
+      processing_status: source.processing_status || 'pending'
+    }))
   } catch (e) {
     console.error('Failed to load sources:', e)
+    // Show error to user
+    alert(`Failed to load sources: ${e.message}`)
   } finally {
     loading.value = false
   }
