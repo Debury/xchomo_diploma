@@ -168,20 +168,88 @@ def _load_xarray_generic(path: Path, engine: Optional[str] = None, **kwargs) -> 
                 # Fallback if dask chunking fails
                 da_chunked = da.from_array(da_var, chunks=chunking)
             
+            # Extract ALL variable attributes from NetCDF/GRIB (no hardcoding)
+            var_attrs = {}
+            if hasattr(da_var, 'attrs'):
+                var_attrs = dict(da_var.attrs)
+            elif var in ds.data_vars and hasattr(ds[var], 'attrs'):
+                var_attrs = dict(ds[var].attrs)
+            
+            # Also get dataset-level attributes
+            ds_attrs = {}
+            if hasattr(ds, 'attrs'):
+                ds_attrs = dict(ds.attrs)
+            
             # Iterate
             for slices in da.core.slices_from_chunks(da_chunked.chunks):
-                meta = {"variable": str(var), "source": str(path.name)}
+                meta = {
+                    "variable": str(var),
+                    "source": str(path.name),
+                    "format": "netcdf" if suffix in {'.nc', '.nc4', '.hdf', '.h5'} else "grib"
+                }
                 
-                # Extract coords (Timestamp)
+                # Store ALL variable attributes (no hardcoding - works for ANY dataset)
+                for attr_key, attr_val in var_attrs.items():
+                    # Skip internal/technical attributes
+                    if attr_key.startswith('_') or attr_key in ['_FillValue', 'missing_value', 'fill_value']:
+                        continue
+                    # Store everything else with original key name
+                    try:
+                        # Convert to string if not primitive type
+                        if isinstance(attr_val, (int, float, str, bool)):
+                            meta[attr_key] = attr_val
+                        else:
+                            meta[attr_key] = str(attr_val)
+                    except:
+                        meta[attr_key] = str(attr_val)
+                
+                # Store ALL dataset-level attributes
+                for attr_key, attr_val in ds_attrs.items():
+                    if attr_key.startswith('_'):
+                        continue
+                    try:
+                        if isinstance(attr_val, (int, float, str, bool)):
+                            meta[f"dataset_{attr_key}"] = attr_val
+                        else:
+                            meta[f"dataset_{attr_key}"] = str(attr_val)
+                    except:
+                        meta[f"dataset_{attr_key}"] = str(attr_val)
+                
+                # Extract ALL coordinate dimensions (no hardcoding - detect by value, not name)
                 for dim, sl in zip(da_var.dims, slices):
                     if dim in da_var.coords:
                         vals = da_var.coords[dim][sl].values
                         if len(vals) > 0:
-                            # Start==End when chunksize is 1, giving exact timestamp
+                            # Store dimension info
                             meta[f"{dim}_start"] = str(vals.min())
-                            # Clean up numpy datetime string for prettier metadata
-                            if "T" in meta[f"{dim}_start"]:
-                                meta["time_start"] = meta[f"{dim}_start"]
+                            if len(vals) > 1:
+                                meta[f"{dim}_end"] = str(vals.max())
+                            
+                            # Try to detect time by attempting to parse as datetime
+                            try:
+                                from datetime import datetime
+                                pd.to_datetime(str(vals.min()))
+                                # If successful, it's likely a time dimension
+                                meta["time_start"] = str(vals.min())
+                                if len(vals) > 1:
+                                    meta["time_end"] = str(vals.max())
+                            except:
+                                # Not a time dimension - check if numeric and in spatial ranges
+                                try:
+                                    numeric_vals = vals[~np.isnan(vals)] if hasattr(vals, '__iter__') else [vals]
+                                    if len(numeric_vals) > 0:
+                                        min_val = float(np.min(numeric_vals))
+                                        max_val = float(np.max(numeric_vals))
+                                        # Latitude range
+                                        if -90 <= min_val <= 90 and -90 <= max_val <= 90:
+                                            meta["lat_min"] = min_val
+                                            meta["lat_max"] = max_val
+                                        # Longitude range
+                                        elif -180 <= min_val <= 180 and -180 <= max_val <= 180:
+                                            meta["lon_min"] = min_val
+                                            meta["lon_max"] = max_val
+                                except:
+                                    pass
 
                 try:
                     data = da_chunked[slices].compute().values
@@ -211,44 +279,12 @@ def _load_csv(path: Path, **kwargs) -> Iterator[RasterChunk]:
         # First, read a small sample to understand structure
         sample_df = pd.read_csv(path, nrows=100, delimiter=delimiter, low_memory=False)
         
-        # Identify numeric columns (excluding metadata columns)
+        # COMPLETELY DYNAMIC: No hardcoded column names
+        # Classify columns purely by data type and content, not by name
         numeric_cols = []
-        metadata_cols = []
-        time_cols = []
-        spatial_cols = []
+        non_numeric_cols = []
         
         for col in sample_df.columns:
-            col_lower = str(col).lower()
-            col_str = str(col)
-            
-            # Extract attribute columns (usually end with _ATTRIBUTES or _ATTR)
-            # These contain metadata like long_name, units, etc.
-            if '_attributes' in col_lower or col_lower.endswith('_attr') or col_str.endswith('_ATTRIBUTES'):
-                metadata_cols.append(col)
-                # Store attribute column mapping for later extraction
-                if not hasattr(sample_df, '_attribute_columns'):
-                    sample_df._attribute_columns = {}
-                # Map attribute column to its variable (e.g., TMIN_ATTRIBUTES -> TMIN)
-                base_var = col_str.replace('_ATTRIBUTES', '').replace('_ATTR', '')
-                sample_df._attribute_columns[base_var] = col
-                continue
-            
-            # Identify metadata columns
-            if col_lower in ['station', 'name', 'elevation']:
-                metadata_cols.append(col)
-                continue
-            
-            # Identify time columns
-            if 'date' in col_lower or 'time' in col_lower or col_lower == 'date':
-                time_cols.append(col)
-                continue
-            
-            # Identify spatial columns
-            if 'lat' in col_lower or 'lon' in col_lower or col_lower in ['latitude', 'longitude']:
-                spatial_cols.append(col)
-                continue
-            
-            # Check if numeric (but not already identified as metadata/spatial/time)
             try:
                 # Try to convert to numeric
                 numeric_series = pd.to_numeric(sample_df[col], errors='coerce')
@@ -257,10 +293,15 @@ def _load_csv(path: Path, **kwargs) -> Iterator[RasterChunk]:
                     valid_ratio = numeric_series.notna().sum() / len(numeric_series)
                     if valid_ratio > 0.5:
                         numeric_cols.append(col)
+                    else:
+                        non_numeric_cols.append(col)
+                else:
+                    non_numeric_cols.append(col)
             except:
-                pass
+                # If conversion fails, treat as non-numeric metadata
+                non_numeric_cols.append(col)
         
-        logger.info(f"Found {len(numeric_cols)} numeric columns, {len(time_cols)} time columns, {len(spatial_cols)} spatial columns")
+        logger.info(f"Found {len(numeric_cols)} numeric columns (variables), {len(non_numeric_cols)} non-numeric columns (metadata)")
         
         if not numeric_cols:
             logger.warning(f"No numeric columns found in CSV: {path.name}")
@@ -289,84 +330,68 @@ def _load_csv(path: Path, **kwargs) -> Iterator[RasterChunk]:
                 # Reshape to (1, n) to match expected format
                 data = values.reshape(1, -1).astype('float32')
                 
-                # Extract metadata
+                # Extract metadata - COMPLETELY DYNAMIC: Store ALL non-numeric columns as metadata
+                # No assumptions about column names - works for ANY dataset structure
                 meta = {
                     "variable": str(var_col),
                     "source": str(path.name),
                     "format": "csv",
                 }
                 
-                # Extract metadata from _ATTRIBUTES column if available
-                attr_col_name = f"{var_col}_ATTRIBUTES"
-                if attr_col_name in df_chunk.columns:
-                    # Get first non-null attribute value
-                    attr_value = df_chunk[attr_col_name].dropna().iloc[0] if len(df_chunk[attr_col_name].dropna()) > 0 else None
-                    if attr_value:
-                        # Try to parse as JSON or key-value pairs
-                        try:
-                            import json
-                            if isinstance(attr_value, str) and attr_value.startswith('{'):
-                                attr_dict = json.loads(attr_value)
-                                if 'long_name' in attr_dict:
-                                    meta["long_name"] = str(attr_dict['long_name'])
-                                if 'units' in attr_dict or 'unit' in attr_dict:
-                                    meta["unit"] = str(attr_dict.get('units', attr_dict.get('unit', '')))
-                                if 'standard_name' in attr_dict:
-                                    meta["standard_name"] = str(attr_dict['standard_name'])
-                        except:
-                            # If not JSON, try to extract key-value pairs from string
-                            attr_str = str(attr_value)
-                            if 'long_name' in attr_str.lower():
-                                # Try to extract long_name value
-                                import re
-                                match = re.search(r'long_name["\']?\s*[:=]\s*["\']?([^"\',}]+)', attr_str, re.IGNORECASE)
-                                if match:
-                                    meta["long_name"] = match.group(1).strip()
-                            if 'unit' in attr_str.lower():
-                                match = re.search(r'units?["\']?\s*[:=]\s*["\']?([^"\',}]+)', attr_str, re.IGNORECASE)
-                                if match:
-                                    meta["unit"] = match.group(1).strip()
+                # Store ALL non-numeric columns as metadata (no hardcoded names)
+                for meta_col in non_numeric_cols:
+                    if meta_col in df_chunk.columns:
+                        # Get unique values
+                        meta_values = df_chunk[meta_col].dropna().unique()
+                        if len(meta_values) > 0:
+                            val = meta_values[0]
+                            # Try to detect if it looks like a date/time (heuristic, not hardcoded)
+                            val_str = str(val)
+                            try:
+                                # Try parsing as date
+                                from datetime import datetime
+                                pd.to_datetime(val_str)
+                                # If successful, it's likely a time column
+                                meta["time_start"] = val_str
+                                time_vals = df_chunk[meta_col].dropna()
+                                if len(time_vals) > 1:
+                                    meta["time_end"] = str(time_vals.iloc[-1])
+                            except:
+                                # Not a date - store with original column name
+                                if len(meta_values) == 1:
+                                    meta[str(meta_col)] = val_str
+                                else:
+                                    meta[str(meta_col)] = val_str
+                                    meta[f"{meta_col}_count"] = len(meta_values)
+                                    if len(meta_values) <= 10:
+                                        meta[f"{meta_col}_all"] = [str(v) for v in meta_values]
                 
-                # Also check if there's a separate metadata row or header
-                # Some CSV files have metadata in the first few rows
-                if 'long_name' not in meta and hasattr(sample_df, '_attribute_columns'):
-                    # Try to get from sample if available
-                    pass  # Could be enhanced later
-                
-                # Extract time information if available
-                if time_cols:
-                    time_col = time_cols[0]
-                    if time_col in df_chunk.columns:
-                        time_values = df_chunk[time_col].dropna()
-                        if len(time_values) > 0:
-                            meta["time_start"] = str(time_values.iloc[0])
-                            if len(time_values) > 1:
-                                meta["time_end"] = str(time_values.iloc[-1])
-                
-                # Extract spatial information if available
-                if spatial_cols:
-                    lat_col = next((c for c in spatial_cols if 'lat' in str(c).lower()), None)
-                    lon_col = next((c for c in spatial_cols if 'lon' in str(c).lower()), None)
-                    
-                    if lat_col and lat_col in df_chunk.columns:
-                        lat_values = pd.to_numeric(df_chunk[lat_col], errors='coerce').dropna()
-                        if len(lat_values) > 0:
-                            meta["lat_min"] = float(lat_values.min())
-                            meta["lat_max"] = float(lat_values.max())
-                    
-                    if lon_col and lon_col in df_chunk.columns:
-                        lon_values = pd.to_numeric(df_chunk[lon_col], errors='coerce').dropna()
-                        if len(lon_values) > 0:
-                            meta["lon_min"] = float(lon_values.min())
-                            meta["lon_max"] = float(lon_values.max())
-                
-                # Add station info if available
-                if 'STATION' in df_chunk.columns:
-                    stations = df_chunk['STATION'].dropna().unique()
-                    if len(stations) > 0:
-                        meta["station_id"] = str(stations[0])
-                        if len(stations) > 1:
-                            meta["station_count"] = len(stations)
+                # For numeric columns that aren't the variable itself, check if they might be spatial
+                # Detect by value range, not by name
+                for col in numeric_cols:
+                    if col == var_col:
+                        continue
+                    try:
+                        col_values = pd.to_numeric(df_chunk[col], errors='coerce').dropna()
+                        if len(col_values) > 0:
+                            min_val = float(col_values.min())
+                            max_val = float(col_values.max())
+                            # Latitude range: -90 to 90
+                            if -90 <= min_val <= 90 and -90 <= max_val <= 90:
+                                meta["lat_min"] = min_val
+                                meta["lat_max"] = max_val
+                            # Longitude range: -180 to 180
+                            elif -180 <= min_val <= 180 and -180 <= max_val <= 180:
+                                meta["lon_min"] = min_val
+                                meta["lon_max"] = max_val
+                            # Store any other numeric metadata
+                            else:
+                                meta[f"{col}_min"] = min_val
+                                meta[f"{col}_max"] = max_val
+                                if len(col_values) == 1:
+                                    meta[col] = min_val
+                    except:
+                        pass
                 
                 # Add chunk index
                 meta["chunk_index"] = chunk_idx
@@ -381,12 +406,30 @@ def _load_csv(path: Path, **kwargs) -> Iterator[RasterChunk]:
         raise
 
 def _load_geotiff(path: Path, **kwargs) -> Iterator[RasterChunk]:
-    """Loader for GeoTIFFs (Spatial Only)."""
+    """Loader for GeoTIFFs (Spatial Only). Dynamically extracts metadata from tags."""
     try:
         with rasterio.open(path) as src:
             w = 256
             if src.width < 512 or src.height < 512:
                 w = 64
+            
+            # Extract ALL metadata from GeoTIFF tags (no hardcoding - store everything)
+            geotiff_meta = {}
+            if src.tags():
+                geotiff_meta.update(dict(src.tags()))
+            if src.tags(1):  # Band 1 tags
+                geotiff_meta.update(dict(src.tags(1)))
+            
+            # Try to find variable name from any tag that might contain it
+            # No hardcoded names - just look for descriptive tags
+            variable_name = "band_1"  # Default fallback
+            for key in geotiff_meta.keys():
+                key_lower = str(key).lower()
+                if any(word in key_lower for word in ['description', 'name', 'variable', 'title', 'label']):
+                    val = geotiff_meta[key]
+                    if val and str(val).strip():
+                        variable_name = str(val).strip()
+                        break
                 
             for ji, window in src.block_windows(1):
                 try:
@@ -402,14 +445,28 @@ def _load_geotiff(path: Path, **kwargs) -> Iterator[RasterChunk]:
 
                 bounds = src.window_bounds(window)
                 meta = {
-                    "variable": "band_1",
+                    "variable": variable_name,
                     "source": str(path.name),
+                    "format": "geotiff",
                     "lat_min": bounds[1],
                     "lat_max": bounds[3],
                     "lon_min": bounds[0],
                     "lon_max": bounds[2],
-                    "time_start": "static_image",
+                    "time_start": "static_image",  # GeoTIFFs are typically static
                 }
+                
+                # Store ALL GeoTIFF tags as metadata (no filtering - preserve everything)
+                for key, val in geotiff_meta.items():
+                    # Skip internal/technical tags
+                    if key.startswith('_') or key in ['TIFFTAG_SAMPLESPERPIXEL', 'TIFFTAG_BITSPERSAMPLE']:
+                        continue
+                    try:
+                        if isinstance(val, (int, float, str, bool)):
+                            meta[f"geotiff_{key}"] = val
+                        else:
+                            meta[f"geotiff_{key}"] = str(val)
+                    except:
+                        meta[f"geotiff_{key}"] = str(val)
                 
                 yield RasterChunk(data=data, metadata=meta)
                 

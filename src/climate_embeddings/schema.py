@@ -125,16 +125,24 @@ class ClimateChunkMetadata:
                 pass
         
         # Collect additional metadata (fields not in standard schema)
+        # This preserves ALL custom metadata from any source dynamically
         standard_fields = {
-            "dataset_name", "source_id", "variable", "long_name", "standard_name", "unit",
+            "dataset_name", "source_id", "variable", "long_name", "standard_name", "unit", "units",
             "time_start", "time_end", "temporal_frequency", "lat_min", "lat_max", "lon_min", "lon_max",
             "min_lat", "max_lat", "min_lon", "max_lon", "start_date", "end_date",
-            "file_path", "chunk_index", "row_count", "shape", "format", "source"
+            "file_path", "chunk_index", "row_count", "shape", "format", "source",
+            "station_id", "station_name", "station_names", "station_count",
+            "description", "title", "institution", "source_description"
         }
-        additional = {
-            k: v for k, v in raw_metadata.items()
-            if k not in standard_fields and v is not None
-        }
+        additional = {}
+        for k, v in raw_metadata.items():
+            if k not in standard_fields and v is not None:
+                # Handle nested dicts (like additional_attrs, geotiff_tags)
+                if isinstance(v, dict):
+                    for nested_k, nested_v in v.items():
+                        additional[f"{k}_{nested_k}"] = nested_v
+                else:
+                    additional[k] = v
         
         return cls(
             dataset_name=dataset_name or source_id,

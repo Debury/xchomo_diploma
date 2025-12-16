@@ -35,6 +35,7 @@ def build_rag_prompt(
     seen_vars = set()
     seen_sources = set()
     time_periods = set()  # Collect ALL unique time periods
+    seen_stations = set()  # Collect ALL unique stations
     
     for i, chunk in enumerate(context_chunks[:15], 1):  # Use top 15 chunks
         meta = chunk.get('metadata', {})
@@ -44,6 +45,14 @@ def build_rag_prompt(
         
         seen_vars.add(var)
         seen_sources.add(source)
+        
+        # Extract station info
+        station_name = meta.get('station_name', '')
+        station_id = meta.get('station_id', '')
+        if station_name:
+            seen_stations.add(station_name)
+        elif station_id:
+            seen_stations.add(station_id)
         
         # Build compact summary
         stats_parts = []
@@ -69,7 +78,12 @@ def build_rag_prompt(
         else:
             time_str = ""
         
+        # Build summary with station info if available
         summary = f"[{i}] {var} from {source}"
+        if station_name:
+            summary += f" (station: {station_name})"
+        elif station_id:
+            summary += f" (station: {station_id})"
         if stats_parts:
             summary += f" ({', '.join(stats_parts)})"
         if time_str:
@@ -88,6 +102,15 @@ def build_rag_prompt(
             time_periods_info = f"\n\nAVAILABLE TIME PERIODS IN DATA: {len(sorted_periods)} unique dates from {sorted_periods[0]} to {sorted_periods[-1]}\nAll dates: {', '.join(sorted_periods[:20])}{'...' if len(sorted_periods) > 20 else ''}"
         else:
             time_periods_info = f"\n\nAVAILABLE TIME PERIOD: {sorted_periods[0]}"
+    
+    # Build stations summary
+    stations_info = ""
+    if seen_stations:
+        stations_list = sorted(seen_stations)
+        if len(stations_list) > 1:
+            stations_info = f"\n\nAVAILABLE STATIONS/LOCATIONS IN DATA: {', '.join(stations_list)}"
+        else:
+            stations_info = f"\n\nAVAILABLE STATION/LOCATION: {stations_list[0]}"
     
     # Build sources info
     sources_info = ""
@@ -163,9 +186,29 @@ ANSWER:"""
             max_tokens = 200
         
     elif question_type == "comparison":
+        # Build dynamic instructions based on available metadata
+        dynamic_instructions = []
+        dynamic_instructions.append("- Compare the data points accurately")
+        dynamic_instructions.append("- Reference specific values from the context")
+        dynamic_instructions.append("- Mention source and variable names")
+        dynamic_instructions.append("- Be precise with numbers and units")
+        dynamic_instructions.append("- If comparing variables, mention both")
+        
+        if seen_stations:
+            dynamic_instructions.append("- If comparing locations/stations, filter data by station_name or station_id from the context")
+            dynamic_instructions.append("- Match location names from the question to station_name or station_id in the context")
+        
+        if time_periods:
+            dynamic_instructions.append("- If comparing time periods, filter data by time_start/time_end from the context")
+            dynamic_instructions.append("- Extract specific dates/months from the question and match to time_start/time_end in context")
+        
+        dynamic_instructions.append("- If the requested comparison cannot be made with available data, explain what data is available")
+        
+        instructions_text = "\n".join(dynamic_instructions)
+        
         prompt = f"""You are a climate data assistant. Compare and analyze the data accurately.
 
-{variables_info}{sources_info}
+{variables_info}{sources_info}{time_periods_info}{stations_info}
 
 CONTEXT (retrieved data):
 {context_text}
@@ -173,19 +216,35 @@ CONTEXT (retrieved data):
 QUESTION: {question}
 
 INSTRUCTIONS:
-- Compare the data points accurately
-- Reference specific values from the context
-- Mention source and variable names
-- Be precise with numbers and units
-- If comparing variables, mention both
+{instructions_text}
 
 ANSWER:"""
-        max_tokens = 250
+        max_tokens = 600
         
     elif question_type == "statistical":
+        # Build dynamic instructions based on available metadata
+        dynamic_instructions = []
+        dynamic_instructions.append("- Use exact statistical values from the context (mean, min, max, range)")
+        dynamic_instructions.append("- Reference the variable and source for each statistic")
+        dynamic_instructions.append("- Be precise with numbers and units")
+        
+        if time_periods:
+            dynamic_instructions.append("- If asked about a specific time period (e.g., 'July', 'August', 'summer'), filter data by time_start/time_end from the context")
+            dynamic_instructions.append("- If asked about a time range, use data from ALL dates in that range")
+            dynamic_instructions.append("- Mention the specific time period(s) used in your answer")
+        
+        if seen_stations:
+            dynamic_instructions.append("- If asked about a specific location/station, filter data by station_name or station_id from the context")
+            dynamic_instructions.append("- If location is mentioned, use only data matching that location")
+        
+        dynamic_instructions.append("- If the question asks about a specific period/location but data covers more, mention what data is available")
+        dynamic_instructions.append("- If data is insufficient for the requested filter, state what data is available")
+        
+        instructions_text = "\n".join(dynamic_instructions)
+        
         prompt = f"""You are a climate data assistant. Provide statistical analysis based on the data.
 
-{variables_info}{sources_info}{time_periods_info}
+{variables_info}{sources_info}{time_periods_info}{stations_info}
 
 CONTEXT (retrieved data):
 {context_text}
@@ -193,21 +252,33 @@ CONTEXT (retrieved data):
 QUESTION: {question}
 
 INSTRUCTIONS:
-- Use ALL available time periods from the data, not just one date
-- If asked about a time range (e.g., "summer", "June to August"), use data from ALL dates in that range
-- Aggregate statistics across ALL time periods when appropriate
-- Use exact statistical values from the context (mean, min, max)
-- Reference the variable and source
-- Be precise with numbers and mention the time range covered
-- If the question asks about a specific period but data covers more, mention the full range available
+{instructions_text}
 
 ANSWER:"""
-        max_tokens = 300
+        max_tokens = 600
         
     elif question_type == "temporal":
+        # Build dynamic instructions based on available metadata
+        dynamic_instructions = []
+        dynamic_instructions.append("- Reference specific dates/times from the context")
+        dynamic_instructions.append("- Mention trends or changes over time")
+        dynamic_instructions.append("- Include variable names and sources")
+        dynamic_instructions.append("- Be precise with temporal information")
+        
+        if time_periods:
+            dynamic_instructions.append("- Filter data by time_start/time_end when specific periods are mentioned")
+            dynamic_instructions.append("- Extract dates/months from the question and match to time_start/time_end in context")
+        
+        if seen_stations:
+            dynamic_instructions.append("- If a location is mentioned, also filter by station_name or station_id")
+        
+        dynamic_instructions.append("- If asked about a specific time period, use only data matching that period")
+        
+        instructions_text = "\n".join(dynamic_instructions)
+        
         prompt = f"""You are a climate data assistant. Answer questions about temporal patterns in the data.
 
-{variables_info}{sources_info}
+{variables_info}{sources_info}{time_periods_info}{stations_info}
 
 CONTEXT (retrieved data with timestamps):
 {context_text}
@@ -215,18 +286,37 @@ CONTEXT (retrieved data with timestamps):
 QUESTION: {question}
 
 INSTRUCTIONS:
-- Reference specific dates/times from the context
-- Mention trends or changes over time
-- Include variable names and sources
-- Be precise with temporal information
+{instructions_text}
 
 ANSWER:"""
-        max_tokens = 200
+        max_tokens = 500
         
     else:  # general
+        # Build dynamic instructions based on available metadata
+        dynamic_instructions = []
+        dynamic_instructions.append("- Answer based ONLY on the context provided above")
+        dynamic_instructions.append("- Reference specific values, variables, and sources from the context")
+        dynamic_instructions.append("- Be accurate and precise")
+        dynamic_instructions.append("- If information is not in the context, say 'I don't have that information in the provided data'")
+        dynamic_instructions.append("- Do NOT make up or invent information")
+        
+        if time_periods:
+            dynamic_instructions.append("- If asked about a specific time period (e.g., 'July', 'August', 'summer'), filter data by time_start/time_end from the context")
+            dynamic_instructions.append("- Extract dates/months from the question and match to time_start/time_end in context")
+            dynamic_instructions.append("- If asked about a time range, use data from ALL dates in that range")
+        
+        if seen_stations:
+            dynamic_instructions.append("- If asked about a specific location/station, filter data by station_name or station_id from the context")
+            dynamic_instructions.append("- Match location names from the question to station_name or station_id in the context")
+        
+        dynamic_instructions.append("- If the question asks about a specific period/location, use only data matching those filters")
+        dynamic_instructions.append("- If filtered data is insufficient, state what data is available")
+        
+        instructions_text = "\n".join(dynamic_instructions)
+        
         prompt = f"""You are a climate data assistant. Answer the question accurately using ONLY the provided data.
 
-{variables_info}{sources_info}{time_periods_info}
+{variables_info}{sources_info}{time_periods_info}{stations_info}
 
 CONTEXT (retrieved data):
 {context_text}
@@ -234,17 +324,10 @@ CONTEXT (retrieved data):
 QUESTION: {question}
 
 INSTRUCTIONS:
-- Answer based ONLY on the context provided above
-- Use ALL available time periods when answering, not just one date
-- If asked about a time range, use data from ALL dates in that range
-- Reference specific values, variables, sources, and time periods
-- Be accurate and precise
-- If information is not in the context, say "I don't have that information in the provided data"
-- Do NOT make up or invent information
-- If the question asks about a period (e.g., "summer", "June to August"), aggregate across ALL dates in that period
+{instructions_text}
 
 ANSWER:"""
-        max_tokens = 300
+        max_tokens = 500
     
     return prompt, max_tokens
 
