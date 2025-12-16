@@ -476,16 +476,49 @@ async def get_sample_embeddings(limit: int = 10):
         return []
 
 @app.post("/embeddings/clear")
-async def clear_embeddings(confirm: bool = False):
-    if not confirm: raise HTTPException(400, "Set confirm=true")
+async def clear_embeddings(confirm: bool = False, delete_sources: bool = False):
+    """
+    Clear all embeddings from Qdrant. Optionally also delete all sources.
+    
+    Args:
+        confirm: Must be True to proceed
+        delete_sources: If True, also delete all sources
+    """
+    if not confirm:
+        raise HTTPException(400, "Set confirm=true to clear embeddings")
+    
     from src.embeddings.database import VectorDatabase
     from src.utils.config_loader import ConfigLoader
     # Load config for proper collection name
     config_loader = ConfigLoader("config/pipeline_config.yaml")
     pipeline_config = config_loader.load()
     db = VectorDatabase(config=pipeline_config)
-    db.client.delete_collection(db.collection)
-    return {"status": "cleared", "collection": db.collection}
+    
+    # Check if collection exists
+    collections = db.client.get_collections().collections
+    exists = any(c.name == db.collection for c in collections)
+    
+    if exists:
+        db.client.delete_collection(db.collection)
+        logger.info(f"Deleted collection: {db.collection}")
+    else:
+        logger.warning(f"Collection {db.collection} does not exist")
+    
+    # Delete sources if requested
+    sources_deleted = 0
+    if delete_sources:
+        from src.sources import get_source_store
+        store = get_source_store()
+        all_sources = store.get_all_sources(active_only=False)
+        for source in all_sources:
+            if store.hard_delete_source(source.source_id):
+                sources_deleted += 1
+    
+    return {
+        "status": "cleared",
+        "collection": db.collection,
+        "sources_deleted": sources_deleted if delete_sources else None
+    }
 
 # --- SOURCES ---
 
@@ -533,6 +566,118 @@ async def delete_source(source_id: str):
     from src.sources import get_source_store
     get_source_store().hard_delete_source(source_id)
     return None
+
+@app.delete("/sources", status_code=200)
+async def delete_all_sources(confirm: bool = False, delete_embeddings: bool = False):
+    """
+    Delete all sources. Optionally also delete embeddings from Qdrant.
+    
+    Args:
+        confirm: Must be True to proceed
+        delete_embeddings: If True, also delete embeddings from Qdrant for these sources
+    """
+    if not confirm:
+        raise HTTPException(400, "Set confirm=true to delete all sources")
+    
+    from src.sources import get_source_store
+    store = get_source_store()
+    
+    # Get all sources first
+    all_sources = store.get_all_sources(active_only=False)
+    source_ids = [s.source_id for s in all_sources]
+    
+    # Delete embeddings if requested
+    if delete_embeddings and source_ids:
+        try:
+            from src.embeddings.database import VectorDatabase
+            from src.utils.config_loader import ConfigLoader
+            from qdrant_client import models
+            
+            config_loader = ConfigLoader("config/pipeline_config.yaml")
+            pipeline_config = config_loader.load()
+            db = VectorDatabase(config=pipeline_config)
+            
+            # Delete points by source_id filter
+            for source_id in source_ids:
+                try:
+                    db.client.delete(
+                        collection_name=db.collection,
+                        points_selector=models.Filter(
+                            must=[
+                                models.FieldCondition(
+                                    key="source_id",
+                                    match=models.MatchValue(value=source_id)
+                                )
+                            ]
+                        )
+                    )
+                    logger.info(f"Deleted embeddings for source: {source_id}")
+                except Exception as e:
+                    logger.warning(f"Failed to delete embeddings for {source_id}: {e}")
+        except Exception as e:
+            logger.error(f"Error deleting embeddings: {e}")
+    
+    # Delete all sources
+    deleted_count = 0
+    for source_id in source_ids:
+        if store.hard_delete_source(source_id):
+            deleted_count += 1
+    
+    return {
+        "status": "deleted",
+        "sources_deleted": deleted_count,
+        "embeddings_deleted": delete_embeddings
+    }
+
+@app.delete("/sources/{source_id}/embeddings", status_code=200)
+async def delete_source_embeddings(source_id: str, confirm: bool = False):
+    """
+    Delete all embeddings for a specific source from Qdrant.
+    
+    Args:
+        source_id: Source ID to delete embeddings for
+        confirm: Must be True to proceed
+    """
+    if not confirm:
+        raise HTTPException(400, "Set confirm=true to delete embeddings")
+    
+    from src.sources import get_source_store
+    store = get_source_store()
+    source = store.get_source(source_id)
+    
+    if not source:
+        raise HTTPException(404, "Source not found")
+    
+    try:
+        from src.embeddings.database import VectorDatabase
+        from src.utils.config_loader import ConfigLoader
+        from qdrant_client import models
+        
+        config_loader = ConfigLoader("config/pipeline_config.yaml")
+        pipeline_config = config_loader.load()
+        db = VectorDatabase(config=pipeline_config)
+        
+        # Delete points by source_id filter
+        db.client.delete(
+            collection_name=db.collection,
+            points_selector=models.Filter(
+                must=[
+                    models.FieldCondition(
+                        key="source_id",
+                        match=models.MatchValue(value=source_id)
+                    )
+                ]
+            )
+        )
+        
+        return {
+            "status": "deleted",
+            "source_id": source_id,
+            "message": f"Embeddings for source {source_id} deleted"
+        }
+    except Exception as e:
+        logger.error(f"Error deleting embeddings for {source_id}: {e}")
+        raise HTTPException(500, f"Failed to delete embeddings: {str(e)}")
 
 # --- RAG ---
 

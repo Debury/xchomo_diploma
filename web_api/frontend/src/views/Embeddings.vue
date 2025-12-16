@@ -171,9 +171,32 @@ function exportEmbeddings() {
   alert('Export feature coming soon!')
 }
 
-function clearEmbeddings() {
-  if (confirm('⚠️ This will permanently delete all embeddings. Are you sure?')) {
-    alert('Clear operation would be performed')
+async function clearEmbeddings() {
+  const deleteSources = confirm('⚠️ This will permanently delete ALL embeddings from Qdrant.\n\nDo you also want to delete all sources?')
+  const confirmMsg = deleteSources 
+    ? '⚠️ This will permanently delete ALL embeddings AND all sources. This cannot be undone!\n\nAre you absolutely sure?'
+    : '⚠️ This will permanently delete ALL embeddings from Qdrant. This cannot be undone!\n\nAre you sure?'
+  
+  if (confirm(confirmMsg)) {
+    try {
+      const resp = await fetch(`/embeddings/clear?confirm=true&delete_sources=${deleteSources}`, {
+        method: 'POST'
+      })
+      
+      if (!resp.ok) {
+        const error = await resp.json().catch(() => ({ detail: 'Unknown error' }))
+        throw new Error(error.detail || `HTTP ${resp.status}`)
+      }
+      
+      const result = await resp.json()
+      alert(`✅ Successfully cleared embeddings${deleteSources ? ' and sources' : ''}!\n\nCollection: ${result.collection}\nSources deleted: ${result.sources_deleted || 0}`)
+      
+      // Refresh stats
+      await refreshStats()
+    } catch (e) {
+      console.error('Error clearing embeddings:', e)
+      alert(`❌ Error: ${e.message}`)
+    }
   }
 }
 

@@ -14,12 +14,21 @@
         >
           ↻ Refresh
         </button>
+      <div class="flex gap-2">
+        <button
+          @click="deleteAllSources"
+          class="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors"
+          title="Delete all sources"
+        >
+          🗑️ Clear All
+        </button>
         <router-link 
           to="/sources/create"
           class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
         >
           + Add Source
         </router-link>
+      </div>
       </div>
     </div>
 
@@ -91,6 +100,13 @@
             class="flex-1 px-3 py-2 bg-dark-hover text-gray-300 rounded hover:bg-gray-600 transition-colors text-sm disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {{ source.refreshing ? 'Triggering...' : 'Refresh' }}
+          </button>
+          <button 
+            @click="deleteSource(source)"
+            class="px-3 py-2 bg-red-600/20 text-red-400 rounded hover:bg-red-600/30 transition-colors text-sm"
+            title="Delete source"
+          >
+            🗑️
           </button>
         </div>
       </div>
@@ -180,6 +196,24 @@
                 <span class="text-gray-500">Active:</span>
                 <span class="text-gray-300">{{ selectedSource.enabled ? 'Yes' : 'No' }}</span>
               </div>
+            </div>
+          </div>
+          
+          <div class="pt-4 border-t border-dark-border">
+            <h4 class="text-sm font-medium text-gray-400 mb-3">Danger Zone</h4>
+            <div class="space-y-2">
+              <button
+                @click="deleteSourceEmbeddings(selectedSource)"
+                class="w-full px-4 py-2 bg-yellow-600/20 text-yellow-400 rounded hover:bg-yellow-600/30 transition-colors text-sm"
+              >
+                🗑️ Delete Embeddings for This Source
+              </button>
+              <button
+                @click="deleteSource(selectedSource)"
+                class="w-full px-4 py-2 bg-red-600/20 text-red-400 rounded hover:bg-red-600/30 transition-colors text-sm"
+              >
+                🗑️ Delete Source
+              </button>
             </div>
           </div>
         </div>
@@ -325,6 +359,56 @@ async function refreshSource(source) {
   }
 }
 
+async function deleteSource(source) {
+  if (!confirm(`⚠️ Delete source "${source.name}"?\n\nThis will permanently delete the source configuration.`)) {
+    return
+  }
+  
+  try {
+    const resp = await fetch(`/sources/${source.source_id}`, {
+      method: 'DELETE'
+    })
+    
+    if (!resp.ok && resp.status !== 204) {
+      const errorData = await resp.json().catch(() => ({ detail: 'Unknown error' }))
+      throw new Error(errorData.detail || `HTTP ${resp.status}: ${resp.statusText}`)
+    }
+    
+    alert(`✅ Source "${source.name}" deleted successfully!`)
+    await loadSources()
+    if (selectedSource.value && selectedSource.value.source_id === source.source_id) {
+      selectedSource.value = null
+    }
+  } catch (e) {
+    console.error('Error deleting source:', e)
+    alert(`❌ Error: ${e.message}`)
+  }
+}
+
+async function deleteSourceEmbeddings(source) {
+  if (!confirm(`⚠️ Delete all embeddings for source "${source.name}"?\n\nThis will permanently delete all embeddings from Qdrant for this source. This cannot be undone!`)) {
+    return
+  }
+  
+  try {
+    const resp = await fetch(`/sources/${source.source_id}/embeddings?confirm=true`, {
+      method: 'DELETE'
+    })
+    
+    if (!resp.ok) {
+      const errorData = await resp.json().catch(() => ({ detail: 'Unknown error' }))
+      throw new Error(errorData.detail || `HTTP ${resp.status}: ${resp.statusText}`)
+    }
+    
+    const result = await resp.json()
+    alert(`✅ ${result.message}`)
+    await loadSources()
+  } catch (e) {
+    console.error('Error deleting embeddings:', e)
+    alert(`❌ Error: ${e.message}`)
+  }
+}
+
 function startStatusPolling() {
   // Poll for status updates every 5 seconds if any source is processing
   statusPollInterval = setInterval(() => {
@@ -339,6 +423,35 @@ function stopStatusPolling() {
   if (statusPollInterval) {
     clearInterval(statusPollInterval)
     statusPollInterval = null
+  }
+}
+
+async function deleteAllSources() {
+  const deleteEmbeddings = confirm('⚠️ This will delete ALL sources.\n\nDo you also want to delete embeddings from Qdrant?')
+  const confirmMsg = deleteEmbeddings
+    ? '⚠️ This will permanently delete ALL sources AND their embeddings. This cannot be undone!\n\nAre you absolutely sure?'
+    : '⚠️ This will permanently delete ALL sources. This cannot be undone!\n\nAre you sure?'
+  
+  if (confirm(confirmMsg)) {
+    try {
+      const resp = await fetch(`/sources?confirm=true&delete_embeddings=${deleteEmbeddings}`, {
+        method: 'DELETE'
+      })
+      
+      if (!resp.ok) {
+        const error = await resp.json().catch(() => ({ detail: 'Unknown error' }))
+        throw new Error(error.detail || `HTTP ${resp.status}`)
+      }
+      
+      const result = await resp.json()
+      alert(`✅ Successfully deleted ${result.sources_deleted} source(s)${deleteEmbeddings ? ' and embeddings' : ''}!`)
+      
+      // Refresh sources list
+      await loadSources()
+    } catch (e) {
+      console.error('Error deleting sources:', e)
+      alert(`❌ Error: ${e.message}`)
+    }
   }
 }
 
