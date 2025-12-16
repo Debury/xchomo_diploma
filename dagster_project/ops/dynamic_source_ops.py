@@ -7,6 +7,7 @@ Each source is loaded from the database and processed independently.
 
 import sys
 import os
+import shutil
 from pathlib import Path
 from typing import Dict, Any, Optional
 from datetime import datetime
@@ -143,17 +144,44 @@ def fetch_source_data(
         filename = f"{source_id}_{timestamp}.{format.replace('netcdf', 'nc')}"
         filepath = output_dir / filename
         
-        # REAL DOWNLOAD - using requests/xarray
-        import requests
-        
-        logger.info(f"[{source_id}] Downloading to: {filepath}")
-        
-        response = requests.get(url, stream=True, timeout=60)
-        response.raise_for_status()
-        
-        with open(filepath, 'wb') as f:
-            for chunk in response.iter_content(chunk_size=8192):
-                f.write(chunk)
+        # Handle local files vs HTTP URLs
+        if url.startswith('file://'):
+            # Local file - copy it
+            local_path = Path(url.replace('file://', ''))
+            if not local_path.exists():
+                # Try relative path from project root
+                project_root = Path(__file__).parent.parent.parent
+                local_path = project_root / url.replace('file://', '').lstrip('/')
+            
+            if local_path.exists():
+                logger.info(f"[{source_id}] Copying local file from: {local_path}")
+                shutil.copy2(local_path, filepath)
+            else:
+                raise FileNotFoundError(f"Local file not found: {url}")
+        elif Path(url).exists() and not url.startswith('http'):
+            # Direct file path (not URL)
+            local_path = Path(url)
+            if not local_path.is_absolute():
+                # Try relative from project root
+                project_root = Path(__file__).parent.parent.parent
+                local_path = project_root / url
+            
+            if local_path.exists():
+                logger.info(f"[{source_id}] Copying local file from: {local_path}")
+                shutil.copy2(local_path, filepath)
+            else:
+                raise FileNotFoundError(f"File not found: {url}")
+        else:
+            # HTTP/HTTPS URL - download
+            import requests
+            logger.info(f"[{source_id}] Downloading from URL: {url}")
+            
+            response = requests.get(url, stream=True, timeout=60)
+            response.raise_for_status()
+            
+            with open(filepath, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    f.write(chunk)
         
         file_size = filepath.stat().st_size
         logger.info(f"[{source_id}] Downloaded {file_size / 1024 / 1024:.2f} MB")

@@ -128,24 +128,55 @@ def process_all_sources(context: OpExecutionContext):
             headers = {"User-Agent": "Mozilla/5.0"}
 
             if not filepath.exists():
-                logger.info(f"Downloading {source.url}...")
-                with requests.get(source.url, headers=headers, stream=True, timeout=(10, 600)) as response:
-                    response.raise_for_status()
-                    ctype = response.headers.get('content-type', '').lower()
-                    if 'html' in ctype: raise Exception(f"Invalid content type: {ctype}")
+                # Handle local files vs HTTP URLs
+                if source.url.startswith('file://'):
+                    # Local file - copy it
+                    import shutil
+                    local_path = Path(source.url.replace('file://', ''))
+                    if not local_path.exists():
+                        # Try relative path from project root
+                        project_root = Path(__file__).parent.parent
+                        local_path = project_root / source.url.replace('file://', '').lstrip('/')
                     
-                    downloaded = 0
-                    last_log = time.time()
-                    last_heartbeat = time.time()
-                    with open(filepath, 'wb') as f:
-                        for chunk in response.iter_content(chunk_size=8192):
-                            f.write(chunk)
-                            downloaded += len(chunk)
-                            
-                            # Log progress every 5 seconds
-                            if time.time() - last_log > 5:
-                                logger.info(f"Downloading... {downloaded / 1024 / 1024:.1f} MB")
-                                last_log = time.time()
+                    if local_path.exists():
+                        logger.info(f"Copying local file from: {local_path}")
+                        shutil.copy2(local_path, filepath)
+                    else:
+                        raise FileNotFoundError(f"Local file not found: {source.url}")
+                elif Path(source.url).exists() and not source.url.startswith('http'):
+                    # Direct file path (not URL)
+                    import shutil
+                    local_path = Path(source.url)
+                    if not local_path.is_absolute():
+                        # Try relative from project root
+                        project_root = Path(__file__).parent.parent
+                        local_path = project_root / source.url
+                    
+                    if local_path.exists():
+                        logger.info(f"Copying local file from: {local_path}")
+                        shutil.copy2(local_path, filepath)
+                    else:
+                        raise FileNotFoundError(f"File not found: {source.url}")
+                else:
+                    # HTTP/HTTPS URL - download normally
+                    logger.info(f"Downloading from URL: {source.url}...")
+                    with requests.get(source.url, headers=headers, stream=True, timeout=(10, 600)) as response:
+                        response.raise_for_status()
+                        ctype = response.headers.get('content-type', '').lower()
+                        if 'html' in ctype: raise Exception(f"Invalid content type: {ctype}")
+                        
+                        downloaded = 0
+                        last_log = time.time()
+                        last_heartbeat = time.time()
+                        with open(filepath, 'wb') as f:
+                            for chunk in response.iter_content(chunk_size=8192):
+                                f.write(chunk)
+                                downloaded += len(chunk)
+                                
+                                # Log progress every 5 seconds
+                                if time.time() - last_log > 5:
+                                    logger.info(f"Downloading... {downloaded / 1024 / 1024:.1f} MB")
+                                    last_log = time.time()
                             
                             # Yield heartbeat every 10 seconds to keep Dagster alive
                             if time.time() - last_heartbeat > 10:
