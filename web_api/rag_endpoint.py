@@ -359,22 +359,45 @@ async def rag_query(request: RAGRequest) -> RAGResponse:
                 logger.info(f"Data selection: vars={selected_vars}, locations={selected_locations}, time_periods={selected_time_periods}")
                 
                 # Perform additional targeted searches for selected variables
-                existing_vars = {meta.get('variable', '') for hit in results for meta in [hit.payload if hasattr(hit, 'payload') else hit.get('payload', {})]}
+                existing_vars = set()
+                for hit in results:
+                    if hasattr(hit, 'payload'):
+                        meta = hit.payload
+                    else:
+                        meta = hit.get('payload', {})
+                    var = meta.get('variable', '')
+                    if var:
+                        existing_vars.add(var)
+                
                 for var in selected_vars:
                     if var not in existing_vars:
                         try:
                             logger.info(f"Additional search for variable: {var}")
                             var_results = db.search(
                                 query_vector=query_vec.tolist(),
-                                limit=5,
+                                limit=10,  # Get more results for missing variables
                                 filter_dict={"variable": var}
                             )
-                            # Add to results (avoid duplicates)
-                            existing_ids = {getattr(hit, 'id', None) for hit in results if hasattr(hit, 'id')}
+                            # Add to results (avoid duplicates by ID)
+                            existing_ids = set()
+                            for hit in results:
+                                if hasattr(hit, 'id'):
+                                    existing_ids.add(hit.id)
+                                elif isinstance(hit, dict) and 'id' in hit:
+                                    existing_ids.add(hit['id'])
+                            
+                            added_count = 0
                             for hit in var_results:
-                                hit_id = getattr(hit, 'id', None)
+                                hit_id = getattr(hit, 'id', None) if hasattr(hit, 'id') else (hit.get('id') if isinstance(hit, dict) else None)
                                 if hit_id not in existing_ids:
                                     results.append(hit)
+                                    existing_ids.add(hit_id)
+                                    added_count += 1
+                            
+                            if added_count > 0:
+                                logger.info(f"Added {added_count} results for variable {var} to context")
+                            else:
+                                logger.warning(f"No new results found for variable {var}")
                         except Exception as e:
                             logger.warning(f"Additional search for {var} failed: {e}")
                 
