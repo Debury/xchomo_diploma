@@ -10,17 +10,19 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-def build_variable_selection_prompt(
+def build_data_selection_prompt(
     question: str,
     all_variables: List[str],
-    var_meanings: Dict[str, str]
+    var_meanings: Dict[str, str],
+    available_locations: Optional[List[Dict[str, Any]]] = None,
+    available_time_periods: Optional[List[str]] = None
 ) -> str:
     """
-    First prompt: Select relevant variables from all available variables.
-    This helps ensure we don't miss variables that aren't in search results.
+    First prompt: Select relevant variables, locations, and time periods from available data.
+    This helps ensure we don't miss data that aren't in initial search results.
     
     Returns:
-        Prompt string for variable selection
+        Prompt string for data selection
     """
     var_list = []
     for var in all_variables:
@@ -30,23 +32,46 @@ def build_variable_selection_prompt(
         else:
             var_list.append(f"- {var}")
     
-    prompt = f"""You are analyzing a climate data question. Your task is to identify which variables from the dataset are relevant to answer this question.
+    location_info = ""
+    if available_locations:
+        location_info = f"\n\nAVAILABLE LOCATIONS IN DATASET:\n"
+        for loc in available_locations[:20]:  # Limit to 20
+            lat = loc.get('latitude_min') or loc.get('lat_min')
+            lon = loc.get('longitude_min') or loc.get('lon_min')
+            station = loc.get('station_name') or loc.get('station_id')
+            if lat and lon:
+                location_info += f"- Latitude: {lat}, Longitude: {lon}"
+                if station:
+                    location_info += f", Station: {station}"
+                location_info += "\n"
+    
+    time_info = ""
+    if available_time_periods:
+        sorted_periods = sorted(available_time_periods)
+        time_info = f"\n\nAVAILABLE TIME PERIODS IN DATASET:\n"
+        time_info += f"From {sorted_periods[0]} to {sorted_periods[-1]} ({len(sorted_periods)} unique dates)\n"
+        time_info += f"Sample dates: {', '.join(sorted_periods[:10])}{'...' if len(sorted_periods) > 10 else ''}"
+    
+    prompt = f"""You are analyzing a climate data question. Your task is to identify what data needs to be retrieved to answer this question.
 
 QUESTION: {question}
 
 AVAILABLE VARIABLES IN DATASET ({len(all_variables)} total):
-{chr(10).join(var_list)}
+{chr(10).join(var_list)}{location_info}{time_info}
 
 INSTRUCTIONS:
 1. Read the question carefully
-2. Identify which variable(s) from the list above are needed to answer the question
-3. If the question asks for "average" or "mean", look for variables with "average" or "mean" in their name/description
-4. If the question asks for "minimum" or "min", look for variables with "minimum" or "min" in their name/description
-5. If the question asks for "maximum" or "max", look for variables with "maximum" or "max" in their name/description
-6. If the question asks for "statistics" or "all", include all relevant variables
-7. Return ONLY a comma-separated list of variable names (e.g., "TAVG, TMAX, TMIN")
+2. Identify which VARIABLES are needed (match question intent to variable names/descriptions)
+3. Identify which LOCATIONS are mentioned (extract location names, coordinates, or regions from question)
+4. Identify which TIME PERIODS are mentioned (extract dates, months, seasons, years from question)
+5. Return your answer in this EXACT format (one line per section):
+VARIABLES: comma-separated list (e.g., "TAVG, TMAX, TMIN")
+LOCATIONS: location names or coordinates mentioned in question (e.g., "Slovakia" or "48.15, 17.11" or "Bratislava, Kosice")
+TIME_PERIODS: date range or periods mentioned (e.g., "2023-06-01 to 2023-08-31" or "summer 2023" or "August 2023")
 
-RELEVANT VARIABLES:"""
+If a section is not mentioned in the question, write "NONE" for that section.
+
+ANSWER:"""
     
     return prompt
 

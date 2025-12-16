@@ -271,14 +271,121 @@ async def rag_query(request: RAGRequest) -> RAGResponse:
         else:
             effective_top_k = max(1, min(request.top_k, 15))  # Standard search
         
+        # First search: semantic search
         results = db.search(
             query_vector=query_vec.tolist(),
             limit=effective_top_k,
             filter_dict=filter_dict if filter_dict else None
         )
         
+        # DYNAMIC: Get all variables and do targeted searches based on first prompt analysis
+        all_variables = _get_variable_list(db, force_refresh=False)
+        if all_variables:
+            try:
+                # Get sample metadata to extract available locations and time periods
+                sample_meta = []
+                for hit in results[:5]:  # Use first 5 results as samples
+                    if hasattr(hit, 'payload'):
+                        sample_meta.append(hit.payload)
+                    else:
+                        sample_meta.append(hit.get('payload', {}))
+                
+                # Extract variable meanings from sample
+                var_meanings = {}
+                for meta in sample_meta:
+                    var = meta.get('variable', '')
+                    if var:
+                        long_name = meta.get('long_name') or meta.get('standard_name')
+                        if long_name:
+                            var_meanings[var] = long_name
+                
+                # Use first prompt to select variables, locations, time periods
+                from web_api.prompt_builder import build_data_selection_prompt
+                
+                # Get available locations and time periods from sample metadata
+                available_locations = sample_meta
+                available_time_periods = []
+                for meta in sample_meta:
+                    time_start = meta.get('time_start')
+                    time_end = meta.get('time_end')
+                    if time_start:
+                        available_time_periods.append(str(time_start)[:10])
+                    if time_end:
+                        available_time_periods.append(str(time_end)[:10])
+                available_time_periods = sorted(set(available_time_periods))
+                
+                # First prompt: Select what data to retrieve
+                data_selection_prompt = build_data_selection_prompt(
+                    question=question_text,
+                    all_variables=all_variables,
+                    var_meanings=var_meanings,
+                    available_locations=available_locations,
+                    available_time_periods=available_time_periods
+                )
+                
+                # Get data selection from LLM
+                data_selection_response = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        lambda: llm_client.generate(
+                            prompt=data_selection_prompt,
+                            temperature=0.1,
+                            max_tokens=100,
+                            timeout_s=10,
+                        )
+                    ),
+                    timeout=10
+                )
+                
+                # Parse data selection
+                selected_vars = []
+                selected_locations = []
+                selected_time_periods = []
+                
+                for line in data_selection_response.strip().split('\n'):
+                    line = line.strip()
+                    if line.startswith('VARIABLES:'):
+                        vars_text = line.replace('VARIABLES:', '').strip()
+                        if vars_text.upper() != 'NONE':
+                            selected_vars = [v.strip() for v in vars_text.split(',') if v.strip() in all_variables]
+                    elif line.startswith('LOCATIONS:'):
+                        locs_text = line.replace('LOCATIONS:', '').strip()
+                        if locs_text.upper() != 'NONE':
+                            selected_locations = [l.strip() for l in locs_text.split(',')]
+                    elif line.startswith('TIME_PERIODS:'):
+                        time_text = line.replace('TIME_PERIODS:', '').strip()
+                        if time_text.upper() != 'NONE':
+                            selected_time_periods = [t.strip() for t in time_text.split(',')]
+                
+                logger.info(f"Data selection: vars={selected_vars}, locations={selected_locations}, time_periods={selected_time_periods}")
+                
+                # Perform additional targeted searches for selected variables
+                existing_vars = {meta.get('variable', '') for hit in results for meta in [hit.payload if hasattr(hit, 'payload') else hit.get('payload', {})]}
+                for var in selected_vars:
+                    if var not in existing_vars:
+                        try:
+                            logger.info(f"Additional search for variable: {var}")
+                            var_results = db.search(
+                                query_vector=query_vec.tolist(),
+                                limit=5,
+                                filter_dict={"variable": var}
+                            )
+                            # Add to results (avoid duplicates)
+                            existing_ids = {getattr(hit, 'id', None) for hit in results if hasattr(hit, 'id')}
+                            for hit in var_results:
+                                hit_id = getattr(hit, 'id', None)
+                                if hit_id not in existing_ids:
+                                    results.append(hit)
+                        except Exception as e:
+                            logger.warning(f"Additional search for {var} failed: {e}")
+                
+            except Exception as e:
+                logger.warning(f"Data selection prompt failed: {e}, continuing with initial search results")
+        
+        # Re-sort results by score
+        results = sorted(results, key=lambda x: getattr(x, 'score', 0.0) if hasattr(x, 'score') else (x.get('score', 0.0) if isinstance(x, dict) else 0.0), reverse=True)[:effective_top_k * 2]  # Allow more results after additional searches
+        
         search_time = (time.time() - search_start) * 1000  # Convert to ms
-        logger.info(f"Total search (embed+qdrant) took {search_time:.0f}ms")
+        logger.info(f"Total search (embed+qdrant+targeted) took {search_time:.0f}ms, found {len(results)} results")
         
         # 2. FORMAT CONTEXT
         chunks = []
@@ -382,8 +489,8 @@ async def rag_query(request: RAGRequest) -> RAGResponse:
                 except:
                     pass
                 
-                # Use dynamic prompt builder with multi-prompting
-                from web_api.prompt_builder import build_rag_prompt, detect_question_type, build_variable_selection_prompt
+                # Use dynamic prompt builder
+                from web_api.prompt_builder import build_rag_prompt, detect_question_type
                 
                 question_type = detect_question_type(question_text)
                 
@@ -396,48 +503,21 @@ async def rag_query(request: RAGRequest) -> RAGResponse:
                         "text": chunk.get("text", "")
                     })
                 
-                # MULTI-PROMPTING: First, select relevant variables
+                # Extract selected variables from additional searches (already done in search phase)
                 selected_variables = None
-                if all_variables and len(all_variables) > 3:  # Only use multi-prompting if we have multiple variables
-                    try:
-                        # Extract variable meanings from chunks
-                        var_meanings = {}
-                        for chunk in formatted_chunks:
-                            meta = chunk.get("metadata", {})
-                            var = meta.get("variable", "")
-                            if var:
-                                long_name = meta.get("long_name") or meta.get("standard_name")
-                                if long_name:
-                                    var_meanings[var] = long_name
-                        
-                        # First prompt: Select relevant variables
-                        var_selection_prompt = build_variable_selection_prompt(
-                            question=question_text,
-                            all_variables=all_variables,
-                            var_meanings=var_meanings
-                        )
-                        
-                        # Get variable selection from LLM (short, fast)
-                        var_selection_response = await asyncio.wait_for(
-                            asyncio.to_thread(
-                                lambda: llm_client.generate(
-                                    prompt=var_selection_prompt,
-                                    temperature=0.1,  # Low temp for precise selection
-                                    max_tokens=50,  # Just variable names
-                                    timeout_s=10,
-                                )
-                            ),
-                            timeout=10
-                        )
-                        
-                        # Parse selected variables
-                        selected_vars_text = var_selection_response.strip()
-                        # Extract variable names (handle comma-separated list)
-                        selected_variables = [v.strip() for v in selected_vars_text.split(",") if v.strip() in all_variables]
-                        logger.info(f"Selected variables from first prompt: {selected_variables}")
-                    except Exception as e:
-                        logger.warning(f"Variable selection prompt failed: {e}, continuing without it")
-                        selected_variables = None
+                if all_variables:
+                    # Variables that were added via additional searches are already in chunks
+                    # We can extract them to highlight in prompt
+                    vars_in_chunks = {c.get("metadata", {}).get("variable") for c in formatted_chunks if c.get("metadata", {}).get("variable")}
+                    # If we have variables that match question intent, use them
+                    question_lower = question_text.lower()
+                    if any(word in question_lower for word in ['average', 'mean']):
+                        # Look for average/mean variables
+                        for var in all_variables:
+                            var_lower = var.lower()
+                            if ('average' in var_lower or 'mean' in var_lower) and var in vars_in_chunks:
+                                selected_variables = [var]
+                                break
                 
                 # Build comprehensive prompt with ALL variables and selected variables
                 prompt, max_tokens = build_rag_prompt(
