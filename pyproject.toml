@@ -57,7 +57,8 @@ climate-etl = "src.data_transformation.pipeline:main"
 era5-download = "src.data_acquisition.era5_downloader:main"
 
 [tool.setuptools]
-packages = ["src"]
+packages = {find = {where = ["."], include = ["src*"]}}
+package-dir = {"" = "."}
 
 [tool.black]
 line-length = 120

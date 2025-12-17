@@ -28,6 +28,10 @@ python-dotenv>=1.0.0
 # Geospatial/raster formats
 rasterio>=1.3.0
 geopandas>=0.13.0
+cfgrib>=0.9.10
+
+# Dask for chunked parallel computation
+dask[array]>=2023.0.0
 
 # Parquet support
 pyarrow>=9.0.0
@@ -45,8 +49,8 @@ python-dateutil>=2.8.0
 # Sentence transformers for embedding generation
 sentence-transformers>=2.2.0
 
-# ChromaDB for vector database
-chromadb>=0.4.0
+# Qdrant for vector database (pinned to match server version 1.11.0)
+qdrant-client>=1.11.0,<1.12.0
 
 # ====================================================================================
 # PHASE 5: DYNAMIC SOURCE MANAGEMENT & DATABASE
@@ -59,6 +63,8 @@ sqlalchemy>=2.0.0
 psycopg2-binary>=2.9.0
 
 # Additional ML/NLP dependencies
+# CPU-only version of PyTorch (no CUDA)
+--extra-index-url https://download.pytorch.org/whl/cpu
 torch>=2.0.0
 transformers>=4.30.0
 

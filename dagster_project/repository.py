@@ -1,17 +1,28 @@
-"""
-Dagster Repository for Climate ETL Pipeline
+"""Dagster repository exposing jobs, schedules, and sensors to Dagit."""
 
-Central repository that exposes all jobs, schedules, and sensors to Dagit UI.
-"""
+import sys
+from pathlib import Path
+
+# When Dagster loads this module inside the container, ensure /app is on sys.path
+# so that the top-level `src` package can be imported.
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if PROJECT_ROOT.exists() and str(PROJECT_ROOT) not in sys.path:
+    sys.path.append(str(PROJECT_ROOT))
+
+# Some interactive environments only mount /app/src, so fall back to that if needed.
+SRC_PATH = PROJECT_ROOT / "src"
+if SRC_PATH.exists() and str(SRC_PATH) not in sys.path:
+    sys.path.append(str(SRC_PATH))
 
 from dagster import Definitions
 
-from dagster_project.jobs import (
-    daily_etl_job,
-    embedding_job,
-    complete_pipeline_job,
-    validation_job
-)
+# Legacy jobs commented out - they depend on non-existent ops
+# from dagster_project.jobs import (
+#     daily_etl_job,
+#     embedding_job,
+#     complete_pipeline_job,
+#     validation_job
+# )
 from dagster_project.dynamic_jobs import (
     dynamic_source_etl_job
 )
@@ -36,11 +47,7 @@ from dagster_project.resources import (
 
 climate_etl_repository = Definitions(
     jobs=[
-        daily_etl_job,
-        embedding_job,
-        complete_pipeline_job,
-        validation_job,
-        dynamic_source_etl_job  # Phase 5: Dynamic source-driven ETL
+        dynamic_source_etl_job  # Phase 5: Dynamic source-driven ETL (only active job)
     ],
     schedules=[
         daily_etl_schedule,

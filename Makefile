@@ -49,25 +49,25 @@ setup: ## Set up environment and directories
 	@if not exist ".env" copy ".env.example" ".env" && echo "$(YELLOW)⚠ Created .env file - please edit with your credentials$(NC)"
 	@echo "$(GREEN)✓ Environment setup complete$(NC)"
 
-##@ Data Pipeline
+##@ Data Pipeline (via Dagster/API)
 
-download: ## Download ERA5 climate data
-	@echo "$(BLUE)Downloading ERA5 data...$(NC)"
-	$(PYTHON) -m src.data_acquisition.era5_downloader
-	@echo "$(GREEN)✓ Download complete$(NC)"
+run-etl: ## Trigger ETL job via API (requires API running)
+	@echo "$(BLUE)Triggering ETL job via API...$(NC)"
+	@curl -X POST http://localhost:8000/jobs/dynamic_source_etl_job/run -H "Content-Type: application/json" -d "{}" || echo "$(YELLOW)⚠ API not running. Start with 'make api' first$(NC)"
+	@echo "$(GREEN)✓ ETL job triggered$(NC)"
 
-transform: ## Run data transformation pipeline
-	@echo "$(BLUE)Running transformation pipeline...$(NC)"
-	$(PYTHON) -m src.data_transformation.pipeline $(DATA_RAW)/test_era5_data.nc -o $(DATA_PROCESSED)
-	@echo "$(GREEN)✓ Transformation complete$(NC)"
+run-embeddings: ## Generate embeddings from raster data
+	@echo "$(BLUE)Running embedding generation...$(NC)"
+	@curl -X POST http://localhost:8000/jobs/embedding_job/run -H "Content-Type: application/json" -d "{}" || echo "$(YELLOW)⚠ API not running. Start with 'make api' first$(NC)"
+	@echo "$(GREEN)✓ Embedding job triggered$(NC)"
 
-visualize: ## Visualize processed data
-	@echo "$(BLUE)Generating visualizations...$(NC)"
-	$(PYTHON) -m src.data_acquisition.visualizer $(DATA_PROCESSED)/test_era5_data.nc
-	@echo "$(GREEN)✓ Visualization complete$(NC)"
+cli-generate: ## Generate embeddings using CLI (climate_embeddings)
+	@echo "$(BLUE)Generating embeddings with CLI...$(NC)"
+	$(PYTHON) -m climate_embeddings.cli.main generate --help
+	@echo "$(YELLOW)Usage: python -m climate_embeddings.cli.main generate <file>$(NC)"
 
-run-all: setup download transform ## Run complete pipeline (download + transform)
-	@echo "$(GREEN)✓ Complete pipeline executed successfully$(NC)"
+run-all: docker-compose-up ## Start all services with docker compose
+	@echo "$(GREEN)✓ All services started$(NC)"
 
 ##@ Testing
 
@@ -81,13 +81,41 @@ test-coverage: ## Run tests with coverage report
 	$(PYTEST) $(TEST_DIR) --cov=$(SRC_DIR) --cov-report=html --cov-report=term
 	@echo "$(GREEN)✓ Coverage report generated in htmlcov/$(NC)"
 
-test-integration: ## Run integration tests only
-	@echo "$(BLUE)Running integration tests...$(NC)"
-	$(PYTEST) $(TEST_DIR)/test_integration.py -v
-	@echo "$(GREEN)✓ Integration tests complete$(NC)"
+test-formats: ## Test all supported data formats (NetCDF, GeoTIFF, CSV, ZIP)
+	@echo "$(BLUE)Testing all data formats...$(NC)"
+	@bash test_formats_server.sh
+	@echo "$(GREEN)✓ Format tests complete$(NC)"
+
+test-raster: ## Run raster pipeline tests
+	@echo "$(BLUE)Running raster pipeline tests...$(NC)"
+	$(PYTEST) $(TEST_DIR)/test_raster_pipeline_flow.py -v
+	@echo "$(GREEN)✓ Raster tests complete$(NC)"
+
+test-rag: ## Run RAG component tests
+	@echo "$(BLUE)Running RAG tests...$(NC)"
+	$(PYTEST) $(TEST_DIR)/test_rag_components.py -v
+	@echo "$(GREEN)✓ RAG tests complete$(NC)"
+
+test-embeddings: ## Run embedding tests (Qdrant integration)
+	@echo "$(BLUE)Running embedding tests...$(NC)"
+	$(PYTEST) $(TEST_DIR)/test_embeddings.py -v
+	@echo "$(GREEN)✓ Embedding tests complete$(NC)"
+
+test-dagster: ## Run Dagster tests
+	@echo "$(BLUE)Running Dagster tests...$(NC)"
+	$(PYTEST) $(TEST_DIR)/test_dagster.py -v
+	@echo "$(GREEN)✓ Dagster tests complete$(NC)"
+
+test-api: ## Run API tests
+	@echo "$(BLUE)Running API tests...$(NC)"
+	$(PYTEST) $(TEST_DIR)/test_web_api.py -v
+	@echo "$(GREEN)✓ API tests complete$(NC)"
 
 test-watch: ## Run tests in watch mode
 	$(PYTEST) $(TEST_DIR) -v --looponfail
+
+test-all: test-raster test-rag test-embeddings test-dagster test-api ## Run all test suites
+	@echo "$(GREEN)✓ All test suites complete$(NC)"
 
 ##@ Code Quality
 
@@ -121,6 +149,14 @@ clean: ## Clean generated files and caches
 	@for /d /r . %%d in (*.egg-info) do @if exist "%%d" rmdir /S /Q "%%d"
 	@echo "$(GREEN)✓ Cleanup complete$(NC)"
 
+clean-docker: ## Clean all Docker images, containers, volumes (use with caution!)
+	@echo "$(BLUE)Cleaning Docker resources...$(NC)"
+	@bash cleanup_docker.sh
+	@echo "$(GREEN)✓ Docker cleaned$(NC)"
+
+clean-rebuild: clean-docker docker-build docker-compose-up ## Clean Docker and rebuild everything
+	@echo "$(GREEN)✓ Clean rebuild complete$(NC)"
+
 clean-data: ## Clean all data (raw + processed) - USE WITH CAUTION
 	@echo "$(YELLOW)⚠ WARNING: This will delete all data files$(NC)"
 	@choice /C YN /M "Are you sure you want to continue?"
@@ -141,12 +177,12 @@ docker-run: ## Run pipeline in Docker container
 	docker run --rm -v "%CD%\data:/app/data" -v "%CD%\.env:/app/.env" climate-etl-pipeline
 	@echo "$(GREEN)✓ Docker run complete$(NC)"
 
-docker-compose-up: ## Start services with docker-compose
-	docker-compose up -d
+docker-compose-up: ## Start services with docker compose
+	docker compose up -d
 	@echo "$(GREEN)✓ Services started$(NC)"
 
-docker-compose-down: ## Stop services with docker-compose
-	docker-compose down
+docker-compose-down: ## Stop services with docker compose
+	docker compose down
 	@echo "$(GREEN)✓ Services stopped$(NC)"
 
 ##@ Documentation
@@ -198,15 +234,28 @@ notebook: ## Start Jupyter notebook server
 
 ##@ Quick Commands
 
-quick-test: ## Quick test with sample data
-	@echo "$(BLUE)Running quick test...$(NC)"
-	$(PYTHON) -m src.data_transformation.pipeline data/raw/test_era5_data.nc
-	@echo "$(GREEN)✓ Quick test complete$(NC)"
+list-sources: ## List configured data sources via API
+	@echo "$(BLUE)Listing data sources...$(NC)"
+	@curl -s http://localhost:8000/sources | $(PYTHON) -m json.tool || echo "$(YELLOW)⚠ API not running$(NC)"
 
-quick-viz: ## Quick visualization of latest processed data
-	@echo "$(BLUE)Creating quick visualization...$(NC)"
-	$(PYTHON) -m src.data_acquisition.visualizer $(DATA_PROCESSED)/test_era5_data.nc
-	@echo "$(GREEN)✓ Visualization generated$(NC)"
+check-qdrant: ## Check Qdrant status
+	@echo "$(BLUE)Checking Qdrant vector database...$(NC)"
+	@curl -s http://localhost:6333/health || echo "$(YELLOW)⚠ Qdrant not running$(NC)"
+
+check-ollama: ## Check Ollama LLM status
+	@echo "$(BLUE)Checking Ollama...$(NC)"
+	@curl -s http://localhost:11434/api/tags || echo "$(YELLOW)⚠ Ollama not running$(NC)"
+
+verify-services: check-qdrant check-ollama api-health ## Verify all services are running
+	@echo "$(GREEN)✓ Service verification complete$(NC)"
+
+show-collections: ## Show Qdrant collections
+	@echo "$(BLUE)Qdrant collections:$(NC)"
+	@curl -s http://localhost:6333/collections | $(PYTHON) -m json.tool
+
+show-models: ## Show Ollama models
+	@echo "$(BLUE)Ollama models:$(NC)"
+	@curl -s http://localhost:11434/api/tags | $(PYTHON) -m json.tool
 
 ##@ Phase 4: Orchestration & Web UI
 
@@ -238,7 +287,7 @@ api: ## Start FastAPI web service (port 8000)
 
 dagster-all: ## Start all Dagster services (Docker Compose)
 	@echo "$(BLUE)Starting all Dagster services...$(NC)"
-	docker-compose up -d dagster-postgres dagster-daemon dagit web-api
+	docker compose up -d dagster-postgres dagster-daemon dagit web-api
 	@echo "$(GREEN)✓ Services started:$(NC)"
 	@echo "  - Dagit UI: http://localhost:3000"
 	@echo "  - API Service: http://localhost:8000"
@@ -246,13 +295,13 @@ dagster-all: ## Start all Dagster services (Docker Compose)
 
 dagster-stop: ## Stop all Dagster services
 	@echo "$(BLUE)Stopping Dagster services...$(NC)"
-	docker-compose stop dagster-postgres dagster-daemon dagit web-api
+	docker compose stop dagster-postgres dagster-daemon dagit web-api
 	@echo "$(GREEN)✓ Services stopped$(NC)"
 
 dagster-logs: ## Show Dagster service logs
-	docker-compose logs -f dagit dagster-daemon web-api
+	docker compose logs -f dagit dagster-daemon web-api
 
-test-dagster: ## Run Phase 4 tests (Dagster + API)
+test-phase4: ## Run Phase 4 tests (Dagster + API) - ALIAS for test-dagster
 	@echo "$(BLUE)Running Phase 4 tests...$(NC)"
 	$(PYTEST) $(TEST_DIR)/test_dagster.py $(TEST_DIR)/test_web_api.py -v
 	@echo "$(GREEN)✓ Phase 4 tests complete$(NC)"
@@ -271,8 +320,7 @@ verify-phase4: ## Verify Phase 4 implementation
 	@echo ""
 	@echo "Checking ops:"
 	@if exist "dagster_project\ops\__init__.py" (echo "  [✓] ops\__init__.py") else (echo "  [✗] ops\__init__.py")
-	@if exist "dagster_project\ops\data_acquisition_ops.py" (echo "  [✓] ops\data_acquisition_ops.py") else (echo "  [✗] ops\data_acquisition_ops.py")
-	@if exist "dagster_project\ops\transformation_ops.py" (echo "  [✓] ops\transformation_ops.py") else (echo "  [✗] ops\transformation_ops.py")
+	@if exist "dagster_project\ops\dynamic_source_ops.py" (echo "  [✓] ops\dynamic_source_ops.py") else (echo "  [✗] ops\dynamic_source_ops.py")
 	@if exist "dagster_project\ops\embedding_ops.py" (echo "  [✓] ops\embedding_ops.py") else (echo "  [✗] ops\embedding_ops.py")
 	@echo ""
 	@echo "Checking Web API:"
@@ -297,11 +345,15 @@ api-list-jobs: ## List available Dagster jobs via API
 	@echo "$(BLUE)Listing jobs...$(NC)"
 	@curl -s http://localhost:8000/jobs | $(PYTHON) -m json.tool
 
-trigger-etl: ## Trigger daily ETL job via API
-	@echo "$(BLUE)Triggering daily_etl_job...$(NC)"
-	@curl -X POST http://localhost:8000/jobs/daily_etl_job/run -H "Content-Type: application/json" -d "{}"
+trigger-etl: ## Trigger dynamic source ETL job via API
+	@echo "$(BLUE)Triggering dynamic_source_etl_job...$(NC)"
+	@curl -X POST http://localhost:8000/jobs/dynamic_source_etl_job/run -H "Content-Type: application/json" -d "{}"
 
 trigger-embeddings: ## Trigger embedding job via API
 	@echo "$(BLUE)Triggering embedding_job...$(NC)"
 	@curl -X POST http://localhost:8000/jobs/embedding_job/run -H "Content-Type: application/json" -d "{}"
+
+rag-query: ## Query RAG system via API (example)
+	@echo "$(BLUE)Querying RAG system...$(NC)"
+	@echo "$(YELLOW)Example: curl -X POST http://localhost:8000/rag/query -H 'Content-Type: application/json' -d '{\"query\":\"What is the temperature trend?\",\"top_k\":5}'$(NC)"
 

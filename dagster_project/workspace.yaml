@@ -6,5 +6,5 @@
 load_from:
   - python_module:
       module_name: dagster_project.repository
-      working_directory: .
+      working_directory: /app
       attribute: climate_etl_repository

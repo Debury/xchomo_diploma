@@ -10,10 +10,17 @@ storage:
 run_coordinator:
   module: dagster.core.run_coordinator
   class: QueuedRunCoordinator
+  config:
+    # Allow long-running operations without timeout
+    max_concurrent_runs: 1
 
 run_launcher:
   module: dagster.core.launcher
   class: DefaultRunLauncher
+  config:
+    # Increase timeout for long-running operations (in seconds)
+    # Set to None or a large value for no timeout
+    run_timeout: 86400  # 24 hours
 
 compute_logs:
   module: dagster.core.storage.compute_log_manager
@@ -29,3 +36,8 @@ local_artifact_storage:
 
 telemetry:
   enabled: false
+
+# Increase retention for long-running operations
+retention:
+  schedule:
+    purge_after_days: 30

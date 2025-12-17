@@ -30,6 +30,18 @@ def client():
     return AsyncClient(transport=transport, base_url="http://test")
 
 
+@pytest.fixture
+def isolated_source_store(monkeypatch, tmp_path):
+    """Provide a clean SQLite DB for source-store dependent tests."""
+    db_path = tmp_path / "sources.db"
+    monkeypatch.setenv("CLIMATE_DB_URL", f"sqlite:///{db_path}")
+    from src.sources import source_store as store_module
+
+    store_module._store_instance = None
+    yield
+    store_module._store_instance = None
+
+
 # ====================================================================================
 # BASIC ENDPOINT TESTS
 # ====================================================================================
@@ -61,6 +73,119 @@ class TestBasicEndpoints:
             assert "dagster_available" in data
             assert "timestamp" in data
             assert data["status"] in ["healthy", "degraded"]
+
+
+# ====================================================================================
+# SOURCE MANAGEMENT TESTS
+# ====================================================================================
+
+
+class TestSourceDeletion:
+    """Ensure deleting sources also clears embeddings."""
+
+    @pytest.mark.asyncio
+    async def test_soft_delete_removes_embeddings(self, client, isolated_source_store, monkeypatch):
+        from src.sources import get_source_store
+
+        store = get_source_store()
+        store.create_source({
+            "source_id": "soft_delete_source",
+            "url": "http://example.com/data.csv",
+            "format": "csv",
+            "variables": ["t2m"],
+        })
+
+        deleted_sources = []
+
+        class DummyVectorDB:
+            collection_name = "dummy"
+
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def delete_embeddings_by_source(self, source_id: str) -> int:
+                deleted_sources.append(source_id)
+                return 1
+
+        monkeypatch.setattr("src.embeddings.database.VectorDatabase", DummyVectorDB)
+
+        async with client:
+            response = await client.delete("/sources/soft_delete_source")
+            assert response.status_code == status.HTTP_204_NO_CONTENT
+
+        assert deleted_sources == ["soft_delete_source"]
+        updated = get_source_store().get_source("soft_delete_source")
+        assert updated is not None and updated.is_active is False
+
+    @pytest.mark.asyncio
+    async def test_hard_delete_removes_embeddings(self, client, isolated_source_store, monkeypatch):
+        from src.sources import get_source_store
+
+        store = get_source_store()
+        store.create_source({
+            "source_id": "hard_delete_source",
+            "url": "http://example.com/data.csv",
+            "format": "csv",
+            "variables": ["t2m"],
+        })
+
+        deleted_sources = []
+
+        class DummyVectorDB:
+            collection_name = "dummy"
+
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def delete_embeddings_by_source(self, source_id: str) -> int:
+                deleted_sources.append(source_id)
+                return 1
+
+        monkeypatch.setattr("src.embeddings.database.VectorDatabase", DummyVectorDB)
+
+        async with client:
+            response = await client.delete("/sources/hard_delete_source?hard_delete=true")
+            assert response.status_code == status.HTTP_204_NO_CONTENT
+
+        assert deleted_sources == ["hard_delete_source"]
+        assert get_source_store().get_source("hard_delete_source") is None
+
+
+# ====================================================================================
+# EMBEDDING MAINTENANCE TESTS
+# ====================================================================================
+
+
+class TestEmbeddingMaintenance:
+    """Ensure embedding admin endpoints behave correctly."""
+
+    @pytest.mark.asyncio
+    async def test_clear_embeddings_requires_confirmation(self, client):
+        async with client:
+            response = await client.post("/embeddings/clear")
+            assert response.status_code == status.HTTP_400_BAD_REQUEST
+
+    @pytest.mark.asyncio
+    async def test_clear_embeddings_endpoint(self, client, monkeypatch):
+        payload = {"calls": 0}
+
+        class DummyVectorDB:
+            collection_name = "dummy"
+
+            def clear_collection(self) -> int:
+                payload["calls"] += 1
+                return 7
+
+        monkeypatch.setattr("src.embeddings.database.VectorDatabase", DummyVectorDB)
+
+        async with client:
+            response = await client.post("/embeddings/clear?confirm=true")
+            assert response.status_code == status.HTTP_200_OK
+            data = response.json()
+            assert data["removed_embeddings"] == 7
+            assert data["collection_name"] == "dummy"
+
+        assert payload["calls"] == 1
 
 
 # ====================================================================================
@@ -361,6 +486,25 @@ class TestDocumentation:
             assert "openapi" in schema
             assert "info" in schema
             assert "paths" in schema
+
+
+class TestSampleDownloads:
+    """Ensure sample dataset endpoint handles edge cases"""
+
+    @pytest.mark.asyncio
+    async def test_missing_sample_returns_404(self, client):
+        async with client:
+            response = await client.get("/samples/not_real.nc")
+            assert response.status_code == status.HTTP_404_NOT_FOUND
+
+    @pytest.mark.asyncio
+    async def test_directory_traversal_is_rejected(self, client):
+        async with client:
+            response = await client.get("/samples/../secrets.txt")
+            assert response.status_code in {
+                status.HTTP_400_BAD_REQUEST,
+                status.HTTP_404_NOT_FOUND,
+            }
 
 
 if __name__ == "__main__":

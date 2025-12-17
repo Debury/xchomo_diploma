@@ -7,6 +7,7 @@ Each source is loaded from the database and processed independently.
 
 import sys
 import os
+import shutil
 from pathlib import Path
 from typing import Dict, Any, Optional
 from datetime import datetime
@@ -22,44 +23,60 @@ from dagster_project.resources import ConfigLoaderResource, LoggerResource, Data
 
 
 def detect_format_from_url(url: str) -> str:
-    """
-    Automatically detect data format from URL or file extension.
-    
-    Args:
-        url: URL or file path to data source
-        
-    Returns:
-        Detected format (netcdf, grib, csv, parquet, zarr, hdf5)
-    """
+    """Infer the format from the URL/extension before downloading."""
+
     url_lower = url.lower()
-    
-    # Check common extensions
-    if url_lower.endswith('.nc') or url_lower.endswith('.nc4') or 'netcdf' in url_lower:
-        return 'netcdf'
-    elif url_lower.endswith('.grib') or url_lower.endswith('.grib2') or 'grib' in url_lower:
-        return 'grib'
-    elif url_lower.endswith('.csv') or 'csv' in url_lower:
-        return 'csv'
-    elif url_lower.endswith('.parquet') or 'parquet' in url_lower:
-        return 'parquet'
-    elif url_lower.endswith('.zarr') or 'zarr' in url_lower:
-        return 'zarr'
-    elif url_lower.endswith('.hdf5') or url_lower.endswith('.h5') or 'hdf' in url_lower:
-        return 'hdf5'
-    
-    # Try MIME type detection as fallback
+    extension_map = {
+        ".nc": "netcdf",
+        ".nc4": "netcdf",
+        ".grib": "grib",
+        ".grib2": "grib",
+        ".h5": "hdf5",
+        ".hdf": "hdf5",
+        ".json": "json",
+        ".geojson": "json",
+        ".csv": "csv",
+        ".tsv": "tsv",
+        ".txt": "txt",
+        ".tif": "geotiff",
+        ".tiff": "geotiff",
+        ".cog": "geotiff",
+    ".asc": "ascii_grid",
+        ".shp": "shapefile",
+        ".zip": "zip",
+    }
+
+    for ext, fmt in extension_map.items():
+        if url_lower.endswith(ext):
+            return fmt
+
+    # NOAA GFS forecast files often end with .f000, .f003, etc. but are GRIB payloads
+    if "." in url_lower:
+        suffix = url_lower.rsplit(".", 1)[-1]
+        if suffix.startswith("f") and suffix[1:].isdigit():
+            return "grib"
+
+    if "grib" in url_lower:
+        return "grib"
+    if "netcdf" in url_lower:
+        return "netcdf"
+    if "csv" in url_lower:
+        return "csv"
+    if "geojson" in url_lower:
+        return "json"
+
     mime_type, _ = mimetypes.guess_type(url)
     if mime_type:
         mime_map = {
             'application/netcdf': 'netcdf',
             'application/x-netcdf': 'netcdf',
             'text/csv': 'csv',
-            'application/parquet': 'parquet'
+            'application/json': 'json',
+            'application/geotiff': 'geotiff',
         }
         if mime_type in mime_map:
             return mime_map[mime_type]
-    
-    # Default to netcdf for climate data
+
     return 'netcdf'
 
 
@@ -127,17 +144,44 @@ def fetch_source_data(
         filename = f"{source_id}_{timestamp}.{format.replace('netcdf', 'nc')}"
         filepath = output_dir / filename
         
-        # REAL DOWNLOAD - using requests/xarray
-        import requests
-        
-        logger.info(f"[{source_id}] Downloading to: {filepath}")
-        
-        response = requests.get(url, stream=True, timeout=60)
-        response.raise_for_status()
-        
-        with open(filepath, 'wb') as f:
-            for chunk in response.iter_content(chunk_size=8192):
-                f.write(chunk)
+        # Handle local files vs HTTP URLs
+        if url.startswith('file://'):
+            # Local file - copy it
+            local_path = Path(url.replace('file://', ''))
+            if not local_path.exists():
+                # Try relative path from project root
+                project_root = Path(__file__).parent.parent.parent
+                local_path = project_root / url.replace('file://', '').lstrip('/')
+            
+            if local_path.exists():
+                logger.info(f"[{source_id}] Copying local file from: {local_path}")
+                shutil.copy2(local_path, filepath)
+            else:
+                raise FileNotFoundError(f"Local file not found: {url}")
+        elif Path(url).exists() and not url.startswith('http'):
+            # Direct file path (not URL)
+            local_path = Path(url)
+            if not local_path.is_absolute():
+                # Try relative from project root
+                project_root = Path(__file__).parent.parent.parent
+                local_path = project_root / url
+            
+            if local_path.exists():
+                logger.info(f"[{source_id}] Copying local file from: {local_path}")
+                shutil.copy2(local_path, filepath)
+            else:
+                raise FileNotFoundError(f"File not found: {url}")
+        else:
+            # HTTP/HTTPS URL - download
+            import requests
+            logger.info(f"[{source_id}] Downloading from URL: {url}")
+            
+            response = requests.get(url, stream=True, timeout=60)
+            response.raise_for_status()
+            
+            with open(filepath, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    f.write(chunk)
         
         file_size = filepath.stat().st_size
         logger.info(f"[{source_id}] Downloaded {file_size / 1024 / 1024:.2f} MB")

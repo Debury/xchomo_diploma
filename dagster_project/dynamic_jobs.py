@@ -1,310 +1,385 @@
 """
 Dynamic Source-Driven ETL Jobs for Phase 5
-
-Complete pipeline: Download → Process → Generate Embeddings → Store in ChromaDB
 """
 
-from dagster import job, op, Out, OpExecutionContext
-from typing import Dict, Any, List
+import sys
+import time
+from pathlib import Path
+import requests
+import traceback
+from datetime import datetime
+from typing import Dict, Any, List, Optional
+import numpy as np
+import threading
 
+# --- PATH SETUP ---
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.append(str(PROJECT_ROOT))
+
+from dagster import job, op, Out, OpExecutionContext, Output, AssetMaterialization
 from dagster_project.resources import ConfigLoaderResource, LoggerResource, DataPathResource
+
+# --- IMPORTS ---
+from src.climate_embeddings.loaders.raster_pipeline import load_raster_auto, raster_to_embeddings
+from src.climate_embeddings.loaders.detect_format import detect_format_from_url
+from src.climate_embeddings.embeddings.text_models import TextEmbedder
+from src.embeddings.database import VectorDatabase
+from src.sources import get_source_store
+
+
+def run_with_heartbeat(context, func, *args, operation_name="operation", **kwargs):
+    """
+    Run a blocking function while yielding periodic heartbeats.
+    Returns a generator that yields heartbeats and finally the result as the last item.
+    """
+    result = [None]
+    exception = [None]
+    completed = [False]
+    start_time = time.time()
+    
+    def worker():
+        try:
+            result[0] = func(*args, **kwargs)
+        except Exception as e:
+            exception[0] = e
+        finally:
+            completed[0] = True
+    
+    # Start the blocking operation in a thread
+    thread = threading.Thread(target=worker)
+    thread.start()
+    
+    # Yield heartbeats every 5 seconds while waiting
+    last_heartbeat = time.time()
+    while not completed[0]:
+        time.sleep(1)
+        if time.time() - last_heartbeat > 5:
+            yield AssetMaterialization(
+                asset_key=f"heartbeat_{operation_name}",
+                description=f"Processing: {operation_name}",
+                metadata={
+                    "status": "in_progress", 
+                    "elapsed_seconds": int(time.time() - start_time)
+                }
+            )
+            last_heartbeat = time.time()
+    
+    thread.join()
+    
+    # Raise exception if one occurred
+    if exception[0]:
+        raise exception[0]
+    
+    # Yield the result as the last item (marked with special type)
+    yield ("RESULT", result[0])
 
 
 @op(
-    description="Complete pipeline: download → process → embeddings → ChromaDB",
+    description="Complete pipeline: download → process → embeddings → Qdrant (memory-safe)",
     out=Out(dagster_type=List[Dict[str, Any]]),
     tags={"phase": "5", "type": "complete_pipeline"},
-    required_resource_keys={"logger", "data_paths"}
+    required_resource_keys={"logger", "data_paths", "config_loader"}
 )
-def process_all_sources(context: OpExecutionContext) -> List[Dict[str, Any]]:
-    """Process all active sources with embeddings generation."""
-    from src.sources import get_source_store
-    from dagster_project.ops.dynamic_source_ops import detect_format_from_url
-    import requests
-    from datetime import datetime
-    from pathlib import Path
-    
+def process_all_sources(context: OpExecutionContext):
     logger = context.resources.logger
     data_paths = context.resources.data_paths
+    config_loader = context.resources.config_loader
     
     logger.info("=" * 80)
     logger.info("DYNAMIC SOURCE ETL - Complete Pipeline")
     logger.info("=" * 80)
     
     store = get_source_store()
-    sources = store.get_all_sources(active_only=True)
-    
-    logger.info(f"Found {len(sources)} active source(s)")
-    
+    target_source_id = context.run.tags.get("source_id")
+    if target_source_id:
+        specific_source = store.get_source(target_source_id)
+        if specific_source and specific_source.is_active:
+            sources = [specific_source]
+        else:
+            logger.error(f"Source {target_source_id} not found/inactive.")
+            return []
+    else:
+        sources = store.get_all_sources(active_only=True)
+
+    if not sources: return []
+
+    logger.info("Initializing Models...")
+    text_embedder = TextEmbedder()
+    # Initialize VectorDatabase with config for proper vector size
+    pipeline_config = config_loader.load()
+    vector_db = VectorDatabase(config=pipeline_config)
     results = []
-    
+
     for source in sources:
         source_id = source.source_id
-        logger.info(f"\n{'='*70}")
-        logger.info(f"SOURCE: {source_id}")
-        logger.info(f"{'='*70}")
+        logger.info(f"\nSOURCE: {source_id}")
         
         try:
             store.update_processing_status(source_id, "processing")
-            
-            format = source.format or detect_format_from_url(source.url)
-            logger.info(f"Format: {format} | URL: {source.url[:60]}...")
-            
-            # STEP 1: DOWNLOAD
-            logger.info(f"\n[1/4] DOWNLOADING...")
-            output_dir = data_paths.get_raw_path()
-            output_dir.mkdir(parents=True, exist_ok=True)
-            
+
+            # --- 1. DOWNLOAD ---
+            format_hint = source.format or detect_format_from_url(source.url)
+            output_dir = data_paths.get_raw_path().resolve()
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            ext = format.replace('netcdf', 'nc')
-            filename = f"{source_id}_{timestamp}.{ext}"
-            filepath = output_dir / filename
-            
-            response = requests.get(source.url, stream=True, timeout=120)
-            response.raise_for_status()
-            
-            with open(filepath, 'wb') as f:
-                for chunk in response.iter_content(chunk_size=8192):
-                    f.write(chunk)
-            
-            file_size_mb = filepath.stat().st_size / 1024 / 1024
-            logger.info(f"✓ Downloaded {file_size_mb:.2f} MB")
-            
-            # STEP 2: PROCESS
-            logger.info(f"\n[2/4] PROCESSING...")
-            
-            if format == "netcdf":
-                import xarray as xr
-                
-                ds = xr.open_dataset(filepath)
-                logger.info(f"Variables: {list(ds.data_vars)} | Dims: {dict(ds.dims)}")
-                
-                # Transform
-                for var in ds.data_vars:
-                    if 'temperature' in var.lower() or var in ['t2m', 'air', 'tas']:
-                        if ds[var].attrs.get('units') == 'K':
-                            logger.info(f"Converting {var}: K → °C")
-                            ds[var] = ds[var] - 273.15
-                            ds[var].attrs['units'] = 'degC'
-                
-                # Save processed
-                processed_dir = data_paths.get_processed_path()
-                processed_dir.mkdir(parents=True, exist_ok=True)
-                processed_file = processed_dir / f"{source_id}_processed.nc"
-                ds.to_netcdf(processed_file)
-                logger.info(f"✓ Saved: {processed_file.name}")
-                
-                # STEP 3: GENERATE EMBEDDINGS
-                logger.info(f"\n[3/4] GENERATING EMBEDDINGS...")
-                
-                from src.embeddings.generator import EmbeddingGenerator
-                generator = EmbeddingGenerator()
-                
-                embeddings_data = []
-                
-                # Process up to 5 variables
-                for var in list(ds.data_vars)[:5]:
-                    var_data = ds[var]
+            ext_map = {'netcdf': 'nc', 'geotiff': 'tif', 'csv': 'csv', 'grib': 'grib', 'zip': 'zip'}
+            ext = ext_map.get(format_hint, 'dat')
+            filepath = output_dir / f"{source_id}_{timestamp}.{ext}"
+            headers = {"User-Agent": "Mozilla/5.0"}
+
+            if not filepath.exists():
+                # Handle local files vs HTTP URLs
+                if source.url.startswith('file://'):
+                    # Local file - copy it
+                    import shutil
+                    local_path = Path(source.url.replace('file://', ''))
+                    if not local_path.exists():
+                        # Try relative path from project root
+                        project_root = Path(__file__).parent.parent
+                        local_path = project_root / source.url.replace('file://', '').lstrip('/')
                     
-                    # Calculate spatial mean
-                    if 'time' in var_data.dims:
-                        spatial_mean = var_data.mean(dim='time')
+                    if local_path.exists():
+                        logger.info(f"Copying local file from: {local_path}")
+                        shutil.copy2(local_path, filepath)
                     else:
-                        spatial_mean = var_data
+                        raise FileNotFoundError(f"Local file not found: {source.url}")
+                elif Path(source.url).exists() and not source.url.startswith('http'):
+                    # Direct file path (not URL)
+                    import shutil
+                    local_path = Path(source.url)
+                    if not local_path.is_absolute():
+                        # Try relative from project root
+                        project_root = Path(__file__).parent.parent
+                        local_path = project_root / source.url
                     
-                    # Sample data points
-                    if spatial_mean.size > 100:
-                        step = max(1, int(spatial_mean.size ** 0.5) // 10)
-                        sampled = spatial_mean.values.flatten()[::step][:100]
+                    if local_path.exists():
+                        logger.info(f"Copying local file from: {local_path}")
+                        shutil.copy2(local_path, filepath)
                     else:
-                        sampled = spatial_mean.values.flatten()
-                    
-                    # Create descriptive text
-                    text = f"Climate variable '{var}': "
-                    text += f"mean={float(sampled.mean()):.2f}, "
-                    text += f"std={float(sampled.std()):.2f}, "
-                    text += f"range=[{float(sampled.min()):.2f}, {float(sampled.max()):.2f}]. "
-                    text += f"Units: {ds[var].attrs.get('units', 'unknown')}. "
-                    
-                    if 'long_name' in ds[var].attrs:
-                        text += f"{ds[var].attrs['long_name']}."
-                    
-                    # Generate embedding (expects list of strings, returns numpy array)
-                    embedding_array = generator.generate_embeddings([text])
-                    embedding = embedding_array[0].tolist()  # Convert first element to list
-                    
-                    embeddings_data.append({
-                        'id': f"{source_id}_{var}_{timestamp}",
-                        'embedding': embedding,
-                        'metadata': {
-                            'source_id': source_id,
-                            'variable': var,
-                            'text': text,
-                            'units': ds[var].attrs.get('units', 'unknown'),
-                            'timestamp': datetime.now().isoformat()
-                        }
-                    })
-                    logger.info(f"  ✓ {var}: embedding shape {len(embedding)}")
-                
-                # STEP 4: STORE IN CHROMADB
-                logger.info(f"\n[4/4] STORING IN CHROMADB...")
-                
-                from src.embeddings.database import VectorDatabase
-                db = VectorDatabase()
-                
-                # Extract separate lists for ids, embeddings, metadatas, documents
-                ids = [item['id'] for item in embeddings_data]
-                embeddings = [item['embedding'] for item in embeddings_data]
-                metadatas = [item['metadata'] for item in embeddings_data]
-                documents = [item['metadata']['text'] for item in embeddings_data]
-                
-                db.add_embeddings(
-                    ids=ids,
-                    embeddings=embeddings,
-                    metadatas=metadatas,
-                    documents=documents
-                )
-                
-                logger.info(f"✓ Stored {len(embeddings_data)} embeddings in ChromaDB")
-                
-                result = {
-                    "source_id": source_id,
-                    "status": "success",
-                    "raw_file": str(filepath),
-                    "processed_file": str(processed_file),
-                    "format": format,
-                    "variables": list(ds.data_vars),
-                    "file_size_mb": file_size_mb,
-                    "embeddings_count": len(embeddings_data)
-                }
-                
-                ds.close()
-                
-            elif format == "csv":
-                import pandas as pd
-                
-                df = pd.read_csv(filepath)
-                logger.info(f"Rows: {len(df)} | Columns: {len(df.columns)}")
-                
-                # Save processed
-                processed_dir = data_paths.get_processed_path()
-                processed_dir.mkdir(parents=True, exist_ok=True)
-                processed_file = processed_dir / f"{source_id}_processed.parquet"
-                df.to_parquet(processed_file)
-                logger.info(f"✓ Saved: {processed_file.name}")
-                
-                # Generate embeddings for numeric columns
-                logger.info(f"\n[3/4] GENERATING EMBEDDINGS...")
-                
-                from src.embeddings.generator import EmbeddingGenerator
-                generator = EmbeddingGenerator()
-                
-                embeddings_data = []
-                
-                for col in df.select_dtypes(include=['number']).columns[:10]:
-                    text = f"Column '{col}': mean={df[col].mean():.2f}, std={df[col].std():.2f}, "
-                    text += f"min={df[col].min():.2f}, max={df[col].max():.2f}"
-                    
-                    # Generate embedding (expects list of strings, returns numpy array)
-                    embedding_array = generator.generate_embeddings([text])
-                    embedding = embedding_array[0].tolist()  # Convert first element to list
-                    
-                    embeddings_data.append({
-                        'id': f"{source_id}_{col}_{timestamp}",
-                        'embedding': embedding,
-                        'metadata': {
-                            'source_id': source_id,
-                            'variable': col,
-                            'text': text,
-                            'timestamp': datetime.now().isoformat()
-                        }
-                    })
-                
-                logger.info(f"\n[4/4] STORING IN CHROMADB...")
-                from src.embeddings.database import VectorDatabase
-                db = VectorDatabase()
-                
-                # Extract separate lists for ids, embeddings, metadatas, documents
-                ids = [item['id'] for item in embeddings_data]
-                embeddings = [item['embedding'] for item in embeddings_data]
-                metadatas = [item['metadata'] for item in embeddings_data]
-                documents = [item['metadata']['text'] for item in embeddings_data]
-                
-                db.add_embeddings(
-                    ids=ids,
-                    embeddings=embeddings,
-                    metadatas=metadatas,
-                    documents=documents
-                )
-                
-                logger.info(f"✓ Stored {len(embeddings_data)} embeddings")
-                
-                result = {
-                    "source_id": source_id,
-                    "status": "success",
-                    "format": "parquet",
-                    "embeddings_count": len(embeddings_data)
-                }
-                
-            else:
-                logger.info(f"⚠ Unsupported format: {format}")
-                result = {
-                    "source_id": source_id,
-                    "status": "unsupported_format",
-                    "format": format
-                }
+                        raise FileNotFoundError(f"File not found: {source.url}")
+                else:
+                    # HTTP/HTTPS URL - download normally
+                    logger.info(f"Downloading from URL: {source.url}...")
+                    with requests.get(source.url, headers=headers, stream=True, timeout=(10, 600)) as response:
+                        response.raise_for_status()
+                        ctype = response.headers.get('content-type', '').lower()
+                        if 'html' in ctype: raise Exception(f"Invalid content type: {ctype}")
+                        
+                        downloaded = 0
+                        last_log = time.time()
+                        last_heartbeat = time.time()
+                        with open(filepath, 'wb') as f:
+                            for chunk in response.iter_content(chunk_size=8192):
+                                f.write(chunk)
+                                downloaded += len(chunk)
+                                
+                                # Log progress every 5 seconds
+                                if time.time() - last_log > 5:
+                                    logger.info(f"Downloading... {downloaded / 1024 / 1024:.1f} MB")
+                                    last_log = time.time()
+                            
+                            # Yield heartbeat every 10 seconds to keep Dagster alive
+                            if time.time() - last_heartbeat > 10:
+                                yield AssetMaterialization(
+                                    asset_key=f"download_progress_{source_id}",
+                                    description=f"Downloading {source_id}",
+                                    metadata={
+                                        "downloaded_mb": downloaded / 1024 / 1024,
+                                        "source_id": source_id
+                                    }
+                                )
+                                last_heartbeat = time.time()
+                                
+                if filepath.stat().st_size < 500: raise Exception("File too small")
+                logger.info(f"✓ Downloaded {filepath.name}")
             
+            # --- 2. LOAD & STATS ---
+            logger.info("Loading & Calculating Stats...")
+            
+            # Load raster with heartbeat
+            raster_result = None
+            for event in run_with_heartbeat(
+                context,
+                load_raster_auto,
+                filepath,
+                operation_name=f"load_raster_{source_id}",
+                chunks="auto",
+                variables=source.variables,
+                bbox=tuple(source.spatial_bbox) if source.spatial_bbox else None,
+            ):
+                if isinstance(event, AssetMaterialization):
+                    yield event
+                elif isinstance(event, tuple) and event[0] == "RESULT":
+                    raster_result = event[1]
+            
+            # Compute embeddings with heartbeat
+            stat_embeddings = None
+            for event in run_with_heartbeat(
+                context,
+                raster_to_embeddings,
+                raster_result,
+                operation_name=f"compute_stats_{source_id}",
+                normalization="zscore",
+                spatial_pooling=True,
+                seed=42,
+            ):
+                if isinstance(event, AssetMaterialization):
+                    yield event
+                elif isinstance(event, tuple) and event[0] == "RESULT":
+                    stat_embeddings = event[1]
+            
+            total_chunks = len(stat_embeddings)
+            if not stat_embeddings:
+                store.update_processing_status(source_id, "failed", error_message="No numeric data")
+                continue
+            
+            logger.info(f"✓ Generated {total_chunks} chunks")
+
+            # --- 3. ENRICHMENT & STORAGE ---
+            logger.info("Semantic Embedding & Storage...")
+            BATCH_SIZE = 50 
+            
+            for i in range(0, total_chunks, BATCH_SIZE):
+                batch_slice = stat_embeddings[i : i + BATCH_SIZE]
+                if i % 100 == 0: 
+                    logger.info(f"Processing {i}/{total_chunks}...")
+                    # Yield heartbeat every 100 chunks to keep Dagster alive
+                    yield AssetMaterialization(
+                        asset_key=f"embedding_progress_{source_id}",
+                        description=f"Processing embeddings for {source_id}",
+                        metadata={
+                            "processed_chunks": i,
+                            "total_chunks": total_chunks,
+                            "progress_percent": round((i / total_chunks) * 100, 2),
+                            "source_id": source_id
+                        }
+                    )
+                
+                # Use the new text generation module for consistent, configurable descriptions
+                from src.climate_embeddings.text_generation import generate_batch_descriptions
+                
+                batch_metadata = [item["metadata"] for item in batch_slice]
+                batch_stats = [item["vector"] for item in batch_slice]
+                
+                # Add source_id to metadata if not present
+                for meta in batch_metadata:
+                    if "source_id" not in meta:
+                        meta["source_id"] = source_id
+                
+                # Generate normalized metadata using schema
+                from src.climate_embeddings.schema import ClimateChunkMetadata, generate_human_readable_text
+                
+                ids, embeddings, metadatas, texts_for_embedding = [], [], [], []
+                
+                # DYNAMIC: Enrich variable metadata with LLM (optional, graceful degradation)
+                # Collect variable metadata for batch enrichment
+                variable_metadata_batch = []
+                for stat_item in batch_slice:
+                    stats_vector = stat_item["vector"]
+                    raw_meta = stat_item["metadata"]
+                    
+                    # Create normalized metadata first
+                    normalized_meta = ClimateChunkMetadata.from_chunk_metadata(
+                        raw_metadata=raw_meta,
+                        stats_vector=stats_vector,
+                        source_id=source_id,
+                        dataset_name=source_id
+                    )
+                    
+                    payload = normalized_meta.to_dict()
+                    variable_metadata_batch.append(payload)
+                
+                # Try to enrich with LLM (optional - if fails, use original)
+                try:
+                    from src.climate_embeddings.enrichment.variable_enricher import enrich_variable_metadata_batch
+                    # Try to get LLM client (optional)
+                    llm_client = None
+                    try:
+                        import os
+                        if os.getenv("OPENROUTER_API_KEY"):
+                            from src.llm.openrouter_client import OpenRouterClient
+                            llm_client = OpenRouterClient()
+                    except:
+                        pass
+                    
+                    # Enrich metadata with LLM-inferred meanings
+                    enriched_metadata = enrich_variable_metadata_batch(
+                        variable_metadata_batch,
+                        llm_client=llm_client,
+                        batch_size=10
+                    )
+                    variable_metadata_batch = enriched_metadata
+                    logger.info(f"✓ Enriched {len(enriched_metadata)} variables with LLM")
+                except Exception as e:
+                    logger.warning(f"Variable enrichment failed (using original metadata): {e}")
+                    # Continue with original metadata if enrichment fails
+                
+                # Process enriched metadata
+                for j, payload in enumerate(variable_metadata_batch):
+                    uid = f"{source_id}_{timestamp}_{i+j}"
+                    ids.append(uid)
+                    
+                    metadatas.append(payload)
+                    
+                    # Generate text ONLY for embedding (not stored in DB)
+                    text_for_embedding = generate_human_readable_text(payload)
+                    texts_for_embedding.append(text_for_embedding)
+                
+                # Generate embeddings from human-readable text
+                batch_vectors = text_embedder.embed_documents(texts_for_embedding)
+                
+                # Convert to list format
+                embeddings = [vec.tolist() for vec in batch_vectors]
+                
+                # Store in vector DB (without text_content - it's generated dynamically)
+                vector_db.add_embeddings(ids, embeddings, metadatas, [])  # Empty documents list
+
+            logger.info(f"✓ Stored {total_chunks} vectors.")
             store.update_processing_status(source_id, "completed")
-            logger.info(f"\n✓ COMPLETE: {source_id}")
+            
+            # Yield completion event
+            yield AssetMaterialization(
+                asset_key=f"completed_{source_id}",
+                description=f"Successfully processed {source_id}",
+                metadata={
+                    "source_id": source_id,
+                    "total_chunks": total_chunks,
+                    "status": "success"
+                }
+            )
+            
+            results.append({"source_id": source_id, "status": "success"})
             
         except Exception as e:
-            logger.error(f"\n✗ FAILED: {source_id} - {e}")
-            import traceback
+            logger.error(f"✗ FAILED {source_id}: {e}")
             logger.error(traceback.format_exc())
-            
             store.update_processing_status(source_id, "failed", error_message=str(e))
-            result = {
-                "source_id": source_id,
-                "status": "error",
-                "error": str(e)
-            }
-        
-        results.append(result)
-    
-    logger.info("\n" + "=" * 80)
-    logger.info(f"PIPELINE COMPLETE: {len(results)} sources processed")
-    logger.info("=" * 80)
-    
-    return results
+            
+            # Yield failure event (don't stop on error, continue with next source)
+            yield AssetMaterialization(
+                asset_key=f"failed_{source_id}",
+                description=f"Failed to process {source_id}",
+                metadata={
+                    "source_id": source_id,
+                    "error": str(e),
+                    "status": "failed"
+                }
+            )
+            
+            results.append({"source_id": source_id, "status": "failed", "error": str(e)})
 
+    # Final yield with results
+    yield Output(results)
 
 @job(
-    description="Dynamic ETL: all active sources → download → process → embeddings → ChromaDB",
     resource_defs={
         "config_loader": ConfigLoaderResource(config_path="config/pipeline_config.yaml"),
         "logger": LoggerResource(log_file="logs/dagster_dynamic_etl.log", log_level="INFO"),
-        "data_paths": DataPathResource(
-            raw_data_dir="data/raw",
-            processed_data_dir="data/processed",
-            embeddings_dir="chroma_db"
-        )
+        "data_paths": DataPathResource(raw_data_dir="data/raw", processed_data_dir="data/processed", embeddings_dir="qdrant_db")
     },
     tags={"pipeline": "dynamic_etl", "phase": "5"}
 )
 def dynamic_source_etl_job():
-    """
-    🚀 Complete Dynamic Source ETL Pipeline
-    
-    For each active source:
-    1. 📥 Download from URL
-    2. ⚙️ Process & transform data
-    3. 🧠 Generate embeddings
-    4. 💾 Store in ChromaDB
-    
-    Usage:
-        POST /sources/{source_id}/trigger
-    """
     process_all_sources()
-
 
 __all__ = ["dynamic_source_etl_job"]
