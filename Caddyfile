@@ -10,6 +10,11 @@ climaterag.online {
         header_up X-Forwarded-For {remote}
         header_up X-Forwarded-Proto {scheme}
     }
+    
+    # Optional: Redirect root to /app if needed
+    # handle_path /app* {
+    #     reverse_proxy web-api:8000
+    # }
 }
 
 # Optional: Redirect www to non-www

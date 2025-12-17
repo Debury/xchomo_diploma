@@ -264,6 +264,13 @@ def summarize_hits(results: List[Dict[str, Any]]) -> Tuple[str, List[str]]:
 
 @app.get("/")
 async def root():
+    """Root endpoint - redirects to Vue app"""
+    # Serve Vue app at root instead of JSON
+    if VUE_DIST_DIR.exists():
+        index_file = VUE_DIST_DIR / "index.html"
+        if index_file.exists():
+            return FileResponse(index_file)
+    # Fallback to JSON if Vue app not built
     return {"status": "ok", "docs": "/docs", "ui": "/app"}
 
 @app.get("/ui", response_class=FileResponse)
