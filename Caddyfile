@@ -18,9 +18,10 @@ climaterag.online {
 }
 
 # Optional: Redirect www to non-www
-www.climaterag.online {
-    redir https://climaterag.online{uri} permanent
-}
+# (Odstránené - ak chceš www, pridaj A záznam pre www v DNS paneli)
+# www.climaterag.online {
+#     redir https://climaterag.online{uri} permanent
+# }
 
 # Optional: HTTP to HTTPS redirect
 http://climaterag.online {
