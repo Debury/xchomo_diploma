@@ -38,6 +38,10 @@ def _process_file(file_path: str, entry: CatalogEntry, adapter_name: str = "port
         logger.warning(f"{adapter_name}: loader produced 0 chunks for {entry.dataset_name}")
         return False
 
+    all_ids = []
+    all_embeddings = []
+    all_metadatas = []
+
     for j, emb_data in enumerate(embeddings_data):
         meta = ClimateChunkMetadata.from_chunk_metadata(
             raw_metadata=emb_data["metadata"],
@@ -58,12 +62,16 @@ def _process_file(file_path: str, entry: CatalogEntry, adapter_name: str = "port
         text = generate_human_readable_text(meta_dict)
         text_embedding = embedder.embed_documents([text])[0]
 
-        point_id = f"{entry.source_id}_portal_chunk_{j}"
-        db.add_embeddings(
-            ids=[point_id],
-            embeddings=[text_embedding.tolist()],
-            metadatas=[meta_dict],
-        )
+        all_ids.append(f"{entry.source_id}_portal_chunk_{j}")
+        all_embeddings.append(text_embedding.tolist())
+        all_metadatas.append(meta_dict)
+
+    # Batched upsert (database.py handles chunking + retry)
+    db.add_embeddings(
+        ids=all_ids,
+        embeddings=all_embeddings,
+        metadatas=all_metadatas,
+    )
 
     logger.info(f"{adapter_name}: stored {len(embeddings_data)} chunks for {entry.dataset_name}")
     return True

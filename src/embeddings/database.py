@@ -175,12 +175,27 @@ class VectorDatabase:
                 "payload": payload
             })
         
-        try:
-            self.client.upsert(collection_name=self.collection, points=points)
-            logger.info(f"Upserted {len(points)} points with structured metadata")
-        except Exception as e:
-            logger.error(f"Upsert failed: {e}")
-            raise e
+        # Batch upserts to avoid Qdrant timeouts on large datasets
+        BATCH_SIZE = 50
+        MAX_RETRIES = 3
+        import time
+
+        for batch_start in range(0, len(points), BATCH_SIZE):
+            batch = points[batch_start:batch_start + BATCH_SIZE]
+            for attempt in range(MAX_RETRIES):
+                try:
+                    self.client.upsert(collection_name=self.collection, points=batch)
+                    break
+                except Exception as e:
+                    if attempt < MAX_RETRIES - 1:
+                        wait = 2 ** attempt
+                        logger.warning(f"Upsert batch {batch_start // BATCH_SIZE} failed (attempt {attempt + 1}), retrying in {wait}s: {e}")
+                        time.sleep(wait)
+                    else:
+                        logger.error(f"Upsert batch failed after {MAX_RETRIES} attempts: {e}")
+                        raise e
+
+        logger.info(f"Upserted {len(points)} points in {(len(points) - 1) // BATCH_SIZE + 1} batches")
 
     def search(
         self, 

@@ -519,7 +519,11 @@ def _run_phase_download(
                     f"unsupported format, or xarray engine failed (check logs for details)"
                 )
 
-            # Generate text embeddings and store
+            # Generate text embeddings and collect for batched upsert
+            all_ids = []
+            all_embeddings = []
+            all_metadatas = []
+
             for j, emb_data in enumerate(embeddings_data):
                 meta = ClimateChunkMetadata.from_chunk_metadata(
                     raw_metadata=emb_data["metadata"],
@@ -541,12 +545,16 @@ def _run_phase_download(
                 text = generate_human_readable_text(meta_dict)
                 text_embedding = embedder.embed_documents([text])[0]
 
-                point_id = f"{entry.source_id}_chunk_{j}"
-                db.add_embeddings(
-                    ids=[point_id],
-                    embeddings=[text_embedding.tolist()],
-                    metadatas=[meta_dict],
-                )
+                all_ids.append(f"{entry.source_id}_chunk_{j}")
+                all_embeddings.append(text_embedding.tolist())
+                all_metadatas.append(meta_dict)
+
+            # Batched upsert (database.py handles chunking + retry)
+            db.add_embeddings(
+                ids=all_ids,
+                embeddings=all_embeddings,
+                metadatas=all_metadatas,
+            )
 
             progress.mark_completed(entry.source_id, phase=phase)
             processed += 1
