@@ -661,6 +661,113 @@ def ndcg_at_k(relevance_scores: list, k: int) -> float:
 | 37 | — | 2024 | arXiv:2410.23902 | Responsible RAG for Climate |
 | 38 | — | 2025 | arXiv:2512.02251 | CAIRNS: Climate adaptation QA (7-dim rubric) |
 | 39 | — | 2024 | arXiv:2405.07437 | RAG Evaluation Survey (comprehensive) |
+| 40 | Yu et al. | 2025 | arXiv:2502.18470 | Spatial-RAG |
+| 41 | Yousuf et al. | 2026 | arXiv:2601.11863 | Metadata for Better RAG |
+| 42 | — | 2026 | arXiv:2602.11443 | Filtered ANN in Vector Databases |
+| 43 | Heidari et al. | 2025 | arXiv:2512.06395 | Unit Harmonisation in Scholarly KGs |
+| 44 | Adamu et al. | 2025 | arXiv:2509.10087 | Querying Climate Knowledge (ClimatePub4KG) |
+| 45 | — | 2025 | arXiv:2507.17311 | EarthLink: AI Agent for Climate Science |
+| 46 | — | 2024 | arXiv:2412.02448 | UNIFY: Range Filtered ANN Search |
+| 47 | — | 2025 | arXiv:2509.07789 | Filtered ANN Unified Benchmark (ACORN) |
+| 48 | — | 2025 | arXiv:2505.02271 | Real-Time Spatial RAG |
+
+---
+
+## Part E: Spatial-Aware Retrieval and Data Quality Improvements
+
+*Added: February 2026*
+
+This section documents the academic basis for fixing three critical data quality issues identified during Phase 1 evaluation: (1) location mismatch in retrieval, (2) weak embeddings from missing metadata, and (3) mixed units across datasets.
+
+### E.1 Problem Analysis
+
+During Phase 1 processing (CMIP6, CRU, E-OBS, GISTEMP — 131,992 chunks), we identified that pure vector similarity search returns spatially incorrect results. A query for "mean temperature in Central Europe" retrieved E-OBS chunks with Southern Hemisphere coordinates (lat -40°) because the text representation contains `"Location: Europe"` from catalog-level metadata, which semantically matches "Central Europe" in the embedding space. The actual chunk coordinates contradict the text label.
+
+Additionally, some climate variables (e.g., CRU `maea`) lack `long_name` and `unit` fields, producing embeddings with minimal semantic content ("Climate variable: maea" carries no meaningful information for the embedding model). Cross-dataset unit inconsistency (CMIP6 uses Kelvin, E-OBS uses Celsius) further degrades retrieval precision.
+
+### E.2 Spatial-RAG: Hybrid Spatial + Semantic Retrieval
+
+**Paper:** Yu et al., "Spatial-RAG: Spatial Retrieval Augmented Generation for Real-World Geospatial Reasoning Questions" (arXiv:2502.18470, Feb 2025)
+
+**Why this paper matters for the diploma:**
+This paper directly formalizes our core retrieval problem — that semantic similarity alone is insufficient when geographic precision matters. Spatial-RAG proposes a two-stage architecture: (1) sparse spatial filtering using coordinate-based queries to produce a spatially valid candidate set, then (2) dense semantic matching on the filtered candidates. The paper formulates retrieval as Pareto optimization over spatial and semantic relevance, providing a principled framework for balancing both dimensions.
+
+**Application to our system:** We adopt the spatial-first filtering approach. Our existing Qdrant payload already stores `latitude_min/max` and `longitude_min/max` per chunk. By applying Qdrant's `Range` filters on these fields before vector search, we ensure that only geographically valid chunks enter the semantic matching stage. This eliminates the "Location: Europe" mismatch entirely without modifying the embedding or re-indexing.
+
+**Also related:** arXiv:2505.02271 extends Spatial-RAG to real-time urban contexts, confirming that spatial pre-filtering before vector search is essential when geographic precision matters.
+
+### E.3 Metadata-as-Prefix Enrichment
+
+**Paper:** Yousuf et al., "Utilizing Metadata for Better Retrieval-Augmented Generation" (arXiv:2601.11863, Jan 2026)
+
+**Why this paper matters for the diploma:**
+This is the most methodologically rigorous study of metadata integration strategies for RAG. It systematically compares five approaches: metadata-as-prefix, metadata-as-suffix, dual-encoder unified, dual-encoder late fusion, and metadata-aware query reformulation. The key finding — that **metadata-as-prefix consistently outperforms** other strategies for structured/repetitive corpora — directly applies to our climate data, where chunks from the same variable have near-identical text structure and differ primarily in their metadata (coordinates, timestamps, statistics).
+
+**Application to our system:** For variables lacking `long_name`/`unit` (e.g., CRU `maea`), we build a CF-conventions lookup table mapping short variable names to full descriptions. Before embedding, we prepend the enriched metadata:
+- Before: `"Climate variable: maea"`
+- After: `"Climate variable: maea (Mean Annual Actual Evapotranspiration, unit: mm/year)"`
+
+This gives the embedding model sufficient semantic signal to produce meaningful vectors even for poorly-documented variables.
+
+### E.4 Filtered Approximate Nearest Neighbor Search
+
+**Paper:** "Filtered Approximate Nearest Neighbor Search in Vector Databases: System Design and Performance Analysis" (arXiv:2602.11443, Feb 2026)
+
+**Why this paper matters for the diploma:**
+This paper provides the theoretical foundation for understanding how our spatial filters interact with Qdrant's HNSW index. It documents the **"recall cliff"** phenomenon — where post-filtering causes dramatic recall drops when filters are highly selective — and shows that Qdrant's filterable HNSW approach (hybrid in-graph filtering with automatic cardinality-based strategy selection) avoids this problem for moderate selectivity (10-50% of data matching). For our use case, European bounding box filters typically match 30-60% of chunks (E-OBS is Europe-only, CRU/CMIP6 are global), placing us in the optimal range.
+
+The paper also proposes the **Global-Local Selectivity (GLS)** metric, which quantifies the correlation between filter conditions and query vectors — directly useful for evaluating whether our spatial filters improve or degrade retrieval quality.
+
+**Also related:**
+- arXiv:2412.02448 (UNIFY) — adaptive pre/post filter switching specifically for range-based queries (lat/lon coordinate ranges)
+- arXiv:2509.07789 — unified benchmark for filtered ANN, comparing ACORN (filter-aware HNSW) with standard approaches
+
+### E.5 Unit Harmonisation
+
+**Paper:** Heidari et al., "Enhancing Information Retrieval in Digital Libraries through Unit Harmonisation in Scholarly Knowledge Graphs" (arXiv:2512.06395, Dec 2025)
+
+**Why this paper matters for the diploma:**
+Our system ingests data from multiple sources with different unit conventions (CMIP6: Kelvin, E-OBS: Celsius, CRU: degrees Celsius). This paper demonstrates that unit normalization should occur at the **metadata/retrieval layer** rather than in the raw data — preserving source fidelity while enabling consistent cross-dataset search. The approach stores both original and canonical units in metadata, and includes both representations in the embedded text (e.g., "15.2°C (288.35 K)").
+
+### E.6 Climate-Domain Knowledge Graphs
+
+**Paper:** Adamu et al., "Querying Climate Knowledge: Semantic Retrieval for Scientific Discovery" (arXiv:2509.10087, Sep 2025)
+
+**Why this paper matters for the diploma:**
+This paper builds ClimatePub4KG, a domain-specific knowledge graph capturing relationships among climate models, variables, locations, datasets, and teleconnection patterns. For our system, the key insight is that a lightweight variable-resolution KG (mapping short names → CF standard names → descriptions → canonical units) can serve as both an enrichment source during indexing and a query expansion tool during retrieval. This is more maintainable than hardcoded mappings and scales to the full 927 CF standard variable names used across CMIP6.
+
+**Also related:** arXiv:2507.17311 (EarthLink) demonstrates an agentic pattern where an LLM agent resolves metadata (variable names, units, spatial extent) before performing retrieval — a pattern we partially implement via LLM-based spatial intent extraction.
+
+### E.7 Implementation Architecture
+
+Based on the papers above, the enhanced retrieval pipeline follows this architecture:
+
+```
+User Query: "What is the mean temperature in Central Europe?"
+    │
+    ▼
+[LLM Query Parser] ─── extracts: region="Central Europe" → lat 45-55, lon 5-25
+    │                    variable=temperature, time=unspecified
+    ▼
+[Qdrant Filtered Vector Search]
+    ├── Pre-filter: Range(latitude_max ≥ 45, latitude_min ≤ 55,
+    │                     longitude_max ≥ 5, longitude_min ≤ 25)
+    ├── Pre-filter: MatchAny(variable ∈ [tas, tg, tmp, t2m])
+    └── Dense search: BGE-M3 cosine similarity on filtered subset
+    │
+    ▼
+[Top-K Results] ─── all spatially valid, semantically ranked
+    │
+    ▼
+[LLM Generation] ─── Grok 4.1 Fast via OpenRouter
+```
+
+Academic justification:
+- Spatial pre-filtering: Spatial-RAG [40], Filtered ANN [42]
+- Metadata enrichment: Metadata for Better RAG [41]
+- Unit normalization: Unit Harmonisation [43]
+- Variable resolution: ClimatePub4KG [44]
+- Filterable HNSW efficiency: Filtered ANN [42], UNIFY [46]
 
 ---
 

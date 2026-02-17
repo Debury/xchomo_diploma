@@ -974,13 +974,22 @@ async def rag_chat_legacy(request: RAGChatRequest):
         else:
             top_k = request.top_k
         
-        # 2. Build filter dict if filters provided
+        # 2. Build filter dict and spatial filter
         filter_dict = {}
         if request.source_id:
             filter_dict["source_id"] = request.source_id
         if request.variable:
             filter_dict["variable"] = request.variable
-        
+
+        # Spatial-aware filtering (Spatial-RAG, arXiv:2502.18470)
+        # Extract geographic constraints from the query and apply as Qdrant
+        # payload Range filters to ensure spatially correct retrieval.
+        from web_api.spatial_filter import extract_spatial_intent, build_qdrant_filter
+        spatial_intent = extract_spatial_intent(request.question)
+        spatial_qdrant_filter = build_qdrant_filter(spatial_intent, filter_dict if filter_dict else None)
+        if spatial_intent.region_name:
+            logger.info(f"Spatial filter active: region='{spatial_intent.region_name}'")
+
         # 3. MULTI-QUERY RETRIEVAL STRATEGY
         # Best practice: Use query expansion + multiple targeted searches for complex queries
         search_result = []
@@ -996,31 +1005,33 @@ async def rag_chat_legacy(request: RAGChatRequest):
             general_results = db.search(
                 query_vector=general_query_vec.tolist(),
                 limit=top_k,
-                filter_dict=filter_dict if filter_dict else None
+                query_filter=spatial_qdrant_filter,
             )
             search_result.extend(general_results)
-            
+
             # Search 2: Targeted search for TMAX (query expansion)
             tmax_query = f"{request.question} maximum temperature TMAX"
             tmax_query_vec = embedder.embed_queries([tmax_query])[0]
-            tmax_filter = filter_dict.copy()
-            tmax_filter["variable"] = "TMAX"
+            tmax_extra = filter_dict.copy()
+            tmax_extra["variable"] = "TMAX"
+            tmax_filter = build_qdrant_filter(spatial_intent, tmax_extra)
             tmax_results = db.search(
                 query_vector=tmax_query_vec.tolist(),
-                limit=min(8, top_k),  # Get top 8 TMAX results (more to ensure we find it)
-                filter_dict=tmax_filter
+                limit=min(8, top_k),
+                query_filter=tmax_filter,
             )
             search_result.extend(tmax_results)
-            
+
             # Search 3: Targeted search for TMIN (query expansion)
             tmin_query = f"{request.question} minimum temperature TMIN"
             tmin_query_vec = embedder.embed_queries([tmin_query])[0]
-            tmin_filter = filter_dict.copy()
-            tmin_filter["variable"] = "TMIN"
+            tmin_extra = filter_dict.copy()
+            tmin_extra["variable"] = "TMIN"
+            tmin_filter = build_qdrant_filter(spatial_intent, tmin_extra)
             tmin_results = db.search(
                 query_vector=tmin_query_vec.tolist(),
-                limit=min(8, top_k),  # Get top 8 TMIN results (more to ensure we find it)
-                filter_dict=tmin_filter
+                limit=min(8, top_k),
+                query_filter=tmin_filter,
             )
             search_result.extend(tmin_results)
             
@@ -1055,22 +1066,20 @@ async def rag_chat_legacy(request: RAGChatRequest):
             general_results = db.search(
                 query_vector=general_query_vec.tolist(),
                 limit=top_k,
-                filter_dict=filter_dict if filter_dict else None
+                query_filter=spatial_qdrant_filter,
             )
             search_result.extend(general_results)
-            
+
             # Search 2-N: Targeted searches for each mentioned variable type
             # Use query expansion to improve retrieval for each variable
             for var_type in mentioned_variables:
-                # Expand query with variable-specific terms
                 expanded_query = f"{request.question} {var_type}"
                 expanded_query_vec = embedder.embed_queries([expanded_query])[0]
-                
-                # Search without variable filter (to get all relevant chunks)
+
                 var_results = db.search(
                     query_vector=expanded_query_vec.tolist(),
-                    limit=min(10, top_k),  # Get top 10 per variable type
-                    filter_dict=filter_dict if filter_dict else None
+                    limit=min(10, top_k),
+                    query_filter=spatial_qdrant_filter,
                 )
                 search_result.extend(var_results)
             
@@ -1101,9 +1110,22 @@ async def rag_chat_legacy(request: RAGChatRequest):
             search_result = db.search(
                 query_vector=query_vec.tolist(),
                 limit=top_k,
-                filter_dict=filter_dict if filter_dict else None
+                query_filter=spatial_qdrant_filter,
             )
         
+        # Fallback: if spatial filter returned too few results, retry without it
+        if len(search_result) < 2 and spatial_qdrant_filter is not None:
+            logger.warning(
+                f"Spatial filter returned only {len(search_result)} results, "
+                "retrying without spatial constraints"
+            )
+            query_vec = embedder.embed_queries([request.question])[0]
+            search_result = db.search(
+                query_vector=query_vec.tolist(),
+                limit=top_k,
+                filter_dict=filter_dict if filter_dict else None,
+            )
+
         # 3. Build Context
         context_chunks = []
         chunks_model = []

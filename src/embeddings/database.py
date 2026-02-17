@@ -198,15 +198,16 @@ class VectorDatabase:
         logger.info(f"Upserted {len(points)} points in {(len(points) - 1) // BATCH_SIZE + 1} batches")
 
     def search(
-        self, 
-        query_vector: List[float], 
+        self,
+        query_vector: List[float],
         limit: int = 5,
-        filter_dict: Optional[Dict[str, Any]] = None
+        filter_dict: Optional[Dict[str, Any]] = None,
+        query_filter=None,
     ) -> List[Any]:
         """
         Search using Client, falling back to direct REST API if client methods are missing.
         Supports optional filtering by metadata fields.
-        
+
         Args:
             query_vector: Query embedding vector
             limit: Maximum number of results to return
@@ -214,7 +215,9 @@ class VectorDatabase:
                 - {"source_id": "NOAA_GSOM"}  # Filter by source
                 - {"variable": "TMAX"}  # Filter by variable
                 - {"source_id": "NOAA_GSOM", "variable": "TMIN"}  # Multiple filters (AND)
-        
+            query_filter: Optional pre-built Qdrant Filter object (takes precedence
+                over filter_dict). Supports Range conditions for spatial filtering.
+
         Returns:
             List of objects with .score and .payload attributes (ScoredPoint-like).
         """
@@ -229,8 +232,10 @@ class VectorDatabase:
                         "limit": limit,
                         "with_payload": True
                     }
-                    # Add filter if provided
-                    if filter_dict:
+                    # Use pre-built filter if provided, else build from dict
+                    if query_filter is not None:
+                        search_kwargs["query_filter"] = query_filter
+                    elif filter_dict:
                         from qdrant_client.models import Filter, FieldCondition, MatchValue
                         conditions = []
                         for key, value in filter_dict.items():
@@ -239,7 +244,7 @@ class VectorDatabase:
                             )
                         if conditions:
                             search_kwargs["query_filter"] = Filter(must=conditions)
-                    
+
                     results = self.client.search(**search_kwargs)
                     if results:
                         return results
