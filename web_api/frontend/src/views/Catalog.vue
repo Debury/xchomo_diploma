@@ -3,36 +3,26 @@
     <!-- Header -->
     <div class="flex items-center justify-between">
       <div>
-        <h1 class="text-xl font-semibold text-white">Dataset Catalog</h1>
-        <p class="text-sm text-gray-500">233 climate data sources from D1.1.xlsx</p>
+        <h1 class="text-xl font-semibold text-mendelu-black">Dataset Catalog</h1>
+        <p class="text-sm text-mendelu-gray-dark">{{ catalog.length || 246 }} climate data sources from D1.1.xlsx</p>
       </div>
       <div class="flex gap-2">
-        <button
-          @click="classifyCatalog"
-          :disabled="loading"
-          class="px-3 py-1.5 text-sm bg-dark-hover text-gray-300 rounded-md hover:bg-gray-600 transition-colors disabled:opacity-50"
-        >
+        <button @click="classifyCatalog" :disabled="loading" class="btn-secondary disabled:opacity-50">
           Classify
         </button>
-        <button
-          @click="triggerProcessing([0])"
-          :disabled="processing"
-          class="px-3 py-1.5 text-sm bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors disabled:opacity-50"
-        >
+        <button @click="triggerProcessing([0])" :disabled="processing" class="btn-primary disabled:opacity-50">
           {{ processing ? 'Processing...' : 'Phase 0' }}
         </button>
-        <button
-          @click="triggerProcessing([1])"
-          :disabled="processing"
-          class="px-3 py-1.5 text-sm bg-green-600 text-white rounded-md hover:bg-green-700 transition-colors disabled:opacity-50"
-        >
+        <button @click="triggerProcessing([1])" :disabled="processing" class="btn-primary !bg-mendelu-success disabled:opacity-50">
           {{ processing ? 'Processing...' : 'Phase 1' }}
         </button>
-        <button
-          @click="refreshCatalog"
-          :disabled="loading"
-          class="px-3 py-1.5 text-sm bg-dark-hover text-gray-300 rounded-md hover:bg-gray-600 transition-colors disabled:opacity-50"
-        >
+        <button @click="triggerProcessing([2])" :disabled="processing" class="btn-primary !bg-amber-500 hover:!bg-amber-600 disabled:opacity-50">
+          {{ processing ? 'Processing...' : 'Phase 2' }}
+        </button>
+        <button @click="triggerProcessing([3])" :disabled="processing" class="btn-primary !bg-orange-500 hover:!bg-orange-600 disabled:opacity-50">
+          {{ processing ? 'Processing...' : 'Phase 3' }}
+        </button>
+        <button @click="refreshCatalog" :disabled="loading" class="btn-secondary disabled:opacity-50">
           Refresh
         </button>
       </div>
@@ -43,81 +33,67 @@
       <div v-for="(count, phase) in phaseStats.phases" :key="phase" class="card !p-4">
         <div class="flex items-center justify-between mb-1">
           <span class="text-[11px] font-medium uppercase tracking-wider" :class="phaseColor(Number(phase))">Phase {{ phase }}</span>
-          <span class="text-lg font-semibold text-white tabular-nums">{{ count }}</span>
+          <span class="text-lg font-semibold text-mendelu-black tabular-nums">{{ count }}</span>
         </div>
-        <p class="text-[11px] text-gray-600">{{ phaseLabel(Number(phase)) }}</p>
+        <p class="text-[11px] text-mendelu-gray-dark">{{ phaseLabel(Number(phase)) }}</p>
       </div>
     </div>
 
     <!-- Thread Crashed Banner -->
-    <div v-if="progress && progress.thread_crashed" class="card !p-4 border border-red-500/40 bg-red-500/10">
+    <div v-if="progress && progress.thread_crashed" class="card !p-4 border-mendelu-alert/40 bg-red-50">
       <div class="flex items-center justify-between">
         <div>
-          <span class="text-sm font-medium text-red-400">Batch processing crashed</span>
-          <p v-if="progress.thread_error" class="text-xs text-red-300/70 mt-1 font-mono max-w-xl truncate">{{ progress.thread_error }}</p>
+          <span class="text-sm font-medium text-mendelu-alert">Batch processing crashed</span>
+          <p v-if="progress.thread_error" class="text-xs text-mendelu-alert/70 mt-1 font-mono max-w-xl truncate">{{ progress.thread_error }}</p>
         </div>
-        <button
-          @click="autoRestart"
-          :disabled="restarting"
-          class="px-3 py-1.5 text-sm bg-red-600 text-white rounded-md hover:bg-red-700 transition-colors disabled:opacity-50 shrink-0"
-        >
+        <button @click="autoRestart" :disabled="restarting" class="btn-danger !py-1.5 disabled:opacity-50">
           {{ restarting ? 'Restarting...' : 'Restart' }}
         </button>
       </div>
     </div>
 
     <!-- Thread Alive Indicator -->
-    <div v-if="progress && progress.thread_alive" class="card !p-4 border border-blue-500/30 bg-blue-500/5">
+    <div v-if="progress && progress.thread_alive" class="card !p-4 border-mendelu-green/30 bg-mendelu-green/5">
       <div class="flex items-center gap-2">
         <span class="relative flex h-2.5 w-2.5">
-          <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
-          <span class="relative inline-flex rounded-full h-2.5 w-2.5 bg-blue-500"></span>
+          <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-mendelu-green opacity-75"></span>
+          <span class="relative inline-flex rounded-full h-2.5 w-2.5 bg-mendelu-green"></span>
         </span>
-        <span class="text-sm text-blue-300">Processing in progress</span>
-        <span v-if="progress.current_source" class="text-xs text-blue-400/70 ml-auto font-mono">{{ progress.current_source }}</span>
+        <span class="text-sm text-mendelu-green font-medium">Processing in progress</span>
+        <span v-if="progress.current_source" class="text-xs text-mendelu-green/70 ml-auto font-mono">{{ progress.current_source }}</span>
       </div>
     </div>
 
     <!-- Progress Bar -->
     <div v-if="progress && progress.total > 0" class="card !p-4">
       <div class="flex items-center justify-between mb-2">
-        <span class="text-xs text-gray-400">Processing Progress</span>
-        <span class="text-xs text-white tabular-nums">{{ progress.processed + progress.failed }} / {{ progress.total }}</span>
+        <span class="text-xs text-mendelu-gray-dark">Processing Progress</span>
+        <span class="text-xs text-mendelu-black tabular-nums">{{ progress.processed + (progress.metadata_only || 0) + progress.failed }} / {{ progress.total }}</span>
       </div>
-      <div class="w-full bg-gray-700/50 rounded-full h-2">
+      <div class="w-full bg-mendelu-gray-semi rounded-full h-2">
         <div class="flex h-2 rounded-full overflow-hidden">
-          <div
-            class="bg-green-500 transition-all duration-500"
-            :style="{ width: `${(progress.processed / progress.total) * 100}%` }"
-          ></div>
-          <div
-            v-if="progress.failed"
-            class="bg-red-500 transition-all duration-500"
-            :style="{ width: `${(progress.failed / progress.total) * 100}%` }"
-          ></div>
+          <div class="bg-mendelu-success transition-all duration-500" :style="{ width: `${pctOf(progress.processed)}%` }"></div>
+          <div v-if="progress.metadata_only" class="bg-amber-400 transition-all duration-500" :style="{ width: `${pctOf(progress.metadata_only)}%` }"></div>
+          <div v-if="progress.failed" class="bg-mendelu-alert transition-all duration-500" :style="{ width: `${pctOf(progress.failed)}%` }"></div>
         </div>
       </div>
-      <div class="flex gap-4 mt-1.5 text-[11px] text-gray-500">
-        <span class="text-green-400">{{ progress.processed }} done</span>
-        <span v-if="progress.failed" class="text-red-400">{{ progress.failed }} failed</span>
+      <div class="flex gap-4 mt-1.5 text-[11px] text-mendelu-gray-dark">
+        <span class="text-mendelu-success">{{ progress.processed }} processed</span>
+        <span v-if="progress.metadata_only" class="text-amber-500">{{ progress.metadata_only }} metadata only</span>
+        <span v-if="progress.failed" class="text-mendelu-alert">{{ progress.failed }} failed</span>
         <span>{{ progress.pending }} pending</span>
-        <span v-if="progress.current_source" class="text-blue-400 ml-auto">{{ progress.current_source }}</span>
+        <span v-if="progress.current_source" class="text-mendelu-green ml-auto">{{ progress.current_source }}</span>
       </div>
     </div>
 
     <!-- Filters -->
     <div class="flex gap-3 flex-wrap">
-      <input
-        v-model="filters.search"
-        type="text"
-        placeholder="Search datasets..."
-        class="bg-dark-card border border-dark-border rounded-md px-3 py-1.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-gray-500 w-56"
-      />
-      <select v-model="filters.phase" class="bg-dark-card border border-dark-border rounded-md px-3 py-1.5 text-sm text-white focus:outline-none focus:border-gray-500">
+      <input v-model="filters.search" type="text" placeholder="Search datasets..." class="input-field !w-56" />
+      <select v-model="filters.phase" class="input-field !w-auto">
         <option value="">All Phases</option>
         <option v-for="p in [0,1,2,3,4]" :key="p" :value="p">Phase {{ p }}</option>
       </select>
-      <select v-model="filters.status" class="bg-dark-card border border-dark-border rounded-md px-3 py-1.5 text-sm text-white focus:outline-none focus:border-gray-500">
+      <select v-model="filters.status" class="input-field !w-auto">
         <option value="">All Statuses</option>
         <option value="pending">Pending</option>
         <option value="processing">Processing</option>
@@ -125,7 +101,7 @@
         <option value="metadata_only">Metadata Only</option>
         <option value="failed">Failed</option>
       </select>
-      <select v-model="filters.access" class="bg-dark-card border border-dark-border rounded-md px-3 py-1.5 text-sm text-white focus:outline-none focus:border-gray-500">
+      <select v-model="filters.access" class="input-field !w-auto">
         <option value="">All Access</option>
         <option v-for="a in accessTypes" :key="a" :value="a">{{ a }}</option>
       </select>
@@ -135,8 +111,8 @@
     <div class="card !p-0 overflow-hidden">
       <table class="w-full text-sm">
         <thead>
-          <tr class="border-b border-dark-border text-left text-xs text-gray-500 uppercase tracking-wider">
-            <th class="px-4 py-2.5 cursor-pointer hover:text-gray-300" @click="toggleSort('dataset_name')">
+          <tr class="border-b border-mendelu-gray-semi text-left text-xs text-mendelu-gray-dark uppercase tracking-wider">
+            <th class="px-4 py-2.5 cursor-pointer hover:text-mendelu-black" @click="toggleSort('dataset_name')">
               Dataset {{ sortIcon('dataset_name') }}
             </th>
             <th class="px-4 py-2.5">Hazard</th>
@@ -151,47 +127,47 @@
           <tr
             v-for="entry in filteredEntries"
             :key="entry.row_index"
-            class="border-b border-dark-border/30 hover:bg-dark-hover/50 cursor-pointer transition-colors"
+            class="border-b border-mendelu-gray-semi/50 hover:bg-mendelu-gray-light cursor-pointer transition-colors"
             @click="selectedEntry = entry"
           >
-            <td class="px-4 py-2 text-white text-sm">{{ entry.dataset_name }}</td>
-            <td class="px-4 py-2 text-gray-400 text-xs">{{ entry.hazard || '--' }}</td>
-            <td class="px-4 py-2 text-gray-400 text-xs">{{ entry.data_type || '--' }}</td>
-            <td class="px-4 py-2 text-gray-400 text-xs">{{ entry.region_country || entry.spatial_coverage || '--' }}</td>
+            <td class="px-4 py-2 text-mendelu-black text-sm font-medium">{{ entry.dataset_name }}</td>
+            <td class="px-4 py-2 text-mendelu-gray-dark text-xs">{{ entry.hazard || '--' }}</td>
+            <td class="px-4 py-2 text-mendelu-gray-dark text-xs">{{ entry.data_type || '--' }}</td>
+            <td class="px-4 py-2 text-mendelu-gray-dark text-xs">{{ entry.region_country || entry.spatial_coverage || '--' }}</td>
             <td class="px-4 py-2">
-              <span class="px-1.5 py-0.5 rounded text-[11px] font-medium" :class="phaseBadgeClass(entry.phase)">
+              <span class="px-1.5 py-0.5 rounded-full text-[11px] font-medium" :class="phaseBadgeClass(entry.phase)">
                 {{ entry.phase }}
               </span>
             </td>
             <td class="px-4 py-2">
-              <span class="px-1.5 py-0.5 rounded text-[11px] font-medium" :class="statusBadgeClass(entry.processing_status)">
+              <span class="px-1.5 py-0.5 rounded-full text-[11px] font-medium" :class="statusBadgeClass(entry.processing_status)">
                 {{ entry.processing_status }}
               </span>
             </td>
-            <td class="px-4 py-2 text-gray-500 text-xs">{{ entry.access || '--' }}</td>
+            <td class="px-4 py-2 text-mendelu-gray-dark text-xs">{{ entry.access || '--' }}</td>
           </tr>
         </tbody>
       </table>
-      <div class="text-center text-gray-600 text-xs py-3 border-t border-dark-border/30">
+      <div class="text-center text-mendelu-gray-dark text-xs py-3 border-t border-mendelu-gray-semi/50">
         {{ filteredEntries.length }} of {{ catalog.length }} entries
       </div>
     </div>
 
     <!-- Detail Modal -->
-    <div v-if="selectedEntry" class="fixed inset-0 bg-black/60 flex items-center justify-center z-50" @click.self="selectedEntry = null">
-      <div class="bg-dark-card border border-dark-border rounded-lg p-5 max-w-xl w-full mx-4 max-h-[80vh] overflow-y-auto">
+    <div v-if="selectedEntry" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50" @click.self="selectedEntry = null">
+      <div class="bg-white border border-mendelu-gray-semi rounded-xl p-5 max-w-xl w-full mx-4 max-h-[80vh] overflow-y-auto shadow-lg">
         <div class="flex items-center justify-between mb-4">
-          <h3 class="text-lg font-semibold text-white">{{ selectedEntry.dataset_name }}</h3>
-          <button @click="selectedEntry = null" class="text-gray-500 hover:text-white text-lg leading-none">&times;</button>
+          <h3 class="text-lg font-semibold text-mendelu-black">{{ selectedEntry.dataset_name }}</h3>
+          <button @click="selectedEntry = null" class="text-mendelu-gray-dark hover:text-mendelu-black text-lg leading-none">&times;</button>
         </div>
         <div class="grid grid-cols-2 gap-3 text-sm">
           <div v-for="(value, key) in selectedEntryFields" :key="key">
-            <span class="text-[11px] text-gray-500 uppercase tracking-wider block">{{ formatFieldName(key) }}</span>
-            <span class="text-gray-300">{{ value || '--' }}</span>
+            <span class="text-[11px] text-mendelu-gray-dark uppercase tracking-wider block">{{ formatFieldName(key) }}</span>
+            <span class="text-mendelu-black">{{ value || '--' }}</span>
           </div>
         </div>
-        <div v-if="selectedEntry.link" class="mt-4 pt-3 border-t border-dark-border">
-          <a :href="selectedEntry.link" target="_blank" class="text-blue-400 hover:text-blue-300 text-sm">
+        <div v-if="selectedEntry.link" class="mt-4 pt-3 border-t border-mendelu-gray-semi">
+          <a :href="selectedEntry.link" target="_blank" class="text-mendelu-green hover:text-mendelu-green-hover text-sm font-medium">
             Open data link &rarr;
           </a>
         </div>
@@ -216,6 +192,11 @@ const sortField = ref('dataset_name')
 const sortAsc = ref(true)
 
 const accessTypes = computed(() => [...new Set(catalog.value.map(e => e.access).filter(Boolean))])
+
+function pctOf(value) {
+  const total = progress.value?.total || 1
+  return Math.min(100, Math.round((value / total) * 100))
+}
 
 const filteredEntries = computed(() => {
   let result = [...catalog.value]
@@ -252,16 +233,16 @@ function toggleSort(field) {
 function sortIcon(field) { return sortField.value !== field ? '' : sortAsc.value ? '\u25B2' : '\u25BC' }
 
 function phaseColor(phase) {
-  return { 0: 'text-blue-400', 1: 'text-green-400', 2: 'text-yellow-400', 3: 'text-orange-400', 4: 'text-red-400' }[phase] || 'text-gray-400'
+  return { 0: 'text-blue-600', 1: 'text-mendelu-success', 2: 'text-amber-500', 3: 'text-orange-500', 4: 'text-mendelu-alert' }[phase] || 'text-mendelu-gray-dark'
 }
 function phaseLabel(phase) {
   return { 0: 'Metadata only', 1: 'Direct download', 2: 'Registration', 3: 'API portal', 4: 'Manual' }[phase] || ''
 }
 function phaseBadgeClass(phase) {
-  return { 0: 'bg-blue-500/15 text-blue-400', 1: 'bg-green-500/15 text-green-400', 2: 'bg-yellow-500/15 text-yellow-400', 3: 'bg-orange-500/15 text-orange-400', 4: 'bg-red-500/15 text-red-400' }[phase] || 'bg-gray-500/15 text-gray-400'
+  return { 0: 'bg-blue-50 text-blue-600 border border-blue-200', 1: 'bg-green-50 text-green-700 border border-green-200', 2: 'bg-amber-50 text-amber-700 border border-amber-200', 3: 'bg-orange-50 text-orange-700 border border-orange-200', 4: 'bg-red-50 text-red-700 border border-red-200' }[phase] || 'bg-gray-100 text-gray-600 border border-gray-200'
 }
 function statusBadgeClass(status) {
-  return { pending: 'bg-gray-500/15 text-gray-400', processing: 'bg-blue-500/15 text-blue-400', completed: 'bg-green-500/15 text-green-400', metadata_only: 'bg-amber-500/15 text-amber-400', failed: 'bg-red-500/15 text-red-400' }[status] || 'bg-gray-500/15 text-gray-400'
+  return { pending: 'badge-neutral', processing: 'badge-info', completed: 'badge-success', metadata_only: 'badge-warning', failed: 'badge-danger' }[status] || 'badge-neutral'
 }
 function formatFieldName(key) { return key.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()) }
 
@@ -271,11 +252,8 @@ async function refreshCatalog() {
     const [catResp, progResp] = await Promise.all([fetch('/catalog'), fetch('/catalog/progress')])
     if (catResp.ok) catalog.value = await catResp.json()
     if (progResp.ok) progress.value = await progResp.json()
-  } catch (e) {
-    console.error('Failed to load catalog:', e)
-  } finally {
-    loading.value = false
-  }
+  } catch (e) { console.error('Failed to load catalog:', e) }
+  finally { loading.value = false }
 }
 
 async function classifyCatalog() {
@@ -283,44 +261,30 @@ async function classifyCatalog() {
   try {
     const resp = await fetch('/catalog/classify', { method: 'POST' })
     if (resp.ok) phaseStats.value = await resp.json()
-  } catch (e) {
-    console.error('Failed to classify:', e)
-  } finally {
-    loading.value = false
-  }
+  } catch (e) { console.error('Failed to classify:', e) }
+  finally { loading.value = false }
 }
 
 async function triggerProcessing(phases) {
   processing.value = true
   try {
     const resp = await fetch('/catalog/process', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ phases }),
     })
     if (resp.ok) pollProgress()
-  } catch (e) {
-    console.error('Failed to trigger processing:', e)
-  } finally {
-    processing.value = false
-  }
+  } catch (e) { console.error('Failed to trigger processing:', e) }
+  finally { processing.value = false }
 }
 
 async function autoRestart() {
   restarting.value = true
   try {
     const resp = await fetch('/catalog/auto-restart', { method: 'POST' })
-    if (resp.ok) {
-      pollProgress()
-    } else {
-      const data = await resp.json()
-      console.error('Auto-restart failed:', data.detail || data)
-    }
-  } catch (e) {
-    console.error('Auto-restart error:', e)
-  } finally {
-    restarting.value = false
-  }
+    if (resp.ok) pollProgress()
+    else { const data = await resp.json(); console.error('Auto-restart failed:', data.detail || data) }
+  } catch (e) { console.error('Auto-restart error:', e) }
+  finally { restarting.value = false }
 }
 
 let progressInterval = null
@@ -331,22 +295,13 @@ function pollProgress() {
       const resp = await fetch('/catalog/progress')
       if (resp.ok) {
         progress.value = await resp.json()
-        // Stop polling when thread is done and nothing pending
         if (!progress.value.thread_alive && progress.value.pending === 0) {
-          clearInterval(progressInterval)
-          progressInterval = null
-          refreshCatalog()
+          clearInterval(progressInterval); progressInterval = null; refreshCatalog()
         }
       }
-    } catch (e) {
-      clearInterval(progressInterval)
-      progressInterval = null
-    }
+    } catch (e) { clearInterval(progressInterval); progressInterval = null }
   }, 3000)
 }
 
-onMounted(() => {
-  refreshCatalog()
-  classifyCatalog()
-})
+onMounted(() => { refreshCatalog(); classifyCatalog() })
 </script>

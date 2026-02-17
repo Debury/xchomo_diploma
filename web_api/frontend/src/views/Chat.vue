@@ -1,66 +1,126 @@
 <template>
   <div class="h-full flex flex-col">
     <!-- Chat Header -->
-    <div class="flex items-center justify-between mb-6">
+    <div class="flex items-center justify-between mb-4">
       <div>
-        <h1 class="text-2xl font-bold text-white">Climate Data Chat</h1>
-        <p class="text-gray-400">Ask questions about your climate datasets</p>
+        <h1 class="text-xl font-bold text-mendelu-black">Climate Data Chat</h1>
+        <p class="text-mendelu-gray-dark text-sm">Ask questions about your climate datasets</p>
       </div>
-      <button 
+      <button
         @click="clearChat"
-        class="px-4 py-2 bg-dark-hover rounded-lg text-gray-400 hover:text-white transition-colors"
+        class="btn-secondary"
       >
         Clear Chat
       </button>
     </div>
 
+    <!-- Filter Bar -->
+    <div class="card !p-3 mb-4">
+      <div class="flex items-center gap-3 flex-wrap">
+        <span class="text-xs font-medium text-mendelu-gray-dark">Filters:</span>
+        <select v-model="filterSource" class="input-field !w-auto !py-1.5 text-xs">
+          <option value="">All Sources</option>
+          <option v-for="s in availableSources" :key="s" :value="s">{{ s }}</option>
+        </select>
+        <select v-model="filterVariable" class="input-field !w-auto !py-1.5 text-xs">
+          <option value="">All Variables</option>
+          <option v-for="v in availableVariables" :key="v" :value="v">{{ v }}</option>
+        </select>
+        <span v-if="filterSource || filterVariable" class="badge-info">
+          Filtered
+        </span>
+      </div>
+    </div>
+
     <!-- Chat Messages -->
-    <div class="flex-1 overflow-y-auto space-y-4 mb-6 pr-2" ref="messagesContainer">
-      <div 
-        v-for="(msg, idx) in messages" 
+    <div class="flex-1 overflow-y-auto space-y-4 mb-4 pr-2" ref="messagesContainer">
+      <div
+        v-for="(msg, idx) in messages"
         :key="idx"
         class="flex"
         :class="msg.role === 'user' ? 'justify-end' : 'justify-start'"
       >
-        <div 
-          class="max-w-3xl px-4 py-3 rounded-lg"
-          :class="msg.role === 'user' 
-            ? 'bg-blue-600 text-white' 
-            : 'bg-dark-card border border-dark-border text-gray-200'"
+        <div
+          class="max-w-3xl px-4 py-3 rounded-xl"
+          :class="msg.role === 'user'
+            ? 'bg-mendelu-green text-white'
+            : 'bg-white border border-mendelu-gray-semi text-mendelu-black shadow-sm'"
         >
           <div class="whitespace-pre-wrap">{{ msg.content }}</div>
-          <div v-if="msg.meta" class="mt-2 pt-2 border-t border-gray-600 text-xs text-gray-400">
-            <span v-if="msg.meta.llm_time_ms">⏱️ {{ msg.meta.llm_time_ms.toFixed(0) }}ms LLM</span>
-            <span v-if="msg.meta.search_time_ms" class="ml-3">🔍 {{ msg.meta.search_time_ms.toFixed(0) }}ms search</span>
-            <span v-if="msg.meta.provider" class="ml-3">🤖 {{ msg.meta.provider }}</span>
+
+          <!-- Spatial badge -->
+          <div v-if="msg.spatial" class="mt-2">
+            <span class="badge-info">{{ msg.spatial }}</span>
+          </div>
+
+          <!-- Timing metadata -->
+          <div v-if="msg.meta" class="mt-2 pt-2 border-t text-xs" :class="msg.role === 'user' ? 'border-white/30 text-white/70' : 'border-mendelu-gray-semi text-mendelu-gray-dark'">
+            <span v-if="msg.meta.llm_time_ms">{{ msg.meta.llm_time_ms.toFixed(0) }}ms LLM</span>
+            <span v-if="msg.meta.search_time_ms" class="ml-3">{{ msg.meta.search_time_ms.toFixed(0) }}ms search</span>
+            <span v-if="msg.meta.provider" class="ml-3">{{ msg.meta.provider }}</span>
+          </div>
+
+          <!-- Chunk Details Accordion -->
+          <div v-if="msg.chunks && msg.chunks.length" class="mt-3">
+            <button
+              @click="msg.showChunks = !msg.showChunks"
+              class="text-xs font-medium flex items-center gap-1"
+              :class="msg.role === 'user' ? 'text-white/80' : 'text-mendelu-green'"
+            >
+              <svg class="w-3 h-3 transition-transform" :class="{ 'rotate-90': msg.showChunks }" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
+              </svg>
+              {{ msg.chunks.length }} retrieved chunks
+            </button>
+            <div v-if="msg.showChunks" class="mt-2 space-y-2">
+              <div
+                v-for="(chunk, ci) in msg.chunks"
+                :key="ci"
+                class="p-3 rounded-lg text-xs"
+                :class="msg.role === 'user' ? 'bg-white/10' : 'bg-mendelu-gray-light'"
+              >
+                <div class="flex items-center gap-2 mb-1 flex-wrap">
+                  <span class="font-medium" :class="msg.role === 'user' ? 'text-white' : 'text-mendelu-black'">
+                    Score: {{ (chunk.score * 100).toFixed(1) }}%
+                  </span>
+                  <span v-if="chunk.dataset" class="badge-info">{{ chunk.dataset }}</span>
+                  <span v-if="chunk.variable" class="badge-success">{{ chunk.variable }}</span>
+                </div>
+                <div v-if="chunk.coordinates || chunk.time_range" class="flex gap-3 mb-1" :class="msg.role === 'user' ? 'text-white/70' : 'text-mendelu-gray-dark'">
+                  <span v-if="chunk.coordinates">{{ chunk.coordinates }}</span>
+                  <span v-if="chunk.time_range">{{ chunk.time_range }}</span>
+                </div>
+                <p :class="msg.role === 'user' ? 'text-white/80' : 'text-mendelu-gray-dark'" class="line-clamp-3">{{ chunk.text }}</p>
+              </div>
+            </div>
           </div>
         </div>
       </div>
 
       <!-- Loading indicator -->
       <div v-if="loading" class="flex justify-start">
-        <div class="bg-dark-card border border-dark-border px-4 py-3 rounded-lg">
+        <div class="bg-white border border-mendelu-gray-semi px-4 py-3 rounded-xl shadow-sm">
           <div class="flex items-center space-x-2">
-            <div class="animate-pulse flex space-x-1">
-              <div class="w-2 h-2 bg-blue-400 rounded-full animate-bounce"></div>
-              <div class="w-2 h-2 bg-blue-400 rounded-full animate-bounce" style="animation-delay: 0.1s"></div>
-              <div class="w-2 h-2 bg-blue-400 rounded-full animate-bounce" style="animation-delay: 0.2s"></div>
+            <div class="flex space-x-1">
+              <div class="w-2 h-2 bg-mendelu-green rounded-full animate-bounce"></div>
+              <div class="w-2 h-2 bg-mendelu-green rounded-full animate-bounce" style="animation-delay: 0.1s"></div>
+              <div class="w-2 h-2 bg-mendelu-green rounded-full animate-bounce" style="animation-delay: 0.2s"></div>
             </div>
-            <span class="text-gray-400">Thinking...</span>
+            <span class="text-mendelu-gray-dark">Thinking...</span>
           </div>
         </div>
       </div>
     </div>
 
     <!-- Input Area -->
-    <div class="bg-dark-card border border-dark-border rounded-lg p-4">
+    <div class="card !p-4">
       <div class="flex items-end space-x-4">
         <div class="flex-1">
           <textarea
             v-model="input"
             @keydown.enter.exact.prevent="sendMessage"
             rows="3"
-            class="w-full bg-dark-hover border border-dark-border rounded-lg px-4 py-3 text-white placeholder-gray-500 resize-none focus:outline-none focus:border-blue-500"
+            class="input-field resize-none"
             placeholder="Ask about your climate data... (Enter to send)"
             :disabled="loading"
           ></textarea>
@@ -68,19 +128,19 @@
         <button
           @click="sendMessage"
           :disabled="loading || !input.trim()"
-          class="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+          class="btn-primary py-3 px-6 disabled:opacity-50"
         >
           {{ loading ? 'Sending...' : 'Send' }}
         </button>
       </div>
-      
+
       <!-- Quick Questions -->
       <div class="mt-3 flex flex-wrap gap-2">
         <button
           v-for="q in quickQuestions"
           :key="q"
           @click="input = q; sendMessage()"
-          class="text-xs px-3 py-1.5 bg-dark-hover text-gray-400 rounded-full hover:text-white transition-colors"
+          class="text-xs px-3 py-1.5 bg-mendelu-green/10 text-mendelu-green rounded-full hover:bg-mendelu-green/20 transition-colors font-medium"
         >
           {{ q }}
         </button>
@@ -90,49 +150,80 @@
 </template>
 
 <script setup>
-import { ref, nextTick } from 'vue'
+import { ref, reactive, nextTick, onMounted } from 'vue'
 
 const input = ref('')
 const messages = ref([])
 const loading = ref(false)
 const messagesContainer = ref(null)
+const filterSource = ref('')
+const filterVariable = ref('')
+const availableSources = ref([])
+const availableVariables = ref([])
 
 const quickQuestions = [
   'What variables are available?',
   'Show me temperature trends',
   'What is the spatial coverage?',
-  'List data sources'
+  'List data sources',
+  'Temperature in Czech Republic',
+  'Drought indices for Central Europe'
 ]
+
+onMounted(async () => {
+  try {
+    const resp = await fetch('/rag/info')
+    if (resp.ok) {
+      const data = await resp.json()
+      availableSources.value = data.sources || []
+      availableVariables.value = data.variables || []
+    }
+  } catch (e) {}
+})
 
 async function sendMessage() {
   const question = input.value.trim()
   if (!question || loading.value) return
-  
-  // Add user message
+
   messages.value.push({ role: 'user', content: question })
   input.value = ''
   loading.value = true
-  
   await scrollToBottom()
-  
+
   try {
+    const body = { question, limit: 5 }
+    if (filterSource.value) body.source_filter = filterSource.value
+    if (filterVariable.value) body.variable_filter = filterVariable.value
+
     const resp = await fetch('/rag/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ question, limit: 5 })
+      body: JSON.stringify(body)
     })
-    
     const data = await resp.json()
-    
+
     if (data.error) {
-      messages.value.push({ 
-        role: 'assistant', 
-        content: `Error: ${data.error}` 
-      })
+      messages.value.push({ role: 'assistant', content: `Error: ${data.error}` })
     } else {
-      messages.value.push({ 
-        role: 'assistant', 
+      const chunks = (data.contexts || data.results || []).map(c => ({
+        score: c.score || 0,
+        dataset: c.dataset_name || c.source || '',
+        variable: c.variable || '',
+        coordinates: c.lat !== undefined ? `${c.lat?.toFixed(1)}\u00b0N, ${c.lon?.toFixed(1)}\u00b0E` : '',
+        time_range: c.time_range || '',
+        text: c.text || c.content || ''
+      }))
+
+      const spatial = data.spatial_filter
+        ? `Filtered: ${data.spatial_filter.description || `${data.spatial_filter.lat_min}-${data.spatial_filter.lat_max}\u00b0N`}`
+        : null
+
+      messages.value.push({
+        role: 'assistant',
         content: data.answer,
+        spatial,
+        chunks,
+        showChunks: false,
         meta: {
           llm_time_ms: data.llm_time_ms,
           search_time_ms: data.search_time_ms,
@@ -141,24 +232,17 @@ async function sendMessage() {
       })
     }
   } catch (e) {
-    messages.value.push({ 
-      role: 'assistant', 
-      content: `Connection error: ${e.message}` 
-    })
+    messages.value.push({ role: 'assistant', content: `Connection error: ${e.message}` })
   } finally {
     loading.value = false
     await scrollToBottom()
   }
 }
 
-function clearChat() {
-  messages.value = []
-}
+function clearChat() { messages.value = [] }
 
 async function scrollToBottom() {
   await nextTick()
-  if (messagesContainer.value) {
-    messagesContainer.value.scrollTop = messagesContainer.value.scrollHeight
-  }
+  if (messagesContainer.value) messagesContainer.value.scrollTop = messagesContainer.value.scrollHeight
 }
 </script>

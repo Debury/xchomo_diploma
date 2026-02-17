@@ -4,10 +4,20 @@ export default {
     "./index.html",
     "./src/**/*.{vue,js,ts,jsx,tsx}",
   ],
-  darkMode: 'class',
   theme: {
     extend: {
       colors: {
+        mendelu: {
+          green: '#79be15',
+          'green-hover': '#6aaa10',
+          success: '#82c55b',
+          alert: '#d53e3c',
+          black: '#1c1c1c',
+          white: '#ffffff',
+          'gray-dark': '#535a5d',
+          'gray-semi': '#dce3e4',
+          'gray-light': '#eff3f4',
+        },
         dark: {
           bg: '#0f172a',
           card: '#1e293b',

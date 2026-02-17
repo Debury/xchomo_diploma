@@ -3,13 +3,13 @@
     <!-- Header -->
     <div class="flex items-center justify-between">
       <div>
-        <h1 class="text-xl font-semibold text-white">Dashboard</h1>
-        <p class="text-sm text-gray-500">System overview</p>
+        <h1 class="text-xl font-semibold text-mendelu-black">Dashboard</h1>
+        <p class="text-sm text-mendelu-gray-dark">System overview</p>
       </div>
       <button
         @click="refreshAll"
         :disabled="loading"
-        class="px-3 py-1.5 text-sm bg-dark-hover text-gray-300 rounded-md hover:bg-gray-600 transition-colors disabled:opacity-50"
+        class="btn-secondary disabled:opacity-50"
       >
         {{ loading ? 'Loading...' : 'Refresh' }}
       </button>
@@ -18,20 +18,20 @@
     <!-- Stats Cards -->
     <div class="grid grid-cols-2 lg:grid-cols-4 gap-4">
       <div class="card">
-        <h3 class="text-xs text-gray-500 uppercase tracking-wider mb-1">Vectors</h3>
-        <p class="text-2xl font-semibold text-white tabular-nums">{{ stats.total_embeddings?.toLocaleString() || '0' }}</p>
+        <h3 class="text-xs text-mendelu-gray-dark uppercase tracking-wider mb-1">Vectors</h3>
+        <p class="text-2xl font-semibold text-mendelu-black tabular-nums">{{ stats.total_embeddings?.toLocaleString() || '0' }}</p>
       </div>
       <div class="card">
-        <h3 class="text-xs text-gray-500 uppercase tracking-wider mb-1">Variables</h3>
-        <p class="text-2xl font-semibold text-white tabular-nums">{{ stats.variables?.length || '0' }}</p>
+        <h3 class="text-xs text-mendelu-gray-dark uppercase tracking-wider mb-1">Variables</h3>
+        <p class="text-2xl font-semibold text-mendelu-black tabular-nums">{{ stats.variables?.length || '0' }}</p>
       </div>
       <div class="card">
-        <h3 class="text-xs text-gray-500 uppercase tracking-wider mb-1">Sources</h3>
-        <p class="text-2xl font-semibold text-white tabular-nums">{{ stats.sources?.length || '0' }}</p>
+        <h3 class="text-xs text-mendelu-gray-dark uppercase tracking-wider mb-1">Sources</h3>
+        <p class="text-2xl font-semibold text-mendelu-black tabular-nums">{{ stats.sources?.length || '0' }}</p>
       </div>
       <div class="card">
-        <h3 class="text-xs text-gray-500 uppercase tracking-wider mb-1">LLM</h3>
-        <p class="text-lg font-medium" :class="health.llmOnline ? 'text-green-400' : 'text-gray-500'">
+        <h3 class="text-xs text-mendelu-gray-dark uppercase tracking-wider mb-1">LLM</h3>
+        <p class="text-lg font-medium" :class="health.llmOnline ? 'text-mendelu-success' : 'text-mendelu-gray-dark'">
           {{ health.llmOnline ? 'Connected' : 'Offline' }}
         </p>
       </div>
@@ -39,91 +39,91 @@
 
     <!-- Catalog Progress -->
     <div v-if="catalogProgress && catalogProgress.total > 0" class="card">
-      <h3 class="text-sm font-medium text-gray-300 mb-3">Catalog Processing</h3>
+      <h3 class="text-sm font-medium text-mendelu-black mb-3">Catalog Processing</h3>
       <div v-if="catalogProgress.phases && Object.keys(catalogProgress.phases).length" class="grid grid-cols-1 md:grid-cols-3 gap-3 mb-3">
-        <div v-for="(info, phase) in catalogProgress.phases" :key="phase" class="bg-dark-bg rounded-lg p-3">
+        <div v-for="(info, phase) in catalogProgress.phases" :key="phase" class="bg-mendelu-gray-light rounded-lg p-3">
           <div class="flex items-center justify-between mb-1">
-            <span class="text-xs text-white font-medium">Phase {{ phase }}</span>
-            <span class="text-[10px] text-gray-500">{{ phaseLabel(phase) }}</span>
+            <span class="text-xs text-mendelu-black font-medium">Phase {{ phase }}</span>
+            <span class="text-[10px] text-mendelu-gray-dark">{{ phaseLabel(phase) }}</span>
           </div>
           <div class="flex gap-2 text-xs mb-1.5">
-            <span class="text-green-400">{{ info.completed }}/{{ info.total }}</span>
-            <span v-if="info.failed > 0" class="text-red-400">{{ info.failed }} failed</span>
+            <span class="text-mendelu-success">{{ info.completed }}/{{ info.total }}</span>
+            <span v-if="info.failed > 0" class="text-mendelu-alert">{{ info.failed }} failed</span>
           </div>
-          <div class="w-full bg-gray-700 rounded-full h-1">
+          <div class="w-full bg-mendelu-gray-semi rounded-full h-1">
             <div
-              class="bg-green-500 h-1 rounded-full transition-all"
-              :style="{ width: info.total > 0 ? `${(info.completed / info.total) * 100}%` : '0%' }"
+              class="bg-mendelu-green h-1 rounded-full transition-all"
+              :style="{ width: info.total > 0 ? `${Math.min(100, (info.completed / info.total) * 100)}%` : '0%' }"
             ></div>
           </div>
         </div>
       </div>
-      <div class="flex gap-4 text-xs text-gray-500">
-        <span v-if="catalogProgress.current_phase != null" class="text-blue-400">Phase {{ catalogProgress.current_phase }}</span>
+      <div class="flex gap-4 text-xs text-mendelu-gray-dark">
+        <span v-if="catalogProgress.current_phase != null" class="text-mendelu-green font-medium">Phase {{ catalogProgress.current_phase }}</span>
         <span>{{ catalogProgress.processed }} processed</span>
-        <span v-if="catalogProgress.failed" class="text-red-400">{{ catalogProgress.failed }} failed</span>
+        <span v-if="catalogProgress.failed" class="text-mendelu-alert">{{ catalogProgress.failed }} failed</span>
         <span>{{ catalogProgress.pending }} pending</span>
       </div>
     </div>
 
     <!-- System Health -->
     <div class="card">
-      <h3 class="text-sm font-medium text-gray-300 mb-3">Services</h3>
+      <h3 class="text-sm font-medium text-mendelu-black mb-3">Services</h3>
       <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
         <div class="flex items-center gap-2">
-          <span class="w-2 h-2 rounded-full" :class="health.qdrant ? 'bg-green-500' : 'bg-red-500'"></span>
-          <span class="text-sm text-gray-400">Qdrant</span>
+          <span class="w-2 h-2 rounded-full" :class="health.qdrant ? 'bg-mendelu-success' : 'bg-mendelu-alert'"></span>
+          <span class="text-sm text-mendelu-gray-dark">Qdrant</span>
         </div>
         <div class="flex items-center gap-2">
-          <span class="w-2 h-2 rounded-full" :class="health.dagster ? 'bg-green-500' : 'bg-red-500'"></span>
-          <span class="text-sm text-gray-400">Dagster</span>
+          <span class="w-2 h-2 rounded-full" :class="health.dagster ? 'bg-mendelu-success' : 'bg-mendelu-alert'"></span>
+          <span class="text-sm text-mendelu-gray-dark">Dagster</span>
         </div>
         <div class="flex items-center gap-2">
-          <span class="w-2 h-2 rounded-full" :class="health.llmOnline ? 'bg-green-500' : 'bg-yellow-500'"></span>
-          <span class="text-sm text-gray-400">LLM</span>
+          <span class="w-2 h-2 rounded-full" :class="health.llmOnline ? 'bg-mendelu-success' : 'bg-amber-400'"></span>
+          <span class="text-sm text-mendelu-gray-dark">LLM</span>
         </div>
         <div class="flex items-center gap-2">
-          <span class="w-2 h-2 rounded-full bg-green-500"></span>
-          <span class="text-sm text-gray-400">API</span>
+          <span class="w-2 h-2 rounded-full bg-mendelu-success"></span>
+          <span class="text-sm text-mendelu-gray-dark">API</span>
         </div>
       </div>
     </div>
 
     <!-- Hazard Types -->
     <div class="card">
-      <h3 class="text-sm font-medium text-gray-300 mb-3">Datasets by Hazard</h3>
+      <h3 class="text-sm font-medium text-mendelu-black mb-3">Datasets by Hazard</h3>
       <div class="flex flex-wrap gap-1.5">
         <span
           v-for="h in hazardCounts"
           :key="h.name"
-          class="px-2.5 py-1 rounded text-xs font-medium"
+          class="px-2.5 py-1 rounded-full text-xs font-medium"
           :class="hazardColor(h.name)"
         >
           {{ h.name }} <span class="opacity-60">{{ h.count }}</span>
         </span>
-        <span v-if="!hazardCounts.length" class="text-gray-600 text-sm">No catalog data loaded</span>
+        <span v-if="!hazardCounts.length" class="text-mendelu-gray-dark text-sm">No catalog data loaded</span>
       </div>
     </div>
 
     <!-- Quick Actions -->
     <div class="card">
-      <h3 class="text-sm font-medium text-gray-300 mb-3">Quick Actions</h3>
+      <h3 class="text-sm font-medium text-mendelu-black mb-3">Quick Actions</h3>
       <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
-        <router-link to="/chat" class="p-3 bg-dark-bg rounded-lg hover:bg-dark-hover transition-colors">
-          <h4 class="text-sm font-medium text-white mb-0.5">Ask a Question</h4>
-          <p class="text-xs text-gray-500">Query climate data with AI</p>
+        <router-link to="/chat" class="p-3 bg-mendelu-gray-light rounded-lg hover:bg-mendelu-gray-semi transition-colors border border-transparent hover:border-mendelu-green/30">
+          <h4 class="text-sm font-medium text-mendelu-black mb-0.5">Ask a Question</h4>
+          <p class="text-xs text-mendelu-gray-dark">Query climate data with AI</p>
         </router-link>
-        <router-link to="/catalog" class="p-3 bg-dark-bg rounded-lg hover:bg-dark-hover transition-colors">
-          <h4 class="text-sm font-medium text-white mb-0.5">View Catalog</h4>
-          <p class="text-xs text-gray-500">Browse 233 sources</p>
+        <router-link to="/catalog" class="p-3 bg-mendelu-gray-light rounded-lg hover:bg-mendelu-gray-semi transition-colors border border-transparent hover:border-mendelu-green/30">
+          <h4 class="text-sm font-medium text-mendelu-black mb-0.5">View Catalog</h4>
+          <p class="text-xs text-mendelu-gray-dark">Browse 246 sources</p>
         </router-link>
-        <button @click="runPhase0" :disabled="runningPhase0" class="p-3 bg-dark-bg rounded-lg hover:bg-dark-hover transition-colors text-left disabled:opacity-50">
-          <h4 class="text-sm font-medium text-white mb-0.5">{{ runningPhase0 ? 'Processing...' : 'Run Phase 0' }}</h4>
-          <p class="text-xs text-gray-500">Embed catalog metadata</p>
+        <button @click="runPhase0" :disabled="runningPhase0" class="p-3 bg-mendelu-gray-light rounded-lg hover:bg-mendelu-gray-semi transition-colors text-left disabled:opacity-50 border border-transparent hover:border-mendelu-green/30">
+          <h4 class="text-sm font-medium text-mendelu-black mb-0.5">{{ runningPhase0 ? 'Processing...' : 'Run Phase 0' }}</h4>
+          <p class="text-xs text-mendelu-gray-dark">Embed catalog metadata</p>
         </button>
-        <a href="/docs" target="_blank" class="p-3 bg-dark-bg rounded-lg hover:bg-dark-hover transition-colors">
-          <h4 class="text-sm font-medium text-white mb-0.5">API Docs</h4>
-          <p class="text-xs text-gray-500">REST API reference</p>
+        <a href="/docs" target="_blank" class="p-3 bg-mendelu-gray-light rounded-lg hover:bg-mendelu-gray-semi transition-colors border border-transparent hover:border-mendelu-green/30">
+          <h4 class="text-sm font-medium text-mendelu-black mb-0.5">API Docs</h4>
+          <p class="text-xs text-mendelu-gray-dark">REST API reference</p>
         </a>
       </div>
     </div>
@@ -141,16 +141,16 @@ const loading = ref(false)
 const runningPhase0 = ref(false)
 
 const HAZARD_COLORS = {
-  'Drought': 'bg-amber-500/15 text-amber-400',
-  'Temperature': 'bg-red-500/15 text-red-400',
-  'Precipitation': 'bg-blue-500/15 text-blue-400',
-  'Sea Level Rise': 'bg-cyan-500/15 text-cyan-400',
-  'Flood': 'bg-indigo-500/15 text-indigo-400',
-  'Wind': 'bg-teal-500/15 text-teal-400',
+  'Drought': 'bg-amber-100 text-amber-700',
+  'Temperature': 'bg-red-100 text-red-700',
+  'Precipitation': 'bg-blue-100 text-blue-700',
+  'Sea Level Rise': 'bg-cyan-100 text-cyan-700',
+  'Flood': 'bg-indigo-100 text-indigo-700',
+  'Wind': 'bg-teal-100 text-teal-700',
 }
 
 function hazardColor(name) {
-  return HAZARD_COLORS[name] || 'bg-gray-500/15 text-gray-400'
+  return HAZARD_COLORS[name] || 'bg-gray-100 text-gray-600'
 }
 
 function phaseLabel(phase) {

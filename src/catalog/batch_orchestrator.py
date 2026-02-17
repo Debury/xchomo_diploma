@@ -247,13 +247,10 @@ class BatchProgress:
         return count
 
     def get_summary(self) -> Dict[str, Any]:
-        pending = self.total - self.processed - self.failed - self.skipped
         # Build per-phase breakdown from sources dict
         phase_counts: Dict[str, Dict[str, int]] = {}
         for sid, info in self.sources.items():
             phases = info.get("phases", {})
-            # Determine which phase this source belongs to
-            source_phase = str(info.get("phase", 0))
             for p, status in phases.items():
                 if p not in phase_counts:
                     phase_counts[p] = {"completed": 0, "failed": 0, "total": 0}
@@ -262,12 +259,43 @@ class BatchProgress:
                     phase_counts[p]["completed"] += 1
                 elif status == "failed":
                     phase_counts[p]["failed"] += 1
+
+        # Compute unique source statuses to avoid double-counting across phases.
+        # "processed" = completed a real data phase (>0), not just metadata.
+        # "metadata_only" = only Phase 0 done, target phase not attempted.
+        unique_processed = 0
+        unique_failed = 0
+        unique_metadata_only = 0
+        unique_processing = 0
+        for sid, info in self.sources.items():
+            phases = info.get("phases", {})
+            has_data_phase = any(
+                p != "0" and st == "completed"
+                for p, st in phases.items()
+            )
+            has_failed = any(
+                p != "0" and st == "failed"
+                for p, st in phases.items()
+            )
+            if has_data_phase:
+                unique_processed += 1
+            elif has_failed:
+                unique_failed += 1
+            elif phases.get("0") == "completed":
+                unique_metadata_only += 1
+            elif info.get("status") == "processing":
+                unique_processing += 1
+
+        effective_total = max(self.total, len(self.sources))
+        effective_pending = max(0, effective_total - unique_processed - unique_failed - unique_metadata_only - self.skipped)
+
         return {
-            "total": self.total,
-            "processed": self.processed,
-            "failed": self.failed,
+            "total": effective_total,
+            "processed": unique_processed,
+            "failed": unique_failed,
+            "metadata_only": unique_metadata_only,
             "skipped": self.skipped,
-            "pending": max(0, pending),
+            "pending": effective_pending,
             "current_phase": self.current_phase,
             "current_source": self.current_source,
             "started_at": self.started_at,

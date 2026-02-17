@@ -1,18 +1,18 @@
 <template>
   <div class="min-h-screen flex">
     <!-- Sidebar -->
-    <aside class="w-60 bg-dark-card border-r border-dark-border flex flex-col">
+    <aside class="w-60 bg-mendelu-black flex flex-col">
       <!-- Logo -->
-      <div class="px-5 py-5 border-b border-dark-border">
+      <div class="px-5 py-5 border-b border-white/10">
         <div class="flex items-center gap-3">
-          <div class="w-9 h-9 rounded-lg bg-blue-600 flex items-center justify-center">
+          <div class="w-9 h-9 rounded-full bg-mendelu-green flex items-center justify-center">
             <svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3.055 11H5a2 2 0 012 2v1a2 2 0 002 2 2 2 0 012 2v2.945M8 3.935V5.5A2.5 2.5 0 0010.5 8h.5a2 2 0 012 2 2 2 0 104 0 2 2 0 012-2h1.064M15 20.488V18a2 2 0 012-2h3.064M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
             </svg>
           </div>
           <div>
-            <h1 class="text-sm font-semibold text-white tracking-tight">ClimateRAG</h1>
-            <p class="text-[11px] text-gray-500">Data Pipeline</p>
+            <h1 class="text-sm font-semibold text-white tracking-tight">MENDELU</h1>
+            <p class="text-[11px] text-gray-400">Climate RAG</p>
           </div>
         </div>
       </div>
@@ -23,8 +23,8 @@
           v-for="item in navItems"
           :key="item.path"
           :to="item.path"
-          class="flex items-center gap-3 px-3 py-2 rounded-md text-[13px] text-gray-400 hover:bg-dark-hover hover:text-gray-200 transition-colors"
-          :class="{ 'bg-dark-hover text-white': $route.path === item.path }"
+          class="flex items-center gap-3 px-3 py-2 rounded-lg text-[13px] text-gray-400 hover:bg-white/10 hover:text-white transition-colors"
+          :class="{ 'bg-mendelu-green/15 text-mendelu-green !hover:bg-mendelu-green/20': $route.path === item.path }"
         >
           <component :is="item.icon" class="w-4 h-4 flex-shrink-0" />
           <span>{{ item.label }}</span>
@@ -32,15 +32,15 @@
       </nav>
 
       <!-- User Section -->
-      <div class="px-4 py-3 border-t border-dark-border">
+      <div class="px-4 py-3 border-t border-white/10">
         <div class="flex items-center justify-between">
           <div class="flex items-center gap-2">
-            <div class="w-7 h-7 rounded-full bg-gray-600 flex items-center justify-center text-xs text-gray-300">
+            <div class="w-7 h-7 rounded-full bg-mendelu-green/20 flex items-center justify-center text-xs text-mendelu-green font-medium">
               {{ authStore.user?.username?.[0]?.toUpperCase() || 'U' }}
             </div>
             <span class="text-xs text-gray-400">{{ authStore.user?.username }}</span>
           </div>
-          <button @click="handleLogout" class="text-gray-500 hover:text-gray-300 transition-colors">
+          <button @click="handleLogout" class="text-gray-500 hover:text-white transition-colors">
             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"></path>
             </svg>
@@ -52,21 +52,21 @@
     <!-- Main Content -->
     <main class="flex-1 flex flex-col overflow-hidden">
       <!-- Header -->
-      <header class="h-12 bg-dark-card border-b border-dark-border flex items-center justify-between px-6">
-        <h2 class="text-sm font-medium text-gray-300">{{ $route.name }}</h2>
+      <header class="h-12 bg-white border-b border-mendelu-gray-semi flex items-center justify-between px-6">
+        <h2 class="text-sm font-medium text-mendelu-black">{{ $route.name }}</h2>
         <div class="flex items-center gap-4">
-          <div class="flex items-center gap-1.5 text-xs text-gray-500">
-            <div class="w-1.5 h-1.5 rounded-full bg-green-500"></div>
+          <div class="flex items-center gap-1.5 text-xs text-mendelu-gray-dark">
+            <div class="w-1.5 h-1.5 rounded-full bg-mendelu-success"></div>
             <span>Online</span>
           </div>
-          <a href="/docs" target="_blank" class="text-gray-500 hover:text-gray-300 text-xs transition-colors">
+          <a href="/docs" target="_blank" class="text-mendelu-gray-dark hover:text-mendelu-green text-xs transition-colors">
             API Docs
           </a>
         </div>
       </header>
 
       <!-- Page Content -->
-      <div class="flex-1 overflow-auto p-6 bg-dark-bg">
+      <div class="flex-1 overflow-auto p-6 bg-mendelu-gray-light">
         <router-view />
       </div>
     </main>

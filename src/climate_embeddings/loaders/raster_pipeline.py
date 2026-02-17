@@ -76,7 +76,7 @@ def load_raster_auto(path: Union[str, Path], **kwargs) -> RasterLoadResult:
         iterator = _load_zip(path, **kwargs)
     elif suffix == ".tar":
         iterator = _load_tar(path, **kwargs)
-    elif suffix in {'.csv', '.tsv'}:
+    elif suffix in {'.csv', '.tsv', '.txt'}:
         iterator = _load_csv(path, **kwargs)
     elif suffix in {'.tif', '.tiff'}:
         iterator = _load_geotiff(path, **kwargs)
@@ -224,7 +224,7 @@ def _load_tar(path: Path, **kwargs) -> Iterator[RasterChunk]:
             elif f.suffix.lower() in {'.tif', '.tiff'}:
                 found = True
                 yield from _load_geotiff(f, **kwargs)
-            elif f.suffix.lower() in {'.csv', '.tsv'}:
+            elif f.suffix.lower() in {'.csv', '.tsv', '.txt'}:
                 found = True
                 yield from _load_csv(f, **kwargs)
 
@@ -252,7 +252,7 @@ def _load_zip(path, **kwargs):
                 elif f.suffix.lower() in {'.tif', '.tiff'}:
                     found = True
                     yield from _load_geotiff(f, **kwargs)
-                elif f.suffix.lower() in {'.csv', '.tsv'}:
+                elif f.suffix.lower() in {'.csv', '.tsv', '.txt'}:
                     found = True
                     yield from _load_csv(f, **kwargs)
             
@@ -465,14 +465,48 @@ def _load_csv(path: Path, **kwargs) -> Iterator[RasterChunk]:
         # Try to detect delimiter
         suffix = path.suffix.lower()
         delimiter = '\t' if suffix == '.tsv' else ','
-        
+
         # Read CSV in chunks for memory efficiency
         chunk_size = kwargs.get('chunk_size', 10000)
-        
+
         logger.info(f"Loading CSV file: {path.name}")
-        
+
+        # Detect comment lines and auto-sniff delimiter from actual content
+        comment_char = None
+        try:
+            with open(path, 'r', errors='replace') as f:
+                first_lines = [f.readline() for _ in range(10)]
+            # Check for common comment prefixes
+            for ch in ('#', '//'):
+                if any(line.startswith(ch) for line in first_lines if line.strip()):
+                    comment_char = ch[0]
+                    break
+            # Auto-detect delimiter: if no commas found in data lines, try whitespace
+            data_lines = [l for l in first_lines if l.strip() and (comment_char is None or not l.startswith(comment_char))]
+            if data_lines and suffix not in ('.tsv',):
+                sample_line = data_lines[0]
+                if ',' not in sample_line and ('\t' in sample_line or '  ' in sample_line):
+                    delimiter = r'\s+'  # whitespace-delimited
+        except Exception:
+            pass
+
         # First, read a small sample to understand structure
-        sample_df = pd.read_csv(path, nrows=100, delimiter=delimiter, low_memory=False)
+        read_kwargs = dict(nrows=100, delimiter=delimiter, low_memory=False)
+        if comment_char:
+            read_kwargs['comment'] = comment_char
+        if delimiter == r'\s+':
+            read_kwargs.pop('delimiter')
+            read_kwargs['sep'] = r'\s+'
+            read_kwargs['engine'] = 'python'
+        try:
+            sample_df = pd.read_csv(path, **read_kwargs)
+        except pd.errors.ParserError:
+            # Fallback: try with python engine and error_bad_lines handling
+            read_kwargs['engine'] = 'python'
+            read_kwargs['on_bad_lines'] = 'skip'
+            if 'delimiter' in read_kwargs:
+                read_kwargs['sep'] = read_kwargs.pop('delimiter')
+            sample_df = pd.read_csv(path, **read_kwargs)
         
         # COMPLETELY DYNAMIC: No hardcoded column names
         # Classify columns purely by data type and content, not by name
@@ -537,8 +571,22 @@ def _load_csv(path: Path, **kwargs) -> Iterator[RasterChunk]:
         if has_time_column:
             logger.info(f"Detected time-series data, using variable-based chunking (one embedding per variable)")
             
-            # Read entire CSV
-            df_full = pd.read_csv(path, delimiter=delimiter, low_memory=False)
+            # Read entire CSV (reuse detected settings)
+            full_kwargs = dict(delimiter=delimiter, low_memory=False)
+            if comment_char:
+                full_kwargs['comment'] = comment_char
+            if delimiter == r'\s+':
+                full_kwargs.pop('delimiter')
+                full_kwargs['sep'] = r'\s+'
+                full_kwargs['engine'] = 'python'
+            try:
+                df_full = pd.read_csv(path, **full_kwargs)
+            except pd.errors.ParserError:
+                full_kwargs['engine'] = 'python'
+                full_kwargs['on_bad_lines'] = 'skip'
+                if 'delimiter' in full_kwargs:
+                    full_kwargs['sep'] = full_kwargs.pop('delimiter')
+                df_full = pd.read_csv(path, **full_kwargs)
             
             # Detect if there are station/location columns (non-numeric metadata that might identify locations)
             station_cols = []
@@ -714,13 +762,17 @@ def _load_csv(path: Path, **kwargs) -> Iterator[RasterChunk]:
         else:
             # Non-time-series: use original chunking strategy (larger chunks)
             logger.info("Non-time-series data, using variable-based chunking")
-            chunk_iter = pd.read_csv(
-                path, 
-                delimiter=delimiter,
-                chunksize=chunk_size,
-                low_memory=False,
-                iterator=True
+            iter_kwargs = dict(
+                delimiter=delimiter, chunksize=chunk_size,
+                low_memory=False, iterator=True
             )
+            if comment_char:
+                iter_kwargs['comment'] = comment_char
+            if delimiter == r'\s+':
+                iter_kwargs.pop('delimiter')
+                iter_kwargs['sep'] = r'\s+'
+                iter_kwargs['engine'] = 'python'
+            chunk_iter = pd.read_csv(path, **iter_kwargs)
             
             for chunk_idx, df_chunk in enumerate(chunk_iter):
                 # Process each numeric column as a separate variable
