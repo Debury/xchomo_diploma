@@ -129,6 +129,8 @@ class SourceResponse(BaseModel):
     is_active: bool
     processing_status: str
     error_message: Optional[str] = None
+    description: Optional[str] = None
+    tags: Optional[List[str]] = None
     # Optional fields for compatibility
     id: Optional[int] = None
     collection_name: Optional[str] = None
