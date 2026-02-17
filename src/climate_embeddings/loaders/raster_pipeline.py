@@ -1,6 +1,7 @@
 import gzip
 import logging
 import shutil
+import tarfile
 import zipfile
 import tempfile
 from pathlib import Path
@@ -43,12 +44,14 @@ def load_raster_auto(path: Union[str, Path], **kwargs) -> RasterLoadResult:
     
     if suffix == ".zip":
         iterator = _load_zip(path, **kwargs)
+    elif suffix == ".tar":
+        iterator = _load_tar(path, **kwargs)
     elif suffix in {'.csv', '.tsv'}:
         iterator = _load_csv(path, **kwargs)
     elif suffix in {'.tif', '.tiff'}:
         iterator = _load_geotiff(path, **kwargs)
     elif suffix in {'.nc', '.nc4', '.hdf', '.h5'}:
-        iterator = _load_xarray_generic(path, engine="h5netcdf", **kwargs)
+        iterator = _load_xarray_generic(path, engine="netcdf4", **kwargs)
     elif suffix in {'.grib', '.grib2', '.grb'}:
         # Requires 'cfgrib' installed
         iterator = _load_xarray_generic(path, engine="cfgrib", **kwargs)
@@ -117,12 +120,47 @@ def _load_gzip(path: Path, **kwargs) -> Iterator[RasterChunk]:
             tmp_decompressed = tmp.name
             with gzip.open(path, "rb") as gz_in:
                 shutil.copyfileobj(gz_in, tmp, length=16 * 1024 * 1024)
-        logger.info(f"Decompressed {path.name} → {inner_suffix} ({Path(tmp_decompressed).stat().st_size / 1e6:.1f} MB)")
-        result = load_raster_auto(tmp_decompressed, **kwargs)
-        yield from result.chunk_iterator
+        decompressed_size = Path(tmp_decompressed).stat().st_size
+        logger.info(f"Decompressed {path.name} → {inner_suffix} ({decompressed_size / 1e6:.1f} MB)")
+
+        # Check if decompressed file is actually a tar archive (e.g. from .tar.gz)
+        if tarfile.is_tarfile(tmp_decompressed):
+            logger.info(f"Decompressed file is a tar archive, extracting...")
+            yield from _load_tar(Path(tmp_decompressed), **kwargs)
+        else:
+            result = load_raster_auto(tmp_decompressed, **kwargs)
+            yield from result.chunk_iterator
     finally:
         if tmp_decompressed:
             Path(tmp_decompressed).unlink(missing_ok=True)
+
+
+def _load_tar(path: Path, **kwargs) -> Iterator[RasterChunk]:
+    """Extract a tar archive and load supported files inside."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        try:
+            with tarfile.open(path, "r:*") as tf:
+                tf.extractall(tmpdir)
+        except Exception as e:
+            logger.error(f"Failed to extract tar {path.name}: {e}")
+            return
+
+        found = False
+        for f in sorted(Path(tmpdir).rglob("*")):
+            if not f.is_file() or f.name.startswith("."):
+                continue
+            if f.suffix.lower() in {'.nc', '.nc4', '.h5'}:
+                found = True
+                yield from _load_xarray_generic(f, engine="netcdf4", **kwargs)
+            elif f.suffix.lower() in {'.tif', '.tiff'}:
+                found = True
+                yield from _load_geotiff(f, **kwargs)
+            elif f.suffix.lower() in {'.csv', '.tsv'}:
+                found = True
+                yield from _load_csv(f, **kwargs)
+
+        if not found:
+            logger.warning(f"No supported files found inside tar: {path.name}")
 
 
 def _load_zip(path, **kwargs):
@@ -138,7 +176,7 @@ def _load_zip(path, **kwargs):
                     
                 if f.suffix.lower() in {'.nc', '.nc4', '.h5'}:
                     found = True
-                    yield from _load_xarray_generic(f, engine="h5netcdf", **kwargs)
+                    yield from _load_xarray_generic(f, engine="netcdf4", **kwargs)
                 elif f.suffix.lower() in {'.grib', '.grib2'}:
                     found = True
                     yield from _load_xarray_generic(f, engine="cfgrib", **kwargs)
@@ -159,12 +197,32 @@ def _load_xarray_generic(path: Path, engine: Optional[str] = None, **kwargs) -> 
     """
     Generic Loader for NetCDF/GRIB using Xarray.
     Enforces Time=1 chunking for granular RAG answers.
+    Tries engine fallback: requested engine → netcdf4 → h5netcdf → scipy → auto.
     """
     try:
-        # Open dataset lazily
-        # GRIB files might have multiple datasets (hypercubes), filter_by_keys might be needed in complex cases
-        # For general purpose, we try to open the standard dataset.
-        ds = xr.open_dataset(path, chunks="auto", engine=engine)
+        # Try requested engine first, then fallback chain
+        engines_to_try = [engine] if engine else [None]
+        if engine and engine != "cfgrib":
+            # Add fallbacks for NetCDF files
+            for fallback in ["netcdf4", "h5netcdf", "scipy", None]:
+                if fallback != engine and fallback not in engines_to_try:
+                    engines_to_try.append(fallback)
+
+        ds = None
+        last_err = None
+        for eng in engines_to_try:
+            try:
+                ds = xr.open_dataset(path, chunks="auto", engine=eng)
+                if eng != engine:
+                    logger.info(f"Opened {path.name} with fallback engine '{eng}' (primary '{engine}' failed)")
+                break
+            except Exception as e:
+                last_err = e
+                logger.debug(f"Engine '{eng}' failed for {path.name}: {e}")
+                continue
+
+        if ds is None:
+            raise last_err or RuntimeError(f"All xarray engines failed for {path.name}")
         
         # Filter for numeric vars only
         numeric_vars = [v for v in ds.data_vars if np.issubdtype(ds[v].dtype, np.number)]
@@ -277,7 +335,11 @@ def _load_xarray_generic(path: Path, engine: Optional[str] = None, **kwargs) -> 
                     data = da_chunked[slices].compute().values
                     if np.isnan(data).all(): continue
                     yield RasterChunk(data=data, metadata=meta)
+                except MemoryError:
+                    logger.error(f"MemoryError computing chunk for var={var} in {path.name} — skipping remaining chunks")
+                    return
                 except Exception as e:
+                    logger.warning(f"Failed to compute chunk for var={var} in {path.name}: {e}")
                     continue
                     
     except Exception as e:

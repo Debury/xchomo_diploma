@@ -31,24 +31,31 @@ DEFAULT_PROGRESS_PATH = Path("data/catalog_progress.json")
 # Values are actual file URLs that return data when fetched with HTTP GET.
 DIRECT_DOWNLOAD_URLS = {
     "WorldClim - Historical climate data": "https://geodata.ucdavis.edu/climate/worldclim/2_1/base/wc2.1_10m_tavg.zip",
-    "WorldClim - Future climate data": "https://geodata.ucdavis.edu/climate/worldclim/2_1/fut/10m/wc2.1_10m_bioc_ACCESS-CM2_ssp245_2041-2060.tif",
+    "WorldClim - Future climate data": "https://geodata.ucdavis.edu/climate/worldclim/2_1/fut/10m/wc2.1_10m_bioc_MRI-ESM2-0_ssp245_2041-2060.zip",
     "GISTEMP": "https://data.giss.nasa.gov/gistemp/tabledata_v4/GLB.Ts+dSST.csv",
     "CRU": "https://crudata.uea.ac.uk/cru/data/hrg/cru_ts_4.08/cruts.2406270035.v4.08/tmp/cru_ts4.08.1901.2023.tmp.dat.nc.gz",
     "CHIRPS": "https://data.chc.ucsb.edu/products/CHIRPS-2.0/global_annual/tifs/chirps-v2.0.2020.tif",
-    "Aridity Index and Potential Evapotranspiration": "https://figshare.com/ndownloader/articles/7504448/versions/7",
+    # Figshare Aridity removed: AWS WAF blocks automated downloads (Phase 0 metadata-only)
     "SPEI-GD": "https://zenodo.org/api/records/8060268/files/30days.zip/content",
     "SLOCLIM": "https://zenodo.org/api/records/4108543/files/sloclim_pcp.nc/content",
-    "SPEIbase": "https://spei.csic.es/spei_database/spei01.nc",
+    "SPEIbase": "https://digital.csic.es/bitstream/10261/364137/1/spei01.nc",
     "Iberia01": "https://digital.csic.es/bitstream/10261/183071/1/Iberia01_v1.0_DD_010reg_aa3d_pr.nc",
     "STEAD": "https://digital.csic.es/bitstream/10261/177655/14/tmax_pen.nc",
     "SPREAD": "https://digital.csic.es/bitstream/10261/141218/11/SPREAD_pen_pcp.nc",
     "Standardized Evapotranspiration Deficit Index (SEDI)": "https://digital.csic.es/bitstream/10261/160091/1/SEDI.zip",
     "Combined Drought Indicator": "https://jeodpp.jrc.ec.europa.eu/ftp/jrc-opendata/DROUGHTOBS/Drought_Observatories_datasets/EDO_Combined_Drought_Indicator/ver1-4-0/cdinx_m_euu_20190101_20191221_t.nc",
-    "SPI-MARSMet": "https://jeodpp.jrc.ec.europa.eu/ftp/jrc-opendata/DROUGHTOBS/Drought_Observatories_datasets/EDO_Standardized_Precipitation_Index_blended_interpolated_SPI3/ver1-2-0/spb03_m_euu_20040101_20041201_m.nc",
+    "SPI-MARSMet": "https://jeodpp.jrc.ec.europa.eu/ftp/jrc-opendata/DROUGHTOBS/Drought_Observatories_datasets/EDO_MARSMet_Standardized_Precipitation_Index_SPI3/ver1-0-0/spm03_m_euu_20040101_20041221_t.nc",
     "ISI-MIP": "https://files.isimip.org/ISIMIP3b/InputData/climate/atmosphere_composition/co2/historical/co2_historical_annual_1850_2014.txt",
+    # --- New overrides from Phase 1 audit ---
+    "E-OBS": "https://knmi-ecad-assets-prd.s3.amazonaws.com/ensembles/data/Grid_0.25deg_reg_ensemble/tg_ens_mean_0.25deg_reg_v32.0e.nc",
+    "NOAAN": "https://www.ncei.noaa.gov/access/monitoring/climate-at-a-glance/global/time-series/globe/land_ocean/ytd/12/1880-2023.csv",
+    "GSFC-NASA": "https://earth.gsfc.nasa.gov/sites/default/files/geo/gsfc.glb_.200204_202505_rl06v2.0_obp-ice6gd_halfdegree.nc",
+    "ROCIO_IBEB": "https://www.aemet.es/documentos/es/serviciosclimaticos/cambio_climat/datos_diarios/dato_observacional/rejilla_5km/v2/Serie_AEMET_v2_pcp_2020_netcdf.tar.gz",
     # CERES-EBAF removed: requires NASA Earthdata login (Phase 3)
     # EURO-CORDEX removed: requires ESGF auth (Phase 3)
     # MED-CORDEX removed: requires ESGF auth (Phase 3)
+    # HWE-DB: portal only (meteo.gr), no direct downloads
+    # NOA-GR: auth required (meteosearch.meteo.gr), registration closed
 }
 
 
@@ -445,6 +452,12 @@ def _run_phase_download(
             # Load and process
             result = load_raster_auto(tmp_path)
             embeddings_data = raster_to_embeddings(result)
+
+            if not embeddings_data:
+                raise ValueError(
+                    f"Loader produced 0 data chunks from {url} — file may be corrupt, "
+                    f"unsupported format, or xarray engine failed (check logs for details)"
+                )
 
             # Generate text embeddings and store
             for j, emb_data in enumerate(embeddings_data):
