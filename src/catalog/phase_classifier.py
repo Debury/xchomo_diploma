@@ -44,6 +44,7 @@ _PORTAL_DOMAINS = {
     # Additional portals discovered during Phase 1 audit
     "rda.ucar.edu": "NCAR",
     "publitheque.meteo.fr": "METEO",
+    "donneespubliques.meteofrance.fr": "METEO",
     "ogimet.com": "WMO",
     "cost-g.org": "PORTAL",
     "land.copernicus.eu": "CDS",
@@ -52,6 +53,17 @@ _PORTAL_DOMAINS = {
     "meteo.data.gouv.fr": "PORTAL",
     "meteo.gr": "PORTAL",
     "esgf-node.ipsl.upmc.fr": "ESGF",
+    # Major reanalysis / model data portals
+    "ecmwf.int": "CDS",
+    "www.ecmwf.int": "CDS",
+    "gmao.gsfc.nasa.gov": "NASA",
+    "asdc.larc.nasa.gov": "NASA",
+    "jra.kishou.go.jp": "JMA",
+    "euro-cordex.net": "ESGF",
+    "www.ecad.eu": "ECAD",
+    "www.g3p.eu": "PORTAL",
+    "www.jpl.nasa.gov": "NASA",
+    "drought.emergency.copernicus.eu": "CDS",
 }
 
 
