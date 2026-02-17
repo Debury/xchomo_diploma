@@ -2,33 +2,29 @@
   <div class="space-y-6">
     <div class="flex items-center justify-between">
       <div>
-        <h1 class="text-xl font-semibold text-white">Data Sources</h1>
-        <p class="text-sm text-gray-500">Manage your climate data sources</p>
+        <h1 class="text-xl font-semibold text-mendelu-black">Data Sources</h1>
+        <p class="text-sm text-mendelu-gray-dark">Manage your climate data sources</p>
       </div>
       <div class="flex gap-2">
         <button
           @click="loadSources()"
           :disabled="loading"
-          class="px-3 py-1.5 text-sm bg-dark-hover text-gray-300 rounded-md hover:bg-gray-600 transition-colors disabled:opacity-50"
-          title="Refresh sources list"
+          class="btn-secondary disabled:opacity-50"
         >
           Refresh
         </button>
-      <div class="flex gap-2">
         <button
           @click="deleteAllSources"
-          class="px-3 py-1.5 text-sm bg-red-600 text-white rounded-md hover:bg-red-700 transition-colors"
-          title="Delete all sources"
+          class="btn-danger"
         >
           Clear All
         </button>
-        <router-link 
+        <router-link
           to="/sources/create"
-          class="px-3 py-1.5 text-sm bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors"
+          class="btn-primary"
         >
           Add Source
         </router-link>
-      </div>
       </div>
     </div>
 
@@ -37,79 +33,73 @@
       <div
         v-for="source in sources"
         :key="source.name"
-        class="card !p-4 hover:border-blue-500/50 transition-colors"
+        class="card !p-4 hover:border-mendelu-green/50 transition-colors cursor-pointer"
+        @click="viewDetails(source)"
       >
         <div class="flex items-start justify-between mb-3">
-          <div class="flex flex-col gap-1 items-end">
-            <span 
-              class="px-2 py-1 rounded text-xs font-medium"
-              :class="source.enabled ? 'bg-green-500/20 text-green-400' : 'bg-gray-500/20 text-gray-400'"
+          <div class="flex items-center gap-2">
+            <h3 class="text-sm font-semibold text-mendelu-black">{{ source.name }}</h3>
+            <span
+              v-if="isCatalogSource(source)"
+              class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-purple-50 text-purple-600 border border-purple-200"
             >
+              D1.1
+            </span>
+          </div>
+          <div class="flex flex-col gap-1 items-end">
+            <span :class="source.enabled ? 'badge-success' : 'badge-neutral'">
               {{ source.enabled ? 'Active' : 'Inactive' }}
             </span>
-            <span 
-              class="px-2 py-1 rounded text-xs font-medium"
-              :class="getStatusClass(source.processing_status)"
-            >
+            <span :class="getStatusBadge(source.processing_status)">
               {{ getStatusLabel(source.processing_status) }}
             </span>
           </div>
         </div>
-        
-        <div class="flex items-center gap-2 mb-1">
-          <h3 class="text-sm font-semibold text-white">{{ source.name }}</h3>
-          <span
-            v-if="isCatalogSource(source)"
-            class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-purple-500/20 text-purple-400 border border-purple-500/30"
-          >
-            D1.1
-          </span>
-        </div>
-        <p class="text-gray-500 text-xs mb-2">{{ source.description || 'No description' }}</p>
-        
+
+        <p class="text-mendelu-gray-dark text-xs mb-2">{{ source.description || 'No description' }}</p>
+
         <!-- Error message if processing failed -->
         <div v-if="source.processing_status === 'failed' && source.error_message"
-             class="mb-2 p-2 bg-red-500/20 border border-red-500/30 rounded text-xs text-red-300">
+             class="mb-2 p-2 bg-red-50 border border-red-200 rounded text-xs text-mendelu-alert">
           {{ source.error_message }}
         </div>
-        
+
         <div class="space-y-1 text-xs">
           <div class="flex justify-between">
-            <span class="text-gray-500">Type:</span>
-            <span class="text-gray-300">{{ source.type || 'Unknown' }}</span>
+            <span class="text-mendelu-gray-dark">Type:</span>
+            <span class="text-mendelu-black">{{ source.type || 'Unknown' }}</span>
           </div>
           <div class="flex justify-between">
-            <span class="text-gray-500">Embeddings:</span>
-            <span class="text-gray-300">{{ source.embedding_count?.toLocaleString() || '—' }}</span>
+            <span class="text-mendelu-gray-dark">Embeddings:</span>
+            <span class="text-mendelu-black">{{ source.embedding_count?.toLocaleString() || '—' }}</span>
           </div>
           <div class="flex justify-between">
-            <span class="text-gray-500">Variables:</span>
-            <span class="text-gray-300">{{ source.variables?.length || '—' }}</span>
+            <span class="text-mendelu-gray-dark">Variables:</span>
+            <span class="text-mendelu-black">{{ source.variables?.length || '—' }}</span>
           </div>
           <div v-if="source.last_processed" class="flex justify-between">
-            <span class="text-gray-500">Last Processed:</span>
-            <span class="text-gray-300 text-xs">{{ formatDate(source.last_processed) }}</span>
+            <span class="text-mendelu-gray-dark">Last Processed:</span>
+            <span class="text-mendelu-black text-xs">{{ formatDate(source.last_processed) }}</span>
           </div>
         </div>
-        
-        <div class="mt-3 pt-3 border-t border-dark-border flex space-x-2">
-          <button 
-            @click="viewDetails(source)"
-            class="flex-1 px-3 py-1.5 bg-dark-hover text-gray-300 rounded-md hover:bg-gray-600 transition-colors text-xs"
+
+        <div class="mt-3 pt-3 border-t border-mendelu-gray-semi flex space-x-2" @click.stop>
+          <button
+            @click="openEditModal(source)"
+            class="flex-1 px-3 py-1.5 bg-mendelu-gray-light text-mendelu-gray-dark rounded-lg hover:bg-mendelu-gray-semi transition-colors text-xs"
           >
-            Details
+            Edit
           </button>
-          <button 
+          <button
             @click="refreshSource(source)"
             :disabled="source.refreshing || source.processing_status === 'processing'"
-            class="flex-1 px-3 py-1.5 bg-dark-hover text-gray-300 rounded-md hover:bg-gray-600 transition-colors text-xs disabled:opacity-50 disabled:cursor-not-allowed"
+            class="flex-1 px-3 py-1.5 bg-mendelu-green/10 text-mendelu-green rounded-lg hover:bg-mendelu-green/20 transition-colors text-xs disabled:opacity-50"
           >
-            {{ source.refreshing ? 'Triggering...' : 'Refresh' }}
+            {{ source.refreshing ? 'Triggering...' : 'Reprocess' }}
           </button>
-          <button 
+          <button
             @click="deleteSource(source)"
-            class="px-3 py-1.5 bg-red-600/20 text-red-400 rounded-md hover:bg-red-600/30 transition-colors text-xs"
-            title="Delete source"
+            class="px-3 py-1.5 bg-red-50 text-mendelu-alert rounded-lg hover:bg-red-100 transition-colors text-xs"
           >
             Delete
           </button>
@@ -119,108 +109,208 @@
 
     <!-- Empty State -->
     <div v-if="!loading && sources.length === 0" class="card text-center py-8">
-      <h3 class="text-sm font-medium text-white mb-2">No Sources Configured</h3>
-      <p class="text-gray-500 text-xs mb-4">Add your first data source to get started</p>
-      <router-link
-        to="/sources/create"
-        class="px-4 py-2 text-sm bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors inline-block"
-      >
+      <h3 class="text-sm font-medium text-mendelu-black mb-2">No Sources Configured</h3>
+      <p class="text-mendelu-gray-dark text-xs mb-4">Add your first data source to get started</p>
+      <router-link to="/sources/create" class="btn-primary inline-block">
         Add Source
       </router-link>
     </div>
 
     <!-- Source Detail Modal -->
-    <div 
-      v-if="selectedSource" 
-      class="fixed inset-0 bg-black/50 flex items-center justify-center z-50"
+    <div
+      v-if="selectedSource"
+      class="fixed inset-0 bg-black/40 flex items-center justify-center z-50"
       @click.self="selectedSource = null"
     >
-      <div class="bg-dark-card border border-dark-border rounded-xl p-6 max-w-2xl w-full mx-4 max-h-[80vh] overflow-y-auto">
+      <div class="bg-white border border-mendelu-gray-semi rounded-xl p-6 max-w-2xl w-full mx-4 max-h-[80vh] overflow-y-auto shadow-lg">
         <div class="flex items-center justify-between mb-6">
-          <h2 class="text-lg font-semibold text-white">{{ selectedSource.name }}</h2>
-          <button @click="selectedSource = null" class="text-gray-400 hover:text-white text-sm">Close</button>
+          <h2 class="text-lg font-semibold text-mendelu-black">{{ selectedSource.name }}</h2>
+          <button @click="selectedSource = null" class="text-mendelu-gray-dark hover:text-mendelu-black text-sm">Close</button>
         </div>
-        
+
         <div class="space-y-4">
           <!-- Processing Status -->
           <div>
-            <h4 class="text-sm font-medium text-gray-400 mb-2">Processing Status</h4>
+            <h4 class="text-sm font-medium text-mendelu-gray-dark mb-2">Processing Status</h4>
             <div class="space-y-2">
               <div class="flex items-center gap-2">
-                <span 
-                  class="px-3 py-1 rounded text-sm font-medium"
-                  :class="getStatusClass(selectedSource.processing_status)"
-                >
+                <span :class="getStatusBadge(selectedSource.processing_status)">
                   {{ getStatusLabel(selectedSource.processing_status) }}
                 </span>
-                <span v-if="selectedSource.last_processed" class="text-xs text-gray-500">
+                <span v-if="selectedSource.last_processed" class="text-xs text-mendelu-gray-dark">
                   Last: {{ formatDate(selectedSource.last_processed) }}
                 </span>
               </div>
-              <div v-if="selectedSource.error_message" 
-                   class="p-3 bg-red-500/20 border border-red-500/30 rounded text-sm text-red-300">
+              <div v-if="selectedSource.error_message"
+                   class="p-3 bg-red-50 border border-red-200 rounded text-sm text-mendelu-alert">
                 <strong>Error:</strong> {{ selectedSource.error_message }}
               </div>
             </div>
           </div>
-          
+
           <div>
-            <h4 class="text-sm font-medium text-gray-400 mb-2">Variables</h4>
+            <h4 class="text-sm font-medium text-mendelu-gray-dark mb-2">Variables</h4>
             <div class="flex flex-wrap gap-2">
-              <span 
-                v-for="v in selectedSource.variables" 
+              <span
+                v-for="v in selectedSource.variables"
                 :key="v"
-                class="px-3 py-1 bg-dark-hover rounded text-sm text-gray-300"
+                class="px-3 py-1 bg-mendelu-green/10 text-mendelu-green rounded-full text-sm font-medium"
               >
                 {{ v }}
               </span>
-              <span v-if="!selectedSource.variables || selectedSource.variables.length === 0" 
-                    class="text-gray-500 text-sm">
+              <span v-if="!selectedSource.variables || selectedSource.variables.length === 0"
+                    class="text-mendelu-gray-dark text-sm">
                 No variables configured
               </span>
             </div>
           </div>
-          
+
           <div>
-            <h4 class="text-sm font-medium text-gray-400 mb-2">Source Details</h4>
-            <div class="bg-dark-hover p-4 rounded text-sm space-y-2">
+            <h4 class="text-sm font-medium text-mendelu-gray-dark mb-2">Source Details</h4>
+            <div class="bg-mendelu-gray-light p-4 rounded-lg text-sm space-y-2">
               <div class="flex justify-between">
-                <span class="text-gray-500">Source ID:</span>
-                <span class="text-gray-300">{{ selectedSource.source_id }}</span>
+                <span class="text-mendelu-gray-dark">Source ID:</span>
+                <span class="text-mendelu-black">{{ selectedSource.source_id }}</span>
               </div>
               <div class="flex justify-between">
-                <span class="text-gray-500">Format:</span>
-                <span class="text-gray-300">{{ selectedSource.type || 'Unknown' }}</span>
+                <span class="text-mendelu-gray-dark">Format:</span>
+                <span class="text-mendelu-black">{{ selectedSource.type || 'Unknown' }}</span>
               </div>
               <div class="flex justify-between">
-                <span class="text-gray-500">URL:</span>
-                <span class="text-gray-300 text-xs break-all">{{ selectedSource.url }}</span>
+                <span class="text-mendelu-gray-dark">URL:</span>
+                <span class="text-mendelu-black text-xs break-all">{{ selectedSource.url }}</span>
               </div>
               <div class="flex justify-between">
-                <span class="text-gray-500">Active:</span>
-                <span class="text-gray-300">{{ selectedSource.enabled ? 'Yes' : 'No' }}</span>
+                <span class="text-mendelu-gray-dark">Active:</span>
+                <span class="text-mendelu-black">{{ selectedSource.enabled ? 'Yes' : 'No' }}</span>
+              </div>
+              <div v-if="selectedSource.auth_method" class="flex justify-between">
+                <span class="text-mendelu-gray-dark">Auth Method:</span>
+                <span class="text-mendelu-black">{{ selectedSource.auth_method }}</span>
+              </div>
+              <div v-if="selectedSource.portal" class="flex justify-between">
+                <span class="text-mendelu-gray-dark">Portal:</span>
+                <span class="text-mendelu-black">{{ selectedSource.portal }}</span>
               </div>
             </div>
           </div>
-          
-          <div class="pt-4 border-t border-dark-border">
-            <h4 class="text-sm font-medium text-gray-400 mb-3">Danger Zone</h4>
+
+          <div class="pt-4 border-t border-mendelu-gray-semi">
+            <h4 class="text-sm font-medium text-mendelu-gray-dark mb-3">Danger Zone</h4>
             <div class="space-y-2">
               <button
                 @click="deleteSourceEmbeddings(selectedSource)"
-                class="w-full px-4 py-2 bg-yellow-600/20 text-yellow-400 rounded hover:bg-yellow-600/30 transition-colors text-sm"
+                class="w-full px-4 py-2 bg-amber-50 text-amber-700 border border-amber-200 rounded-lg hover:bg-amber-100 transition-colors text-sm"
               >
                 Delete Embeddings for This Source
               </button>
               <button
                 @click="deleteSource(selectedSource)"
-                class="w-full px-4 py-2 bg-red-600/20 text-red-400 rounded hover:bg-red-600/30 transition-colors text-sm"
+                class="w-full px-4 py-2 bg-red-50 text-mendelu-alert border border-red-200 rounded-lg hover:bg-red-100 transition-colors text-sm"
               >
                 Delete Source
               </button>
             </div>
           </div>
         </div>
+      </div>
+    </div>
+
+    <!-- Edit Modal -->
+    <div
+      v-if="editingSource"
+      class="fixed inset-0 bg-black/40 flex items-center justify-center z-50"
+      @click.self="editingSource = null"
+    >
+      <div class="bg-white border border-mendelu-gray-semi rounded-xl p-6 max-w-lg w-full mx-4 shadow-lg">
+        <div class="flex items-center justify-between mb-6">
+          <h2 class="text-lg font-semibold text-mendelu-black">Edit Source</h2>
+          <button @click="editingSource = null" class="text-mendelu-gray-dark hover:text-mendelu-black text-sm">Close</button>
+        </div>
+
+        <form @submit.prevent="saveEdit" class="space-y-4">
+          <div>
+            <label class="block text-sm font-medium text-mendelu-black mb-1">Source Name</label>
+            <input v-model="editForm.name" type="text" class="input-field" disabled />
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-mendelu-black mb-1">URL</label>
+            <input v-model="editForm.url" type="text" class="input-field" />
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-mendelu-black mb-1">Format</label>
+            <select v-model="editForm.format" class="input-field">
+              <option value="netcdf">NetCDF</option>
+              <option value="csv">CSV</option>
+              <option value="api">REST API</option>
+              <option value="geotiff">GeoTIFF</option>
+            </select>
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-mendelu-black mb-1">Description</label>
+            <textarea v-model="editForm.description" rows="2" class="input-field resize-none"></textarea>
+          </div>
+          <div class="flex items-center gap-3">
+            <label class="relative inline-flex items-center cursor-pointer">
+              <input type="checkbox" v-model="editForm.is_active" class="sr-only peer">
+              <div class="w-9 h-5 bg-mendelu-gray-semi peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-mendelu-green"></div>
+            </label>
+            <span class="text-sm text-mendelu-black">Active</span>
+          </div>
+
+          <!-- Auth fields -->
+          <div class="p-3 bg-mendelu-gray-light rounded-lg space-y-3">
+            <h4 class="text-xs font-semibold text-mendelu-gray-dark">Authentication</h4>
+            <div>
+              <label class="block text-xs font-medium text-mendelu-black mb-1">Portal Preset</label>
+              <select v-model="editForm.portal" @change="onEditPortalChange" class="input-field">
+                <option value="">Custom / None</option>
+                <option value="CDS">Copernicus CDS</option>
+                <option value="NASA">NASA Earthdata</option>
+                <option value="MARINE">Marine Copernicus</option>
+                <option value="ESGF">ESGF (CMIP6/CORDEX)</option>
+                <option value="NOAA">NOAA PSL</option>
+              </select>
+              <p v-if="editForm.portal" class="mt-1 text-xs text-mendelu-green">Uses global credentials from Settings</p>
+            </div>
+            <div>
+              <label class="block text-xs font-medium text-mendelu-black mb-1">Auth Method</label>
+              <select v-model="editForm.auth_method" class="input-field">
+                <option value="none">None (Open Access)</option>
+                <option value="api_key">API Key</option>
+                <option value="bearer_token">Bearer Token</option>
+                <option value="basic">Username &amp; Password</option>
+              </select>
+            </div>
+            <div v-if="editForm.auth_method === 'api_key'">
+              <label class="block text-xs font-medium text-mendelu-black mb-1">API Key</label>
+              <input type="password" v-model="editForm.auth_api_key" class="input-field" placeholder="Leave empty to keep current" />
+            </div>
+            <div v-if="editForm.auth_method === 'bearer_token'">
+              <label class="block text-xs font-medium text-mendelu-black mb-1">Bearer Token</label>
+              <input type="password" v-model="editForm.auth_token" class="input-field" placeholder="Leave empty to keep current" />
+            </div>
+            <div v-if="editForm.auth_method === 'basic'" class="space-y-2">
+              <div>
+                <label class="block text-xs font-medium text-mendelu-black mb-1">Username</label>
+                <input type="text" v-model="editForm.auth_username" class="input-field" placeholder="Leave empty to keep current" />
+              </div>
+              <div>
+                <label class="block text-xs font-medium text-mendelu-black mb-1">Password</label>
+                <input type="password" v-model="editForm.auth_password" class="input-field" placeholder="Leave empty to keep current" />
+              </div>
+            </div>
+          </div>
+
+          <div class="flex gap-3 pt-2">
+            <button type="submit" :disabled="saving" class="btn-primary flex-1 disabled:opacity-50">
+              {{ saving ? 'Saving...' : 'Save Changes' }}
+            </button>
+            <button type="button" @click="editingSource = null" class="btn-secondary flex-1">
+              Cancel
+            </button>
+          </div>
+        </form>
       </div>
     </div>
   </div>
@@ -232,31 +322,17 @@ import { ref, onMounted, onUnmounted } from 'vue'
 const sources = ref([])
 const loading = ref(true)
 const selectedSource = ref(null)
+const editingSource = ref(null)
+const saving = ref(false)
+const editForm = ref({ name: '', url: '', format: '', description: '', is_active: true, auth_method: 'none', auth_api_key: '', auth_token: '', auth_username: '', auth_password: '', portal: '' })
 let statusPollInterval = null
-
-function getSourceIcon(name) {
-  const icons = {
-    'ISIMP': 'IS',
-    'ERA5': 'E5',
-    'CMIP': 'CM',
-    'default': 'DS'
-  }
-  return icons[name] || icons.default
-}
 
 async function loadSources() {
   loading.value = true
   try {
-    // Get sources from the sources endpoint
     const resp = await fetch('/sources?active_only=false')
-    
-    if (!resp.ok) {
-      throw new Error(`Failed to load sources: ${resp.statusText}`)
-    }
-    
+    if (!resp.ok) throw new Error(`Failed to load sources: ${resp.statusText}`)
     const data = await resp.json()
-    
-    // Transform API response to match component expectations
     sources.value = data.map(source => ({
       name: source.source_id || 'Unknown',
       enabled: source.is_active !== false,
@@ -270,20 +346,85 @@ async function loadSources() {
       error_message: source.error_message || null,
       last_processed: source.last_processed || null,
       tags: source.tags || [],
+      auth_method: source.auth_method || null,
+      portal: source.portal || null,
       refreshing: false
     }))
   } catch (e) {
     console.error('Failed to load sources:', e)
-    // Show error to user
-    console.log(`Failed to load sources: ${e.message}`)
   } finally {
     loading.value = false
   }
 }
 
 function viewDetails(source) {
-  selectedSource.value = {
-    ...source
+  selectedSource.value = { ...source }
+}
+
+const PORTAL_AUTH_MAP = { CDS: 'api_key', NASA: 'bearer_token', MARINE: 'basic', ESGF: 'api_key', NOAA: 'none' }
+
+function onEditPortalChange() {
+  if (editForm.value.portal && PORTAL_AUTH_MAP[editForm.value.portal]) {
+    editForm.value.auth_method = PORTAL_AUTH_MAP[editForm.value.portal]
+  }
+}
+
+function openEditModal(source) {
+  editForm.value = {
+    name: source.source_id,
+    url: source.url || '',
+    format: source.type || 'netcdf',
+    description: source.description || '',
+    is_active: source.enabled,
+    auth_method: source.auth_method || 'none',
+    auth_api_key: '',
+    auth_token: '',
+    auth_username: '',
+    auth_password: '',
+    portal: source.portal || ''
+  }
+  editingSource.value = source
+}
+
+async function saveEdit() {
+  saving.value = true
+  try {
+    // Build auth credentials if provided
+    let authCredentials = null
+    if (editForm.value.auth_method === 'api_key' && editForm.value.auth_api_key) {
+      authCredentials = { api_key: editForm.value.auth_api_key }
+    } else if (editForm.value.auth_method === 'bearer_token' && editForm.value.auth_token) {
+      authCredentials = { token: editForm.value.auth_token }
+    } else if (editForm.value.auth_method === 'basic' && editForm.value.auth_username) {
+      authCredentials = { username: editForm.value.auth_username, password: editForm.value.auth_password }
+    }
+
+    const payload = {
+      url: editForm.value.url,
+      format: editForm.value.format,
+      description: editForm.value.description,
+      is_active: editForm.value.is_active,
+      auth_method: editForm.value.auth_method !== 'none' ? editForm.value.auth_method : null,
+      portal: editForm.value.portal || null
+    }
+    if (authCredentials) payload.auth_credentials = authCredentials
+
+    const resp = await fetch(`/sources/${editForm.value.name}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    })
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({ detail: 'Unknown error' }))
+      throw new Error(err.detail || `HTTP ${resp.status}`)
+    }
+    editingSource.value = null
+    await loadSources()
+  } catch (e) {
+    console.error('Failed to save source:', e)
+    alert(`Error: ${e.message}`)
+  } finally {
+    saving.value = false
   }
 }
 
@@ -291,187 +432,107 @@ function isCatalogSource(source) {
   return source.tags && source.tags.some(t => t === 'catalog:D1.1')
 }
 
-function getStatusClass(status) {
+function getStatusBadge(status) {
   const classes = {
-    'success': 'bg-green-500/20 text-green-400',
-    'completed': 'bg-green-500/20 text-green-400',
-    'metadata_only': 'bg-amber-500/20 text-amber-400',
-    'failed': 'bg-red-500/20 text-red-400',
-    'error': 'bg-red-500/20 text-red-400',
-    'processing': 'bg-yellow-500/20 text-yellow-400',
-    'pending': 'bg-gray-500/20 text-gray-400'
+    'success': 'badge-success',
+    'completed': 'badge-success',
+    'metadata_only': 'badge-warning',
+    'failed': 'badge-danger',
+    'error': 'badge-danger',
+    'processing': 'badge-info',
+    'pending': 'badge-neutral'
   }
-  return classes[status] || classes['pending']
+  return classes[status] || 'badge-neutral'
 }
 
 function getStatusLabel(status) {
   const labels = {
-    'success': 'Success',
-    'completed': 'Completed',
-    'metadata_only': 'Metadata Only',
-    'failed': 'Failed',
-    'error': 'Error',
-    'processing': 'Processing',
-    'pending': 'Pending'
+    'success': 'Success', 'completed': 'Completed', 'metadata_only': 'Metadata Only',
+    'failed': 'Failed', 'error': 'Error', 'processing': 'Processing', 'pending': 'Pending'
   }
   return labels[status] || 'Pending'
 }
 
 function formatDate(dateString) {
   if (!dateString) return '—'
-  try {
-    const date = new Date(dateString)
-    return date.toLocaleString()
-  } catch {
-    return dateString
-  }
+  try { return new Date(dateString).toLocaleString() } catch { return dateString }
 }
 
 async function refreshSource(source) {
-  if (source.refreshing || source.processing_status === 'processing') {
-    return
-  }
-
+  if (source.refreshing || source.processing_status === 'processing') return
   source.refreshing = true
-  
   try {
     const resp = await fetch(`/sources/${source.source_id}/trigger`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      }
+      method: 'POST', headers: { 'Content-Type': 'application/json' }
     })
-    
     if (!resp.ok) {
-      const errorData = await resp.json().catch(() => ({ detail: 'Unknown error' }))
-      throw new Error(errorData.detail || `HTTP ${resp.status}: ${resp.statusText}`)
+      const err = await resp.json().catch(() => ({ detail: 'Unknown error' }))
+      throw new Error(err.detail || `HTTP ${resp.status}`)
     }
-    
-    const result = await resp.json()
-    console.log('Pipeline triggered:', result)
-    
-    // Update source status to processing
     source.processing_status = 'processing'
     source.error_message = null
-    
-    // Show success message
-    console.log(`Pipeline triggered for ${source.name}, run ID: ${result.run_id}, status: ${result.status}`)
-    
-    // Reload sources after a short delay to get updated status
-    setTimeout(() => {
-      loadSources()
-    }, 2000)
-    
+    setTimeout(() => loadSources(), 2000)
   } catch (e) {
     console.error('Error triggering pipeline:', e)
-    console.log(`Error triggering pipeline: ${e.message}`)
   } finally {
     source.refreshing = false
   }
 }
 
 async function deleteSource(source) {
-  if (!confirm(`Delete source "${source.name}"?\n\nThis will permanently delete the source configuration.`)) {
-    return
-  }
-  
+  if (!confirm(`Delete source "${source.name}"?\n\nThis will permanently delete the source configuration.`)) return
   try {
-    const resp = await fetch(`/sources/${source.source_id}`, {
-      method: 'DELETE'
-    })
-    
+    const resp = await fetch(`/sources/${source.source_id}`, { method: 'DELETE' })
     if (!resp.ok && resp.status !== 204) {
-      const errorData = await resp.json().catch(() => ({ detail: 'Unknown error' }))
-      throw new Error(errorData.detail || `HTTP ${resp.status}: ${resp.statusText}`)
+      const err = await resp.json().catch(() => ({ detail: 'Unknown error' }))
+      throw new Error(err.detail || `HTTP ${resp.status}`)
     }
-    
-    console.log(`Source "${source.name}" deleted successfully`)
     await loadSources()
-    if (selectedSource.value && selectedSource.value.source_id === source.source_id) {
-      selectedSource.value = null
-    }
+    if (selectedSource.value?.source_id === source.source_id) selectedSource.value = null
   } catch (e) {
     console.error('Error deleting source:', e)
-    console.log(`Error: ${e.message}`)
   }
 }
 
 async function deleteSourceEmbeddings(source) {
-  if (!confirm(`Delete all embeddings for source "${source.name}"?\n\nThis will permanently delete all embeddings from Qdrant for this source. This cannot be undone.`)) {
-    return
-  }
-  
+  if (!confirm(`Delete all embeddings for "${source.name}"? This cannot be undone.`)) return
   try {
-    const resp = await fetch(`/sources/${source.source_id}/embeddings?confirm=true`, {
-      method: 'DELETE'
-    })
-    
+    const resp = await fetch(`/sources/${source.source_id}/embeddings?confirm=true`, { method: 'DELETE' })
     if (!resp.ok) {
-      const errorData = await resp.json().catch(() => ({ detail: 'Unknown error' }))
-      throw new Error(errorData.detail || `HTTP ${resp.status}: ${resp.statusText}`)
+      const err = await resp.json().catch(() => ({ detail: 'Unknown error' }))
+      throw new Error(err.detail || `HTTP ${resp.status}`)
     }
-    
-    const result = await resp.json()
-    console.log(result.message)
     await loadSources()
   } catch (e) {
     console.error('Error deleting embeddings:', e)
-    console.log(`Error: ${e.message}`)
-  }
-}
-
-function startStatusPolling() {
-  // Poll for status updates every 5 seconds if any source is processing
-  statusPollInterval = setInterval(() => {
-    const hasProcessing = sources.value.some(s => s.processing_status === 'processing')
-    if (hasProcessing) {
-      loadSources()
-    }
-  }, 5000) // Poll every 5 seconds
-}
-
-function stopStatusPolling() {
-  if (statusPollInterval) {
-    clearInterval(statusPollInterval)
-    statusPollInterval = null
   }
 }
 
 async function deleteAllSources() {
   const deleteEmbeddings = confirm('This will delete ALL sources.\n\nDo you also want to delete embeddings from Qdrant?')
   const confirmMsg = deleteEmbeddings
-    ? 'This will permanently delete ALL sources AND their embeddings. This cannot be undone.\n\nAre you sure?'
-    : 'This will permanently delete ALL sources. This cannot be undone.\n\nAre you sure?'
-  
+    ? 'This will permanently delete ALL sources AND their embeddings. Are you sure?'
+    : 'This will permanently delete ALL sources. Are you sure?'
   if (confirm(confirmMsg)) {
     try {
-      const resp = await fetch(`/sources?confirm=true&delete_embeddings=${deleteEmbeddings}`, {
-        method: 'DELETE'
-      })
-      
+      const resp = await fetch(`/sources?confirm=true&delete_embeddings=${deleteEmbeddings}`, { method: 'DELETE' })
       if (!resp.ok) {
-        const error = await resp.json().catch(() => ({ detail: 'Unknown error' }))
-        throw new Error(error.detail || `HTTP ${resp.status}`)
+        const err = await resp.json().catch(() => ({ detail: 'Unknown error' }))
+        throw new Error(err.detail || `HTTP ${resp.status}`)
       }
-      
-      const result = await resp.json()
-      console.log(`Deleted ${result.sources_deleted} source(s)${deleteEmbeddings ? ' and embeddings' : ''}`)
-      
-      // Refresh sources list
       await loadSources()
     } catch (e) {
       console.error('Error deleting sources:', e)
-      console.log(`Error: ${e.message}`)
     }
   }
 }
 
-onMounted(() => {
-  loadSources()
-  startStatusPolling()
-})
+function startStatusPolling() {
+  statusPollInterval = setInterval(() => {
+    if (sources.value.some(s => s.processing_status === 'processing')) loadSources()
+  }, 5000)
+}
 
-onUnmounted(() => {
-  stopStatusPolling()
-})
+onMounted(() => { loadSources(); startStatusPolling() })
+onUnmounted(() => { if (statusPollInterval) clearInterval(statusPollInterval) })
 </script>

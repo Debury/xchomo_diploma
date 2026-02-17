@@ -7,6 +7,7 @@ Endpoints allow listing jobs, triggering runs, and checking status.
 
 import os
 import sys
+import json
 import logging
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
@@ -23,6 +24,53 @@ logger = logging.getLogger(__name__)
 
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
+
+# ====================================================================================
+# PERSISTENT SETTINGS
+# ====================================================================================
+
+SETTINGS_PATH = Path(__file__).parent.parent / "data" / "app_settings.json"
+
+# Credential keys that map to environment variables
+CREDENTIAL_KEYS = {
+    "openrouter_api_key": "OPENROUTER_API_KEY",
+    "groq_api_key": "GROQ_API_KEY",
+    "cds_api_key": "CDS_API_KEY",
+    "nasa_earthdata_token": "NASA_EARTHDATA_TOKEN",
+    "cmems_username": "CMEMS_USERNAME",
+    "cmems_password": "CMEMS_PASSWORD",
+}
+
+
+def _load_settings() -> dict:
+    if SETTINGS_PATH.exists():
+        try:
+            return json.loads(SETTINGS_PATH.read_text())
+        except (json.JSONDecodeError, OSError):
+            return {}
+    return {}
+
+
+def _save_settings(data: dict):
+    SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    SETTINGS_PATH.write_text(json.dumps(data, indent=2))
+
+
+# Load persisted settings on startup
+_persisted = _load_settings()
+_runtime_settings = {k: v for k, v in _persisted.get("llm", {}).items()}
+
+# Restore credentials into os.environ
+for cred_key, env_var in CREDENTIAL_KEYS.items():
+    value = _persisted.get("credentials", {}).get(cred_key, "")
+    if value:
+        os.environ[env_var] = value
+
+# Restore LLM env vars
+if "model" in _runtime_settings:
+    os.environ["LLM_MODEL"] = str(_runtime_settings["model"])
+if "temperature" in _runtime_settings:
+    os.environ["LLM_TEMPERATURE"] = str(_runtime_settings["temperature"])
 
 
 # ====================================================================================
@@ -70,6 +118,9 @@ class SourceCreate(BaseModel):
     embedding_model: Optional[str] = "all-MiniLM-L6-v2"
     description: Optional[str] = None
     tags: Optional[List[str]] = None
+    auth_method: Optional[str] = None  # none, api_key, bearer_token, basic
+    auth_credentials: Optional[Dict[str, str]] = None
+    portal: Optional[str] = None  # CDS, NASA, MARINE, ESGF, NOAA
 
 class SourceUpdate(BaseModel):
     url: Optional[str] = None
@@ -131,6 +182,8 @@ class SourceResponse(BaseModel):
     error_message: Optional[str] = None
     description: Optional[str] = None
     tags: Optional[List[str]] = None
+    auth_method: Optional[str] = None
+    portal: Optional[str] = None
     # Optional fields for compatibility
     id: Optional[int] = None
     collection_name: Optional[str] = None
@@ -596,20 +649,55 @@ async def create_source(source: SourceCreate):
     try:
         from src.sources import get_source_store
         store = get_source_store()
-        
+
         if not source.format:
             from src.climate_embeddings.loaders.detect_format import detect_format_from_url
             source.format = detect_format_from_url(source.url)
-            
-        new_source = store.create_source(source.dict())
-        return new_source.to_dict()
+
+        # Extract auth fields before creating source (don't store credentials in source config)
+        auth_method = source.auth_method
+        auth_credentials = source.auth_credentials
+        portal = source.portal
+
+        source_data = source.dict()
+        # Remove auth_credentials from source data (stored separately for security)
+        source_data.pop("auth_credentials", None)
+
+        new_source = store.create_source(source_data)
+        source_dict = new_source.to_dict()
+
+        # Store auth credentials in app_settings.json under source_credentials
+        if auth_credentials and auth_method and auth_method != "none":
+            persisted = _load_settings()
+            source_creds = persisted.get("source_credentials", {})
+            source_creds[source.source_id] = {
+                "auth_method": auth_method,
+                "credentials": auth_credentials,
+                "portal": portal,
+            }
+            persisted["source_credentials"] = source_creds
+            _save_settings(persisted)
+
+        # Include auth_method and portal in response
+        source_dict["auth_method"] = auth_method
+        source_dict["portal"] = portal
+        return source_dict
     except Exception as e:
         raise HTTPException(500, str(e))
 
 @app.get("/sources", response_model=List[SourceResponse])
 async def list_sources(active_only: bool = True):
     from src.sources import get_source_store
-    return [s.to_dict() for s in get_source_store().get_all_sources(active_only)]
+    persisted = _load_settings()
+    source_creds = persisted.get("source_credentials", {})
+    results = []
+    for s in get_source_store().get_all_sources(active_only):
+        d = s.to_dict()
+        cred_info = source_creds.get(d.get("source_id", ""), {})
+        d["auth_method"] = d.get("auth_method") or cred_info.get("auth_method")
+        d["portal"] = d.get("portal") or cred_info.get("portal")
+        results.append(d)
+    return results
 
 @app.post("/sources/{source_id}/trigger", response_model=RunResponse)
 async def trigger_source_etl(source_id: str, job_name: str = "dynamic_source_etl_job"):
@@ -629,6 +717,61 @@ async def trigger_source_etl(source_id: str, job_name: str = "dynamic_source_etl
         status=run["status"],
         message="Job triggered"
     )
+
+@app.put("/sources/{source_id}")
+async def update_source(source_id: str, updates: dict):
+    """Update source metadata (url, format, description, is_active, auth)."""
+    from src.sources import get_source_store
+    store = get_source_store()
+    source = store.get_source(source_id)
+    if not source:
+        raise HTTPException(404, f"Source '{source_id}' not found")
+
+    # Handle auth fields separately
+    auth_method = updates.pop("auth_method", None)
+    auth_credentials = updates.pop("auth_credentials", None)
+    portal = updates.pop("portal", None)
+
+    allowed_fields = {"url", "format", "description", "is_active", "variables", "tags"}
+    filtered = {k: v for k, v in updates.items() if k in allowed_fields}
+
+    # Store/update auth credentials in app_settings.json
+    if auth_method is not None or auth_credentials is not None or portal is not None:
+        persisted = _load_settings()
+        source_creds = persisted.get("source_credentials", {})
+        existing = source_creds.get(source_id, {})
+        if auth_method is not None:
+            existing["auth_method"] = auth_method
+        if auth_credentials is not None:
+            existing["credentials"] = auth_credentials
+        if portal is not None:
+            existing["portal"] = portal
+        source_creds[source_id] = existing
+        persisted["source_credentials"] = source_creds
+        _save_settings(persisted)
+
+    if not filtered and auth_method is None and auth_credentials is None and portal is None:
+        raise HTTPException(400, "No valid fields to update")
+
+    if filtered:
+        try:
+            updated = store.update_source(source_id, filtered)
+            result = updated.to_dict() if hasattr(updated, 'to_dict') else {"source_id": source_id, "updated": True}
+        except AttributeError:
+            source_dict = source.to_dict() if hasattr(source, 'to_dict') else source.__dict__
+            source_dict.update(filtered)
+            store.hard_delete_source(source_id)
+            new_source = store.create_source(source_dict)
+            result = new_source.to_dict() if hasattr(new_source, 'to_dict') else {"source_id": source_id, "updated": True}
+    else:
+        result = {"source_id": source_id, "updated": True}
+
+    # Add auth info to response
+    persisted = _load_settings()
+    cred_info = persisted.get("source_credentials", {}).get(source_id, {})
+    result["auth_method"] = cred_info.get("auth_method")
+    result["portal"] = cred_info.get("portal")
+    return result
 
 @app.delete("/sources/{source_id}", status_code=204)
 async def delete_source(source_id: str):
@@ -1823,9 +1966,13 @@ async def get_system_settings():
                 "groq": bool(os.getenv("GROQ_API_KEY")),
                 "ollama": os.getenv("OLLAMA_HOST", "http://localhost:11434"),
             },
+            "model": _runtime_settings.get("model", os.getenv("LLM_MODEL", "google/gemini-2.0-flash-001")),
+            "temperature": _runtime_settings.get("temperature", float(os.getenv("LLM_TEMPERATURE", "0.3"))),
+            "top_k": _runtime_settings.get("top_k", 5),
+            "batch_size": _runtime_settings.get("batch_size", 100),
         },
         "embedding_model": {
-            "name": "BAAI/bge-large-en-v1.5",
+            "name": os.getenv("EMBEDDING_MODEL", "BAAI/bge-m3"),
             "dimensions": 1024,
             "distance": "COSINE",
         },
@@ -1839,6 +1986,124 @@ async def get_system_settings():
             "free_gb": round(disk.free / (1024**3), 1),
         },
     }
+
+
+@app.put("/settings/system")
+async def update_system_settings(settings: dict):
+    """Update runtime LLM settings (model, temperature, top_k, batch_size)."""
+    allowed = {"model", "temperature", "top_k", "batch_size"}
+    filtered = {k: v for k, v in settings.items() if k in allowed}
+    if not filtered:
+        raise HTTPException(400, "No valid fields to update")
+    _runtime_settings.update(filtered)
+    # Also update environment variables for LLM client
+    if "model" in filtered:
+        os.environ["LLM_MODEL"] = str(filtered["model"])
+    if "temperature" in filtered:
+        os.environ["LLM_TEMPERATURE"] = str(filtered["temperature"])
+    # Persist to disk
+    persisted = _load_settings()
+    persisted["llm"] = dict(_runtime_settings)
+    _save_settings(persisted)
+    return {"updated": True, "settings": _runtime_settings}
+
+
+@app.get("/settings/credentials")
+async def get_credentials():
+    """Get all portal credentials with masked values."""
+    persisted = _load_settings()
+    stored_creds = persisted.get("credentials", {})
+
+    result = {}
+    for cred_key, env_var in CREDENTIAL_KEYS.items():
+        # Check stored value first, then env var
+        value = stored_creds.get(cred_key, "") or os.getenv(env_var, "")
+        if value:
+            # Mask: show first 4 and last 3 chars for keys > 10 chars, otherwise "****"
+            if len(value) > 10:
+                masked = value[:4] + "..." + value[-3:]
+            else:
+                masked = "****"
+            result[cred_key] = {"configured": True, "masked": masked}
+        else:
+            result[cred_key] = {"configured": False, "masked": ""}
+    return result
+
+
+@app.put("/settings/credentials")
+async def update_credentials(credentials: dict):
+    """Update portal credentials. Saves to disk and updates os.environ."""
+    persisted = _load_settings()
+    stored_creds = persisted.get("credentials", {})
+
+    updated_keys = []
+    for key, value in credentials.items():
+        if key not in CREDENTIAL_KEYS:
+            continue
+        stored_creds[key] = value
+        # Update environment variable
+        env_var = CREDENTIAL_KEYS[key]
+        if value:
+            os.environ[env_var] = value
+        elif env_var in os.environ:
+            del os.environ[env_var]
+        updated_keys.append(key)
+
+    if not updated_keys:
+        raise HTTPException(400, "No valid credential keys provided")
+
+    persisted["credentials"] = stored_creds
+    _save_settings(persisted)
+    return {"updated": True, "keys": updated_keys}
+
+
+@app.get("/admin/qdrant/health")
+async def qdrant_health():
+    """Get Qdrant collection health including dataset and variable breakdowns."""
+    try:
+        from qdrant_client import QdrantClient
+        host = os.getenv("QDRANT_HOST", "localhost")
+        port = int(os.getenv("QDRANT_REST_PORT", 6333))
+        client = QdrantClient(host=host, port=port, timeout=10)
+        collection_name = os.getenv("QDRANT_COLLECTION", "climate_data")
+
+        try:
+            info = client.get_collection(collection_name)
+            status = info.status.value if hasattr(info.status, 'value') else str(info.status)
+            points_count = info.points_count or 0
+
+            # Try to get dataset breakdown via scroll
+            datasets = {}
+            variables = {}
+            try:
+                from qdrant_client.models import ScrollRequest
+                records, _ = client.scroll(
+                    collection_name=collection_name,
+                    limit=1000,
+                    with_payload=True,
+                    with_vectors=False,
+                )
+                for record in records:
+                    payload = record.payload or {}
+                    ds = payload.get("dataset_name", payload.get("source", "unknown"))
+                    var = payload.get("variable", "unknown")
+                    datasets[ds] = datasets.get(ds, 0) + 1
+                    variables[var] = variables.get(var, 0) + 1
+            except Exception:
+                pass
+
+            return {
+                "status": status,
+                "points_count": points_count,
+                "segments_count": info.segments_count if hasattr(info, 'segments_count') else None,
+                "datasets": datasets,
+                "variables": variables,
+                "health": "healthy" if status == "green" else "degraded",
+            }
+        except Exception:
+            return {"status": "no_collection", "health": "empty", "datasets": {}, "variables": {}}
+    except Exception as e:
+        return {"status": "error", "health": "error", "error": str(e), "datasets": {}, "variables": {}}
 
 
 if __name__ == "__main__":
