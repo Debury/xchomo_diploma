@@ -37,6 +37,26 @@ const routes = [
         path: 'embeddings',
         name: 'Embeddings',
         component: () => import('./views/Embeddings.vue')
+      },
+      {
+        path: 'catalog',
+        name: 'Catalog',
+        component: () => import('./views/Catalog.vue')
+      },
+      {
+        path: 'etl',
+        name: 'ETL Monitor',
+        component: () => import('./views/ETLMonitor.vue')
+      },
+      {
+        path: 'schedules',
+        name: 'Schedules',
+        component: () => import('./views/Schedules.vue')
+      },
+      {
+        path: 'settings',
+        name: 'Settings',
+        component: () => import('./views/Settings.vue')
       }
     ]
   }

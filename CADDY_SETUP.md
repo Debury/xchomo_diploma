@@ -57,3 +57,5 @@ docker-compose logs caddy
 **Zmeniť doménu:**
 1. Uprav Caddyfile
 2. `docker-compose restart caddy`
+
+

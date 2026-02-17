@@ -95,3 +95,10 @@ pydantic>=2.0.0
 
 # Python ASGI server
 python-multipart>=0.0.6
+
+# ====================================================================================
+# CATALOG BATCH PROCESSING
+# ====================================================================================
+
+# Excel file reading (for D1.1.xlsx climate dataset catalog)
+openpyxl>=3.1.0

@@ -1334,7 +1334,384 @@ async def debug_variable(variable_name: str):
         }
 
 
-        
+
+# ====================================================================================
+# CATALOG ENDPOINTS
+# ====================================================================================
+
+CATALOG_EXCEL_PATH = os.getenv("CATALOG_EXCEL_PATH", "Kopie souboru D1.1.xlsx")
+# Resolve relative to project root
+_PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if not Path(CATALOG_EXCEL_PATH).exists():
+    CATALOG_EXCEL_PATH = str(_PROJECT_ROOT / CATALOG_EXCEL_PATH)
+
+
+class CatalogEntryResponse(BaseModel):
+    row_index: int
+    source_id: str
+    hazard: Optional[str] = None
+    dataset_name: Optional[str] = None
+    data_type: Optional[str] = None
+    spatial_coverage: Optional[str] = None
+    region_country: Optional[str] = None
+    spatial_resolution: Optional[str] = None
+    temporal_coverage: Optional[str] = None
+    temporal_resolution: Optional[str] = None
+    bias_corrected: Optional[str] = None
+    access: Optional[str] = None
+    link: Optional[str] = None
+    impact_sector: Optional[str] = None
+    notes: Optional[str] = None
+    phase: Optional[int] = None
+    processing_status: Optional[str] = None
+
+
+class CatalogProcessRequest(BaseModel):
+    phases: Optional[List[int]] = [0]
+    source_ids: Optional[List[str]] = None
+    dry_run: bool = False
+
+
+class CatalogProgressResponse(BaseModel):
+    total: int = 0
+    processed: int = 0
+    failed: int = 0
+    skipped: int = 0
+    pending: int = 0
+    current_phase: Optional[int] = None
+    current_source: Optional[str] = None
+    started_at: Optional[str] = None
+    updated_at: Optional[str] = None
+
+
+@app.get("/catalog", response_model=List[CatalogEntryResponse])
+async def list_catalog():
+    """List all 234 catalog entries with phase classification and processing status."""
+    try:
+        from src.catalog.excel_reader import read_catalog
+        from src.catalog.phase_classifier import classify_source
+        from src.catalog.batch_orchestrator import BatchProgress
+
+        entries = read_catalog(CATALOG_EXCEL_PATH)
+        progress = BatchProgress.load()
+
+        result = []
+        for entry in entries:
+            phase = classify_source(entry)
+            status_info = progress.sources.get(entry.source_id, {})
+            processing_status = status_info.get("status", "pending")
+
+            result.append(CatalogEntryResponse(
+                row_index=entry.row_index,
+                source_id=entry.source_id,
+                hazard=entry.hazard,
+                dataset_name=entry.dataset_name,
+                data_type=entry.data_type,
+                spatial_coverage=entry.spatial_coverage,
+                region_country=entry.region_country,
+                spatial_resolution=entry.spatial_resolution,
+                temporal_coverage=entry.temporal_coverage,
+                temporal_resolution=entry.temporal_resolution,
+                bias_corrected=entry.bias_corrected,
+                access=entry.access,
+                link=entry.link,
+                impact_sector=entry.impact_sector,
+                notes=entry.notes,
+                phase=phase,
+                processing_status=processing_status,
+            ))
+        return result
+    except Exception as e:
+        logger.error(f"Failed to list catalog: {e}")
+        raise HTTPException(500, str(e))
+
+
+@app.get("/catalog/{row_index}")
+async def get_catalog_entry(row_index: int):
+    """Get a single catalog entry by row index."""
+    try:
+        from src.catalog.excel_reader import read_catalog
+        from src.catalog.phase_classifier import classify_source
+        from src.catalog.batch_orchestrator import BatchProgress
+
+        entries = read_catalog(CATALOG_EXCEL_PATH)
+        progress = BatchProgress.load()
+
+        for entry in entries:
+            if entry.row_index == row_index:
+                phase = classify_source(entry)
+                status_info = progress.sources.get(entry.source_id, {})
+                return {
+                    **entry.to_dict(),
+                    "phase": phase,
+                    "processing_status": status_info.get("status", "pending"),
+                    "processing_error": status_info.get("error"),
+                }
+        raise HTTPException(404, f"Catalog entry {row_index} not found")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
+@app.post("/catalog/process")
+async def trigger_catalog_processing(request: CatalogProcessRequest):
+    """Trigger batch processing of catalog entries."""
+    import threading
+
+    try:
+        from src.catalog.batch_orchestrator import run_batch_pipeline
+
+        def _run_in_background():
+            try:
+                run_batch_pipeline(
+                    excel_path=CATALOG_EXCEL_PATH,
+                    phases=request.phases,
+                    dry_run=request.dry_run,
+                    resume=True,
+                )
+            except Exception as e:
+                logger.error(f"Background catalog processing failed: {e}")
+
+        if request.dry_run:
+            # Dry run: execute synchronously and return result
+            from src.catalog.batch_orchestrator import run_batch_pipeline
+            result = run_batch_pipeline(
+                excel_path=CATALOG_EXCEL_PATH,
+                phases=request.phases,
+                dry_run=True,
+            )
+            return result
+
+        # Start processing in background thread
+        thread = threading.Thread(target=_run_in_background, daemon=True)
+        thread.start()
+
+        return {
+            "status": "started",
+            "phases": request.phases,
+            "message": f"Catalog processing started for phases {request.phases}",
+        }
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
+@app.get("/catalog/progress", response_model=CatalogProgressResponse)
+async def get_catalog_progress():
+    """Get current batch processing progress."""
+    try:
+        from src.catalog.batch_orchestrator import get_progress
+        return get_progress()
+    except Exception as e:
+        logger.error(f"Failed to get progress: {e}")
+        return CatalogProgressResponse()
+
+
+@app.post("/catalog/classify")
+async def classify_catalog():
+    """Run classifier on all entries, return phase distribution."""
+    try:
+        from src.catalog.excel_reader import read_catalog
+        from src.catalog.phase_classifier import classify_all
+
+        entries = read_catalog(CATALOG_EXCEL_PATH)
+        grouped = classify_all(entries)
+
+        return {
+            "total": len(entries),
+            "phases": {str(phase): len(items) for phase, items in grouped.items()},
+            "phase_descriptions": {
+                "0": "Metadata-only (all entries)",
+                "1": "Direct download, open access",
+                "2": "Registration-required",
+                "3": "API-based portals (CDS, ESGF)",
+                "4": "Manual / contact-required",
+            },
+        }
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
+@app.post("/catalog/retry-failed")
+async def retry_failed_catalog():
+    """Re-run all failed catalog sources."""
+    import threading
+
+    try:
+        from src.catalog.batch_orchestrator import retry_failed
+
+        def _retry():
+            try:
+                retry_failed(excel_path=CATALOG_EXCEL_PATH)
+            except Exception as e:
+                logger.error(f"Retry failed: {e}")
+
+        thread = threading.Thread(target=_retry, daemon=True)
+        thread.start()
+
+        return {"status": "started", "message": "Retrying failed sources in background"}
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
+# ====================================================================================
+# SCHEDULE ENDPOINTS
+# ====================================================================================
+
+class ScheduleCreate(BaseModel):
+    name: str
+    cron_schedule: str
+    job_name: str = "batch_catalog_etl_job"
+    description: Optional[str] = None
+    phases: Optional[List[int]] = [0]
+
+
+@app.get("/schedules")
+async def list_schedules():
+    """List all Dagster schedules with their status."""
+    try:
+        query = """
+        query {
+            schedulesOrError {
+                ... on Schedules {
+                    results {
+                        name
+                        cronSchedule
+                        scheduleState {
+                            status
+                        }
+                        pipelineName
+                        futureTicks(limit: 1) {
+                            results {
+                                timestamp
+                            }
+                        }
+                    }
+                }
+                ... on PythonError { message }
+            }
+        }
+        """
+        data = await execute_graphql_query(query)
+        schedules_data = data.get("schedulesOrError", {}).get("results", [])
+
+        result = []
+        for s in schedules_data:
+            next_ticks = s.get("futureTicks", {}).get("results", [])
+            next_run = next_ticks[0]["timestamp"] if next_ticks else None
+            result.append({
+                "name": s["name"],
+                "cron_schedule": s["cronSchedule"],
+                "status": s.get("scheduleState", {}).get("status", "UNKNOWN"),
+                "job_name": s.get("pipelineName"),
+                "next_run": next_run,
+            })
+        return result
+    except Exception as e:
+        logger.warning(f"Failed to list schedules: {e}")
+        return []
+
+
+@app.post("/schedules/{schedule_name}/toggle")
+async def toggle_schedule(schedule_name: str, enable: bool = True):
+    """Enable or disable a Dagster schedule."""
+    try:
+        action = "startSchedule" if enable else "stopRunningSchedule"
+        mutation = f"""
+        mutation {{
+            {action}(scheduleSelector: {{
+                scheduleName: "{schedule_name}"
+            }}) {{
+                __typename
+                ... on ScheduleStateResult {{ scheduleState {{ status }} }}
+                ... on PythonError {{ message }}
+            }}
+        }}
+        """
+        data = await execute_graphql_query(mutation)
+        result = data.get(action, {})
+
+        if result.get("__typename") == "PythonError":
+            raise HTTPException(500, result.get("message", "Unknown error"))
+
+        return {
+            "name": schedule_name,
+            "status": result.get("scheduleState", {}).get("status", "UNKNOWN"),
+            "message": f"Schedule {'enabled' if enable else 'disabled'}",
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
+# ====================================================================================
+# LOG ENDPOINTS
+# ====================================================================================
+
+@app.get("/logs/etl")
+async def get_etl_logs(lines: int = 100):
+    """Get the last N lines of the ETL log file."""
+    log_paths = [
+        _PROJECT_ROOT / "logs" / "dagster_dynamic_etl.log",
+        _PROJECT_ROOT / "logs" / "dagster_pipeline.log",
+    ]
+
+    for log_path in log_paths:
+        if log_path.exists():
+            try:
+                with open(log_path, "r", encoding="utf-8", errors="replace") as f:
+                    all_lines = f.readlines()
+                tail = all_lines[-lines:] if len(all_lines) > lines else all_lines
+                return {
+                    "file": str(log_path),
+                    "total_lines": len(all_lines),
+                    "returned_lines": len(tail),
+                    "content": "".join(tail),
+                }
+            except Exception as e:
+                raise HTTPException(500, f"Failed to read log: {e}")
+
+    return {"file": None, "total_lines": 0, "returned_lines": 0, "content": "No log file found"}
+
+
+# ====================================================================================
+# SETTINGS ENDPOINTS
+# ====================================================================================
+
+@app.get("/settings/system")
+async def get_system_settings():
+    """Get current system configuration and status."""
+    import shutil
+
+    # Disk usage
+    disk = shutil.disk_usage("/")
+
+    return {
+        "llm": {
+            "providers": {
+                "openrouter": bool(os.getenv("OPENROUTER_API_KEY")),
+                "groq": bool(os.getenv("GROQ_API_KEY")),
+                "ollama": os.getenv("OLLAMA_HOST", "http://localhost:11434"),
+            },
+        },
+        "embedding_model": {
+            "name": "BAAI/bge-large-en-v1.5",
+            "dimensions": 1024,
+            "distance": "COSINE",
+        },
+        "qdrant": {
+            "host": os.getenv("QDRANT_HOST", "localhost"),
+            "port": int(os.getenv("QDRANT_REST_PORT", 6333)),
+        },
+        "disk": {
+            "total_gb": round(disk.total / (1024**3), 1),
+            "used_gb": round(disk.used / (1024**3), 1),
+            "free_gb": round(disk.free / (1024**3), 1),
+        },
+    }
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)

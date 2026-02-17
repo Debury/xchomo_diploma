@@ -26,6 +26,10 @@ from dagster import Definitions
 from dagster_project.dynamic_jobs import (
     dynamic_source_etl_job
 )
+from dagster_project.catalog_jobs import (
+    batch_catalog_etl_job,
+    catalog_metadata_only_job,
+)
 from dagster_project.schedules import (
     daily_etl_schedule,
     daily_embedding_schedule,
@@ -47,7 +51,9 @@ from dagster_project.resources import (
 
 climate_etl_repository = Definitions(
     jobs=[
-        dynamic_source_etl_job  # Phase 5: Dynamic source-driven ETL (only active job)
+        dynamic_source_etl_job,  # Phase 5: Dynamic source-driven ETL
+        batch_catalog_etl_job,  # Batch catalog processing (Phase 0 + Phase 1)
+        catalog_metadata_only_job,  # Quick metadata-only (Phase 0)
     ],
     schedules=[
         daily_etl_schedule,

@@ -81,8 +81,12 @@ const authStore = useAuthStore()
 const navItems = [
   { path: '/', label: 'Dashboard', icon: '📊' },
   { path: '/chat', label: 'Chat', icon: '💬' },
+  { path: '/catalog', label: 'Catalog', icon: '📋' },
   { path: '/sources', label: 'Sources', icon: '📁' },
-  { path: '/embeddings', label: 'Embeddings', icon: '🔢' }
+  { path: '/embeddings', label: 'Embeddings', icon: '🔢' },
+  { path: '/etl', label: 'ETL Monitor', icon: '⚙️' },
+  { path: '/schedules', label: 'Schedules', icon: '🕐' },
+  { path: '/settings', label: 'Settings', icon: '🔧' },
 ]
 
 function handleLogout() {

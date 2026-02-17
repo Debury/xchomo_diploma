@@ -51,6 +51,17 @@ class ClimateChunkMetadata:
     chunk_index: Optional[int] = None
     row_count: Optional[int] = None  # For CSV/time-series data
     
+    # Catalog metadata (from D1.1.xlsx Excel catalog)
+    hazard_type: Optional[str] = None  # e.g., "Mean surface temperature"
+    data_type: Optional[str] = None  # "Reanalysis data", "Model", "Gridded observations"
+    spatial_coverage: Optional[str] = None  # "Regional", "Global"
+    region_country: Optional[str] = None  # "Europe", "Global", "Iberian Peninsula"
+    temporal_coverage_text: Optional[str] = None  # "1984-Present", "Pre-industrial-2100"
+    impact_sector: Optional[str] = None  # "Health, Energy, Agriculture"
+    access_type: Optional[str] = None  # "Open", "Open (upon registration)"
+    catalog_source: Optional[str] = None  # "D1.1.xlsx"
+    location_name: Optional[str] = None  # Enriched location from Excel Region/Country
+
     # Additional metadata (flexible for dataset-specific fields)
     additional_metadata: Optional[Dict[str, Any]] = None
     
@@ -132,7 +143,11 @@ class ClimateChunkMetadata:
             "min_lat", "max_lat", "min_lon", "max_lon", "start_date", "end_date",
             "file_path", "chunk_index", "row_count", "shape", "format", "source",
             "station_id", "station_name", "station_names", "station_count",
-            "description", "title", "institution", "source_description"
+            "description", "title", "institution", "source_description",
+            # Catalog metadata fields (from D1.1.xlsx)
+            "hazard_type", "data_type", "spatial_coverage", "region_country",
+            "temporal_coverage_text", "impact_sector", "access_type", "catalog_source",
+            "location_name", "is_metadata_only", "catalog_row_index",
         }
         additional = {}
         for k, v in raw_metadata.items():
@@ -345,6 +360,24 @@ def generate_human_readable_text(metadata: Dict[str, Any], verbosity: str = "med
     # Grid resolution (if available)
     if verbosity in ["medium", "high"] and metadata.get("resolution_deg"):
         parts.append(f"Grid resolution: {metadata['resolution_deg']}°")
-    
+
+    # Catalog metadata (from D1.1.xlsx) — enhances RAG context
+    if metadata.get("hazard_type"):
+        parts.append(f"Hazard: {metadata['hazard_type']}")
+    if metadata.get("data_type"):
+        parts.append(f"Data type: {metadata['data_type']}")
+    if metadata.get("region_country"):
+        parts.append(f"Region: {metadata['region_country']}")
+    elif metadata.get("location_name"):
+        parts.append(f"Location: {metadata['location_name']}")
+    if metadata.get("spatial_coverage") and not metadata.get("region_country"):
+        parts.append(f"Spatial coverage: {metadata['spatial_coverage']}")
+    if metadata.get("temporal_coverage_text"):
+        parts.append(f"Temporal coverage: {metadata['temporal_coverage_text']}")
+    if metadata.get("impact_sector"):
+        parts.append(f"Impact sectors: {metadata['impact_sector']}")
+    if metadata.get("access_type"):
+        parts.append(f"Access: {metadata['access_type']}")
+
     return " | ".join(parts)
 
