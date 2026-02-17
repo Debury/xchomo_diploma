@@ -28,7 +28,7 @@ class OpenRouterClient:
         # - openai/gpt-4o-mini ($0.15/1M input) - best value
         # - anthropic/claude-3-haiku ($0.25/1M input) - very good
         # - openai/gpt-4o ($2.50/1M input) - best quality
-        self.model = os.getenv("OPENROUTER_MODEL", "mistralai/mistral-7b-instruct:free")
+        self.model = os.getenv("OPENROUTER_MODEL", "x-ai/grok-4.1-fast")
     
     def is_available(self) -> bool:
         """Check if OpenRouter API key is configured."""
@@ -38,8 +38,8 @@ class OpenRouterClient:
         self,
         prompt: str,
         temperature: float = 0.3,
-        max_tokens: int = 150,
-        timeout_s: int = 30,
+        max_tokens: int = 1024,
+        timeout_s: int = 60,
     ) -> str:
         """
         Generate text using OpenRouter API.

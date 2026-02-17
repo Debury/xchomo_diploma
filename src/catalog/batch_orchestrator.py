@@ -26,6 +26,31 @@ catalog_logger = setup_logger("catalog_pipeline", "logs/catalog_pipeline.log", "
 
 DEFAULT_PROGRESS_PATH = Path("data/catalog_progress.json")
 
+# Direct download URLs to override portal/landing page links in the Excel catalog.
+# Keys are dataset names (matching CatalogEntry.dataset_name).
+# Values are actual file URLs that return data when fetched with HTTP GET.
+DIRECT_DOWNLOAD_URLS = {
+    "WorldClim - Historical climate data": "https://geodata.ucdavis.edu/climate/worldclim/2_1/base/wc2.1_10m_tavg.zip",
+    "WorldClim - Future climate data": "https://geodata.ucdavis.edu/climate/worldclim/2_1/fut/10m/wc2.1_10m_bioc_ACCESS-CM2_ssp245_2041-2060.tif",
+    "GISTEMP": "https://data.giss.nasa.gov/gistemp/tabledata_v4/GLB.Ts+dSST.csv",
+    "CRU": "https://crudata.uea.ac.uk/cru/data/hrg/cru_ts_4.08/cruts.2406270035.v4.08/tmp/cru_ts4.08.1901.2023.tmp.dat.nc.gz",
+    "CHIRPS": "https://data.chc.ucsb.edu/products/CHIRPS-2.0/global_annual/tifs/chirps-v2.0.2020.tif",
+    "Aridity Index and Potential Evapotranspiration": "https://figshare.com/ndownloader/articles/7504448/versions/7",
+    "SPEI-GD": "https://zenodo.org/api/records/8060268/files/30days.zip/content",
+    "SLOCLIM": "https://zenodo.org/api/records/4108543/files/sloclim_pcp.nc/content",
+    "SPEIbase": "https://spei.csic.es/spei_database/spei01.nc",
+    "Iberia01": "https://digital.csic.es/bitstream/10261/183071/1/Iberia01_v1.0_DD_010reg_aa3d_pr.nc",
+    "STEAD": "https://digital.csic.es/bitstream/10261/177655/14/tmax_pen.nc",
+    "SPREAD": "https://digital.csic.es/bitstream/10261/141218/11/SPREAD_pen_pcp.nc",
+    "Standardized Evapotranspiration Deficit Index (SEDI)": "https://digital.csic.es/bitstream/10261/160091/1/SEDI.zip",
+    "Combined Drought Indicator": "https://jeodpp.jrc.ec.europa.eu/ftp/jrc-opendata/DROUGHTOBS/Drought_Observatories_datasets/EDO_Combined_Drought_Indicator/ver1-4-0/cdinx_m_euu_20190101_20191221_t.nc",
+    "SPI-MARSMet": "https://jeodpp.jrc.ec.europa.eu/ftp/jrc-opendata/DROUGHTOBS/Drought_Observatories_datasets/EDO_Standardized_Precipitation_Index_blended_interpolated_SPI3/ver1-2-0/spb03_m_euu_20040101_20041201_m.nc",
+    "CERES-EBAF": "https://opendap.larc.nasa.gov/opendap/CERES/EBAF/TOA_Edition4.1/CERES_EBAF-TOA_Edition4.1_200003-201904.nc",
+    "ISI-MIP": "https://files.isimip.org/ISIMIP3b/InputData/climate/atmosphere_composition/co2/historical/co2_historical_annual_1850_2014.txt",
+    "EURO-CORDEX": "http://esgf1.dkrz.de/thredds/fileServer/cordex/cordex/output/EUR-11/GERICS/ECMWF-ERAINT/evaluation/r0i0p0/GERICS-REMO2015/v1/fx/orog/orog_EUR-11_ECMWF-ERAINT_evaluation_r0i0p0_GERICS-REMO2015_v1_fx.nc",
+    "MED-CORDEX": "http://esgf1.dkrz.de/thredds/fileServer/cordex/cordex/output/EUR-11/GERICS/ECMWF-ERAINT/evaluation/r0i0p0/GERICS-REMO2015/v1/fx/orog/orog_EUR-11_ECMWF-ERAINT_evaluation_r0i0p0_GERICS-REMO2015_v1_fx.nc",
+}
+
 
 @dataclass
 class SourceProgress:
@@ -339,7 +364,10 @@ def _run_phase_download(
         progress.mark_started(entry.source_id, entry.dataset_name or "unknown", phase)
 
         try:
-            url = entry.link.strip()
+            # Use direct download URL override if available, otherwise use catalog link
+            url = DIRECT_DOWNLOAD_URLS.get(entry.dataset_name, entry.link).strip()
+            if url != entry.link.strip():
+                catalog_logger.info(f"Phase {phase}: using override URL for {entry.dataset_name}")
 
             # --- Size guard: HEAD request to check Content-Length ---
             try:
@@ -372,7 +400,7 @@ def _run_phase_download(
             # Download to temp file
             logger.info(f"Phase {phase}: downloading {entry.dataset_name} from {url}")
 
-            resp = http_requests.get(url, timeout=120, stream=True,
+            resp = http_requests.get(url, timeout=600, stream=True,
                                      headers={"User-Agent": "ClimateRAG/1.0"})
             resp.raise_for_status()
 
