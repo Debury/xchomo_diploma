@@ -1,0 +1,120 @@
+{
+  "$schema": "Golden test set for Climate RAG retrieval evaluation",
+  "version": "1.0",
+  "description": "Each query has annotated relevant chunk IDs from Qdrant. Used by tests/test_rag_evaluation.py for Tier 1 metrics (Hit@K, MRR, NDCG, Recall@K).",
+  "construction_guidelines": {
+    "query_categories": [
+      "variable-specific (temperature, precipitation, wind, etc.)",
+      "dataset-specific (CMIP6, CRU, E-OBS, ERA5)",
+      "spatial (European, global, regional queries)",
+      "temporal (historical, projection, specific year ranges)",
+      "cross-variable (compound events, multi-hazard)",
+      "methodological (resolution, ensemble, bias correction)"
+    ],
+    "annotation_process": "For each query, manually identify 2-5 relevant chunk IDs from Qdrant by reviewing chunk text content. Use Qdrant dashboard or scroll API.",
+    "minimum_set_size": "50-100 queries recommended for statistical significance",
+    "key_numbers": "For numerical coverage metric, annotate important numbers that should appear in RAG answers"
+  },
+  "queries": [
+    {
+      "id": "q001",
+      "query": "What is the global mean temperature anomaly for 2023 according to CMIP6 projections?",
+      "category": "variable-specific",
+      "dataset": "CMIP6",
+      "relevant_chunk_ids": ["cmip6_tas_chunk_001", "cmip6_tas_chunk_042"],
+      "key_numbers": ["1.45", "2023"],
+      "difficulty": "easy",
+      "notes": "Should retrieve temperature (tas) chunks from CMIP6 dataset"
+    },
+    {
+      "id": "q002",
+      "query": "How does annual precipitation vary across Central Europe in the CRU dataset?",
+      "category": "spatial",
+      "dataset": "CRU",
+      "relevant_chunk_ids": ["cru_pre_chunk_012", "cru_pre_chunk_034", "cru_pre_chunk_035"],
+      "key_numbers": [],
+      "difficulty": "medium",
+      "notes": "Should retrieve precipitation chunks with Central European coordinates"
+    },
+    {
+      "id": "q003",
+      "query": "What is the spatial resolution of E-OBS temperature data?",
+      "category": "methodological",
+      "dataset": "E-OBS",
+      "relevant_chunk_ids": ["eobs_metadata_001", "eobs_tg_chunk_001"],
+      "key_numbers": ["0.1", "0.25"],
+      "difficulty": "easy",
+      "notes": "Should retrieve E-OBS metadata or temperature chunks mentioning resolution"
+    },
+    {
+      "id": "q004",
+      "query": "Compare temperature trends between CMIP6 SSP245 and SSP585 scenarios for Europe",
+      "category": "cross-variable",
+      "dataset": "CMIP6",
+      "relevant_chunk_ids": ["cmip6_tas_ssp245_chunk_010", "cmip6_tas_ssp585_chunk_010", "cmip6_tas_ssp245_chunk_011"],
+      "key_numbers": [],
+      "difficulty": "hard",
+      "notes": "Requires retrieving chunks from multiple scenarios — tests cross-scenario retrieval"
+    },
+    {
+      "id": "q005",
+      "query": "What precipitation datasets are available for the Czech Republic?",
+      "category": "spatial",
+      "dataset": null,
+      "relevant_chunk_ids": ["catalog_meta_cz_precip_001", "cru_pre_cz_chunk_001", "eobs_rr_cz_chunk_001"],
+      "key_numbers": [],
+      "difficulty": "medium",
+      "notes": "Should retrieve across multiple datasets, testing cross-dataset retrieval"
+    },
+    {
+      "id": "q006",
+      "query": "What is the maximum daily temperature recorded in the E-OBS dataset for summer 2022?",
+      "category": "temporal",
+      "dataset": "E-OBS",
+      "relevant_chunk_ids": ["eobs_tx_2022_chunk_001", "eobs_tx_2022_chunk_002"],
+      "key_numbers": ["2022"],
+      "difficulty": "hard",
+      "notes": "Temporal specificity test — needs chunks from the right time period"
+    },
+    {
+      "id": "q007",
+      "query": "Which climate hazards are covered in the D1.1 catalog?",
+      "category": "methodological",
+      "dataset": null,
+      "relevant_chunk_ids": ["catalog_meta_hazard_001", "catalog_meta_hazard_002", "catalog_meta_hazard_003"],
+      "key_numbers": [],
+      "difficulty": "easy",
+      "notes": "Should retrieve Phase 0 metadata-only chunks from catalog entries"
+    },
+    {
+      "id": "q008",
+      "query": "What is the mean sea level pressure trend over the North Atlantic?",
+      "category": "variable-specific",
+      "dataset": "CMIP6",
+      "relevant_chunk_ids": ["cmip6_psl_chunk_001", "cmip6_psl_chunk_015"],
+      "key_numbers": [],
+      "difficulty": "medium",
+      "notes": "Tests retrieval of less common variables (psl)"
+    },
+    {
+      "id": "q009",
+      "query": "How many ensemble members does the CMIP6 temperature dataset include?",
+      "category": "methodological",
+      "dataset": "CMIP6",
+      "relevant_chunk_ids": ["cmip6_metadata_001", "cmip6_tas_chunk_001"],
+      "key_numbers": [],
+      "difficulty": "medium",
+      "notes": "Metadata-level question — should find dataset description chunks"
+    },
+    {
+      "id": "q010",
+      "query": "What bias correction methods are applied to the climate projection data?",
+      "category": "methodological",
+      "dataset": null,
+      "relevant_chunk_ids": ["catalog_meta_bias_001", "catalog_meta_method_001"],
+      "key_numbers": [],
+      "difficulty": "hard",
+      "notes": "Abstract methodological query — tests retrieval beyond raw data chunks"
+    }
+  ]
+}

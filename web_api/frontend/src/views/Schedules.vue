@@ -3,33 +3,33 @@
     <!-- Header -->
     <div class="flex items-center justify-between">
       <div>
-        <h1 class="text-2xl font-bold text-white">Schedules</h1>
-        <p class="text-gray-400">Manage Dagster job schedules</p>
+        <h1 class="text-xl font-semibold text-white">Schedules</h1>
+        <p class="text-sm text-gray-500">Manage Dagster job schedules</p>
       </div>
       <button
         @click="refreshSchedules"
         :disabled="loading"
-        class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50"
+        class="px-3 py-1.5 text-sm bg-dark-hover text-gray-300 rounded-md hover:bg-gray-600 transition-colors disabled:opacity-50"
       >
         Refresh
       </button>
     </div>
 
     <!-- Schedules List -->
-    <div class="card">
-      <div v-if="schedules.length === 0 && !loading" class="text-center py-12">
-        <p class="text-gray-500 text-lg">No schedules found</p>
+    <div class="card !p-4">
+      <div v-if="schedules.length === 0 && !loading" class="text-center py-8">
+        <p class="text-gray-500 text-sm">No schedules found</p>
         <p class="text-gray-600 text-sm mt-2">Schedules are defined in dagster_project/schedules.py</p>
       </div>
-      <div v-for="schedule in schedules" :key="schedule.name" class="flex items-center justify-between py-4 border-b border-dark-border/50 last:border-0">
+      <div v-for="schedule in schedules" :key="schedule.name" class="flex items-center justify-between py-3 border-b border-dark-border/50 last:border-0">
         <div class="flex-1">
           <div class="flex items-center gap-3">
-            <h3 class="text-white font-medium">{{ schedule.name }}</h3>
+            <h3 class="text-white text-sm font-medium">{{ schedule.name }}</h3>
             <span class="px-2 py-0.5 rounded-full text-xs font-medium" :class="schedule.status === 'RUNNING' ? 'bg-green-500/20 text-green-400' : 'bg-gray-500/20 text-gray-400'">
               {{ schedule.status }}
             </span>
           </div>
-          <div class="flex gap-4 mt-1 text-sm text-gray-500">
+          <div class="flex gap-4 mt-1 text-xs text-gray-500">
             <span>Cron: <code class="text-gray-300">{{ schedule.cron_schedule }}</code></span>
             <span v-if="schedule.job_name">Job: {{ schedule.job_name }}</span>
             <span v-if="schedule.next_run">Next: {{ formatTime(schedule.next_run) }}</span>
@@ -38,7 +38,7 @@
         <div class="flex gap-2">
           <button
             @click="toggleSchedule(schedule.name, schedule.status !== 'RUNNING')"
-            class="px-3 py-1.5 rounded-lg text-sm transition-colors"
+            class="px-3 py-1.5 rounded-md text-xs transition-colors"
             :class="schedule.status === 'RUNNING' ? 'bg-red-600/20 text-red-400 hover:bg-red-600/40' : 'bg-green-600/20 text-green-400 hover:bg-green-600/40'"
           >
             {{ schedule.status === 'RUNNING' ? 'Disable' : 'Enable' }}
@@ -48,8 +48,8 @@
     </div>
 
     <!-- Schedule Help -->
-    <div class="card">
-      <h3 class="text-lg font-semibold text-white mb-3">Schedule Reference</h3>
+    <div class="card !p-4">
+      <h3 class="text-sm font-semibold text-white mb-3">Schedule Reference</h3>
       <div class="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
         <div>
           <h4 class="text-gray-400 mb-2">Common Cron Patterns</h4>

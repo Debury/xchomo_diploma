@@ -2,47 +2,44 @@
   <div class="space-y-6">
     <div class="flex items-center justify-between">
       <div>
-        <h1 class="text-2xl font-bold text-white">Data Sources</h1>
-        <p class="text-gray-400">Manage your climate data sources</p>
+        <h1 class="text-xl font-semibold text-white">Data Sources</h1>
+        <p class="text-sm text-gray-500">Manage your climate data sources</p>
       </div>
       <div class="flex gap-2">
         <button
           @click="loadSources()"
           :disabled="loading"
-          class="px-4 py-2 bg-dark-hover text-gray-300 rounded-lg hover:bg-gray-600 transition-colors disabled:opacity-50"
+          class="px-3 py-1.5 text-sm bg-dark-hover text-gray-300 rounded-md hover:bg-gray-600 transition-colors disabled:opacity-50"
           title="Refresh sources list"
         >
-          ↻ Refresh
+          Refresh
         </button>
       <div class="flex gap-2">
         <button
           @click="deleteAllSources"
-          class="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors"
+          class="px-3 py-1.5 text-sm bg-red-600 text-white rounded-md hover:bg-red-700 transition-colors"
           title="Delete all sources"
         >
-          🗑️ Clear All
+          Clear All
         </button>
         <router-link 
           to="/sources/create"
-          class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+          class="px-3 py-1.5 text-sm bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors"
         >
-          + Add Source
+          Add Source
         </router-link>
       </div>
       </div>
     </div>
 
     <!-- Sources Grid -->
-    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-      <div 
-        v-for="source in sources" 
+    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+      <div
+        v-for="source in sources"
         :key="source.name"
-        class="card hover:border-blue-500/50 transition-colors"
+        class="card !p-4 hover:border-blue-500/50 transition-colors"
       >
-        <div class="flex items-start justify-between mb-4">
-          <div class="w-12 h-12 rounded-lg bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center text-2xl">
-            {{ getSourceIcon(source.name) }}
-          </div>
+        <div class="flex items-start justify-between mb-3">
           <div class="flex flex-col gap-1 items-end">
             <span 
               class="px-2 py-1 rounded text-xs font-medium"
@@ -59,8 +56,8 @@
           </div>
         </div>
         
-        <div class="flex items-center gap-2 mb-2">
-          <h3 class="text-lg font-semibold text-white">{{ source.name }}</h3>
+        <div class="flex items-center gap-2 mb-1">
+          <h3 class="text-sm font-semibold text-white">{{ source.name }}</h3>
           <span
             v-if="isCatalogSource(source)"
             class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-purple-500/20 text-purple-400 border border-purple-500/30"
@@ -68,15 +65,15 @@
             D1.1
           </span>
         </div>
-        <p class="text-gray-400 text-sm mb-2">{{ source.description || 'No description' }}</p>
+        <p class="text-gray-500 text-xs mb-2">{{ source.description || 'No description' }}</p>
         
         <!-- Error message if processing failed -->
-        <div v-if="source.processing_status === 'failed' && source.error_message" 
+        <div v-if="source.processing_status === 'failed' && source.error_message"
              class="mb-2 p-2 bg-red-500/20 border border-red-500/30 rounded text-xs text-red-300">
-          ⚠️ {{ source.error_message }}
+          {{ source.error_message }}
         </div>
         
-        <div class="space-y-2 text-sm">
+        <div class="space-y-1 text-xs">
           <div class="flex justify-between">
             <span class="text-gray-500">Type:</span>
             <span class="text-gray-300">{{ source.type || 'Unknown' }}</span>
@@ -95,39 +92,38 @@
           </div>
         </div>
         
-        <div class="mt-4 pt-4 border-t border-dark-border flex space-x-2">
+        <div class="mt-3 pt-3 border-t border-dark-border flex space-x-2">
           <button 
             @click="viewDetails(source)"
-            class="flex-1 px-3 py-2 bg-dark-hover text-gray-300 rounded hover:bg-gray-600 transition-colors text-sm"
+            class="flex-1 px-3 py-1.5 bg-dark-hover text-gray-300 rounded-md hover:bg-gray-600 transition-colors text-xs"
           >
             Details
           </button>
           <button 
             @click="refreshSource(source)"
             :disabled="source.refreshing || source.processing_status === 'processing'"
-            class="flex-1 px-3 py-2 bg-dark-hover text-gray-300 rounded hover:bg-gray-600 transition-colors text-sm disabled:opacity-50 disabled:cursor-not-allowed"
+            class="flex-1 px-3 py-1.5 bg-dark-hover text-gray-300 rounded-md hover:bg-gray-600 transition-colors text-xs disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {{ source.refreshing ? 'Triggering...' : 'Refresh' }}
           </button>
           <button 
             @click="deleteSource(source)"
-            class="px-3 py-2 bg-red-600/20 text-red-400 rounded hover:bg-red-600/30 transition-colors text-sm"
+            class="px-3 py-1.5 bg-red-600/20 text-red-400 rounded-md hover:bg-red-600/30 transition-colors text-xs"
             title="Delete source"
           >
-            🗑️
+            Delete
           </button>
         </div>
       </div>
     </div>
 
     <!-- Empty State -->
-    <div v-if="!loading && sources.length === 0" class="card text-center py-12">
-      <div class="text-4xl mb-4">📁</div>
-      <h3 class="text-lg font-medium text-white mb-2">No Sources Configured</h3>
-      <p class="text-gray-400 mb-6">Add your first data source to get started</p>
-      <router-link 
+    <div v-if="!loading && sources.length === 0" class="card text-center py-8">
+      <h3 class="text-sm font-medium text-white mb-2">No Sources Configured</h3>
+      <p class="text-gray-500 text-xs mb-4">Add your first data source to get started</p>
+      <router-link
         to="/sources/create"
-        class="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors inline-block"
+        class="px-4 py-2 text-sm bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors inline-block"
       >
         Add Source
       </router-link>
@@ -141,8 +137,8 @@
     >
       <div class="bg-dark-card border border-dark-border rounded-xl p-6 max-w-2xl w-full mx-4 max-h-[80vh] overflow-y-auto">
         <div class="flex items-center justify-between mb-6">
-          <h2 class="text-xl font-bold text-white">{{ selectedSource.name }}</h2>
-          <button @click="selectedSource = null" class="text-gray-400 hover:text-white">✕</button>
+          <h2 class="text-lg font-semibold text-white">{{ selectedSource.name }}</h2>
+          <button @click="selectedSource = null" class="text-gray-400 hover:text-white text-sm">Close</button>
         </div>
         
         <div class="space-y-4">
@@ -214,13 +210,13 @@
                 @click="deleteSourceEmbeddings(selectedSource)"
                 class="w-full px-4 py-2 bg-yellow-600/20 text-yellow-400 rounded hover:bg-yellow-600/30 transition-colors text-sm"
               >
-                🗑️ Delete Embeddings for This Source
+                Delete Embeddings for This Source
               </button>
               <button
                 @click="deleteSource(selectedSource)"
                 class="w-full px-4 py-2 bg-red-600/20 text-red-400 rounded hover:bg-red-600/30 transition-colors text-sm"
               >
-                🗑️ Delete Source
+                Delete Source
               </button>
             </div>
           </div>
@@ -240,10 +236,10 @@ let statusPollInterval = null
 
 function getSourceIcon(name) {
   const icons = {
-    'ISIMP': '🌍',
-    'ERA5': '🌤️',
-    'CMIP': '📊',
-    'default': '📁'
+    'ISIMP': 'IS',
+    'ERA5': 'E5',
+    'CMIP': 'CM',
+    'default': 'DS'
   }
   return icons[name] || icons.default
 }
@@ -279,7 +275,7 @@ async function loadSources() {
   } catch (e) {
     console.error('Failed to load sources:', e)
     // Show error to user
-    alert(`Failed to load sources: ${e.message}`)
+    console.log(`Failed to load sources: ${e.message}`)
   } finally {
     loading.value = false
   }
@@ -310,15 +306,15 @@ function getStatusClass(status) {
 
 function getStatusLabel(status) {
   const labels = {
-    'success': '✓ Success',
-    'completed': '✓ Completed',
-    'metadata_only': '◉ Metadata Only',
-    'failed': '✗ Failed',
-    'error': '✗ Error',
-    'processing': '⟳ Processing',
-    'pending': '⏳ Pending'
+    'success': 'Success',
+    'completed': 'Completed',
+    'metadata_only': 'Metadata Only',
+    'failed': 'Failed',
+    'error': 'Error',
+    'processing': 'Processing',
+    'pending': 'Pending'
   }
-  return labels[status] || '⏳ Pending'
+  return labels[status] || 'Pending'
 }
 
 function formatDate(dateString) {
@@ -359,7 +355,7 @@ async function refreshSource(source) {
     source.error_message = null
     
     // Show success message
-    alert(`Pipeline triggered for ${source.name}!\nRun ID: ${result.run_id}\nStatus: ${result.status}`)
+    console.log(`Pipeline triggered for ${source.name}, run ID: ${result.run_id}, status: ${result.status}`)
     
     // Reload sources after a short delay to get updated status
     setTimeout(() => {
@@ -368,14 +364,14 @@ async function refreshSource(source) {
     
   } catch (e) {
     console.error('Error triggering pipeline:', e)
-    alert(`Error triggering pipeline: ${e.message}`)
+    console.log(`Error triggering pipeline: ${e.message}`)
   } finally {
     source.refreshing = false
   }
 }
 
 async function deleteSource(source) {
-  if (!confirm(`⚠️ Delete source "${source.name}"?\n\nThis will permanently delete the source configuration.`)) {
+  if (!confirm(`Delete source "${source.name}"?\n\nThis will permanently delete the source configuration.`)) {
     return
   }
   
@@ -389,19 +385,19 @@ async function deleteSource(source) {
       throw new Error(errorData.detail || `HTTP ${resp.status}: ${resp.statusText}`)
     }
     
-    alert(`✅ Source "${source.name}" deleted successfully!`)
+    console.log(`Source "${source.name}" deleted successfully`)
     await loadSources()
     if (selectedSource.value && selectedSource.value.source_id === source.source_id) {
       selectedSource.value = null
     }
   } catch (e) {
     console.error('Error deleting source:', e)
-    alert(`❌ Error: ${e.message}`)
+    console.log(`Error: ${e.message}`)
   }
 }
 
 async function deleteSourceEmbeddings(source) {
-  if (!confirm(`⚠️ Delete all embeddings for source "${source.name}"?\n\nThis will permanently delete all embeddings from Qdrant for this source. This cannot be undone!`)) {
+  if (!confirm(`Delete all embeddings for source "${source.name}"?\n\nThis will permanently delete all embeddings from Qdrant for this source. This cannot be undone.`)) {
     return
   }
   
@@ -416,11 +412,11 @@ async function deleteSourceEmbeddings(source) {
     }
     
     const result = await resp.json()
-    alert(`✅ ${result.message}`)
+    console.log(result.message)
     await loadSources()
   } catch (e) {
     console.error('Error deleting embeddings:', e)
-    alert(`❌ Error: ${e.message}`)
+    console.log(`Error: ${e.message}`)
   }
 }
 
@@ -442,10 +438,10 @@ function stopStatusPolling() {
 }
 
 async function deleteAllSources() {
-  const deleteEmbeddings = confirm('⚠️ This will delete ALL sources.\n\nDo you also want to delete embeddings from Qdrant?')
+  const deleteEmbeddings = confirm('This will delete ALL sources.\n\nDo you also want to delete embeddings from Qdrant?')
   const confirmMsg = deleteEmbeddings
-    ? '⚠️ This will permanently delete ALL sources AND their embeddings. This cannot be undone!\n\nAre you absolutely sure?'
-    : '⚠️ This will permanently delete ALL sources. This cannot be undone!\n\nAre you sure?'
+    ? 'This will permanently delete ALL sources AND their embeddings. This cannot be undone.\n\nAre you sure?'
+    : 'This will permanently delete ALL sources. This cannot be undone.\n\nAre you sure?'
   
   if (confirm(confirmMsg)) {
     try {
@@ -459,13 +455,13 @@ async function deleteAllSources() {
       }
       
       const result = await resp.json()
-      alert(`✅ Successfully deleted ${result.sources_deleted} source(s)${deleteEmbeddings ? ' and embeddings' : ''}!`)
+      console.log(`Deleted ${result.sources_deleted} source(s)${deleteEmbeddings ? ' and embeddings' : ''}`)
       
       // Refresh sources list
       await loadSources()
     } catch (e) {
       console.error('Error deleting sources:', e)
-      alert(`❌ Error: ${e.message}`)
+      console.log(`Error: ${e.message}`)
     }
   }
 }

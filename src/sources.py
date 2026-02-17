@@ -5,7 +5,8 @@ from typing import List, Optional, Dict, Any
 from pathlib import Path
 
 # Define DB path in a shared volume location
-DB_PATH = os.getenv("SOURCE_DB_PATH", "/app/data/sources_db")
+_DEFAULT_DB = str(Path(__file__).resolve().parent.parent / "data" / "sources_db")
+DB_PATH = os.getenv("SOURCE_DB_PATH", _DEFAULT_DB)
 
 @dataclass
 class ClimateDataSource:

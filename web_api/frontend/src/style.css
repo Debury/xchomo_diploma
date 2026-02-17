@@ -4,27 +4,31 @@
 
 @layer base {
   body {
-    @apply bg-dark-bg text-gray-100 min-h-screen;
+    @apply bg-dark-bg text-gray-100 min-h-screen antialiased;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
   }
 }
 
 @layer components {
   .btn-primary {
-    @apply px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg transition-colors;
+    @apply px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-md transition-colors;
   }
   .btn-secondary {
-    @apply px-4 py-2 bg-dark-hover hover:bg-gray-600 text-gray-200 font-medium rounded-lg transition-colors;
+    @apply px-3 py-1.5 bg-dark-hover hover:bg-gray-600 text-gray-300 text-sm font-medium rounded-md transition-colors;
   }
   .input-field {
-    @apply w-full px-4 py-2 bg-dark-bg border border-dark-border rounded-lg text-gray-100 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all;
+    @apply w-full px-3 py-1.5 bg-dark-bg border border-dark-border rounded-md text-sm text-gray-100 placeholder-gray-600 focus:outline-none focus:ring-1 focus:ring-gray-500 focus:border-gray-500 transition-all;
   }
   .card {
-    @apply bg-dark-card rounded-xl border border-dark-border p-6;
+    @apply bg-dark-card rounded-lg border border-dark-border p-5;
   }
 }
 
-/* Custom scrollbar */
-::-webkit-scrollbar { width: 6px; }
-::-webkit-scrollbar-track { background: #1e293b; }
-::-webkit-scrollbar-thumb { background: #475569; border-radius: 3px; }
-::-webkit-scrollbar-thumb:hover { background: #64748b; }
+/* Scrollbar */
+::-webkit-scrollbar { width: 5px; height: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #334155; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #475569; }
+
+/* Table rows */
+table tbody tr { font-variant-numeric: tabular-nums; }

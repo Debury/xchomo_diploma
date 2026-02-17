@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 _CACHE = {}
 
 class TextEmbedder:
-    def __init__(self, model_name="BAAI/bge-large-en-v1.5"):
+    def __init__(self, model_name="BAAI/bge-m3"):
         self.name = model_name
         if model_name in _CACHE:
             self.model = _CACHE[model_name]
@@ -17,7 +17,7 @@ class TextEmbedder:
             logger.info(f"Loading {model_name}...")
             self.model = SentenceTransformer(model_name)
             _CACHE[model_name] = self.model
-        
+
         self.instruction = "Represent this sentence for searching relevant passages: " if "bge" in model_name else ""
 
     def embed_queries(self, queries: List[str]):

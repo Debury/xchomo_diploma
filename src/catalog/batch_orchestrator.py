@@ -4,15 +4,19 @@ Batch orchestrator for processing catalog entries across all phases.
 Supports resume (via JSON state file), dry-run, and phase filtering.
 """
 
+import gc
 import json
 import logging
 import os
 import time
 import traceback
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Any
+
+import numpy as np
 
 from src.catalog.excel_reader import CatalogEntry, read_catalog
 from src.catalog.phase_classifier import classify_source, classify_all
@@ -221,6 +225,27 @@ class BatchProgress:
         # Legacy fallback
         return entry.get("status", "pending")
 
+    def mark_interrupted(self) -> int:
+        """Reset all 'processing' entries back to 'pending' (for crash recovery).
+
+        Returns:
+            Number of entries reset.
+        """
+        count = 0
+        for sid, info in self.sources.items():
+            if info.get("status") == "processing":
+                info["status"] = "pending"
+                count += 1
+            phases = info.get("phases", {})
+            for p, status in list(phases.items()):
+                if status == "processing":
+                    phases[p] = "pending"
+                    if info.get("status") != "pending":
+                        info["status"] = "pending"
+                        count += 1
+        self.updated_at = datetime.now().isoformat()
+        return count
+
     def get_summary(self) -> Dict[str, Any]:
         pending = self.total - self.processed - self.failed - self.skipped
         # Build per-phase breakdown from sources dict
@@ -380,6 +405,50 @@ def _run_phase_0(
     return {"processed": processed, "failed": failed, "skipped": len(entries) - len(to_process)}
 
 
+# --- Retry & resource guard settings ---
+MAX_RETRIES = 3
+RETRY_BACKOFF = [5, 10, 20]  # seconds between attempts
+
+MEMORY_WARN_PCT = 85   # trigger GC + wait
+MEMORY_ABORT_PCT = 90  # stop batch if still above after GC
+
+RASTER_TIMEOUT_SEC = 15 * 60  # 15 minutes for load + embed
+
+
+def _check_memory_pressure() -> bool:
+    """Return True if it's safe to continue, False if batch should stop.
+
+    On high memory (>85 %): force GC, wait 30 s, re-check.
+    If still >90 % after GC → return False (caller should stop).
+    """
+    try:
+        import psutil
+    except ImportError:
+        return True  # psutil not installed — skip guard
+
+    mem = psutil.virtual_memory()
+    if mem.percent <= MEMORY_WARN_PCT:
+        return True
+
+    catalog_logger.warning(
+        f"Memory pressure high ({mem.percent:.0f}% used). "
+        f"Running gc.collect() and waiting 30 s …"
+    )
+    gc.collect()
+    time.sleep(30)
+
+    mem = psutil.virtual_memory()
+    if mem.percent > MEMORY_ABORT_PCT:
+        catalog_logger.error(
+            f"Memory still critical ({mem.percent:.0f}% used) after GC. "
+            f"Stopping batch to prevent OOM."
+        )
+        return False
+
+    catalog_logger.info(f"Memory dropped to {mem.percent:.0f}% after GC — continuing.")
+    return True
+
+
 FORMAT_TO_EXT = {
     "netcdf": ".nc", "grib": ".grib", "hdf5": ".h5",
     "geotiff": ".tif", "csv": ".csv", "zip": ".zip", "gz": ".gz",
@@ -398,7 +467,7 @@ def _run_phase_download(
 ) -> Dict[str, int]:
     """Run Phase 1/2: download + process + embed."""
     from src.climate_embeddings.embeddings.text_models import TextEmbedder
-    from src.climate_embeddings.loaders.raster_pipeline import load_raster_auto, raster_to_embeddings
+    from src.climate_embeddings.loaders.raster_pipeline import load_raster_auto
     from src.climate_embeddings.schema import ClimateChunkMetadata, generate_human_readable_text
     from src.embeddings.database import VectorDatabase
     from src.utils.config_loader import ConfigLoader
@@ -429,160 +498,248 @@ def _run_phase_download(
             skipped += 1
             continue
 
+        # --- Memory guard ---
+        if not _check_memory_pressure():
+            catalog_logger.error("Batch stopped due to memory pressure. Remaining entries stay pending.")
+            progress.save(progress_path)
+            break
+
         progress.mark_started(entry.source_id, entry.dataset_name or "unknown", phase)
 
-        tmp_path = None
-        try:
-            # Use direct download URL override if available, otherwise use catalog link
-            url = DIRECT_DOWNLOAD_URLS.get(entry.dataset_name, entry.link).strip()
-            if url != entry.link.strip():
-                catalog_logger.info(f"Phase {phase}: using override URL for {entry.dataset_name}")
+        # --- Per-entry retry loop ---
+        entry_succeeded = False
+        last_error = ""
 
-            # --- Size guard: HEAD request to check Content-Length ---
+        for attempt in range(1, MAX_RETRIES + 1):
+            tmp_path = None
             try:
-                head_resp = http_requests.head(url, timeout=30, allow_redirects=True,
-                                               headers={"User-Agent": "ClimateRAG/1.0"})
-                content_length = int(head_resp.headers.get("Content-Length", 0))
-                max_size = MAX_DOWNLOAD_SIZE_MB * 1024 * 1024
-                if content_length > max_size:
-                    msg = f"File too large: {content_length / 1e9:.1f} GB (limit: {max_size / 1e9:.1f} GB)"
-                    progress.mark_failed(entry.source_id, msg, phase=phase)
-                    catalog_logger.warning(f"Skipping {entry.dataset_name}: {msg}")
-                    failed += 1
-                    continue
-            except Exception as head_err:
-                catalog_logger.warning(f"HEAD check failed for {entry.dataset_name}: {head_err} — proceeding anyway")
+                if attempt > 1:
+                    backoff = RETRY_BACKOFF[min(attempt - 2, len(RETRY_BACKOFF) - 1)]
+                    catalog_logger.info(
+                        f"Phase {phase}: retry {attempt}/{MAX_RETRIES} for "
+                        f"{entry.dataset_name} after {backoff}s backoff"
+                    )
+                    time.sleep(backoff)
+                else:
+                    catalog_logger.info(
+                        f"Phase {phase}: attempt {attempt}/{MAX_RETRIES} for {entry.dataset_name}"
+                    )
 
-            # --- Disk space guard ---
-            import shutil
-            try:
-                free_bytes = shutil.disk_usage("/app/data").free
-            except OSError:
-                free_bytes = shutil.disk_usage(".").free
-            if free_bytes < 5 * 1024**3:  # Less than 5 GB free
-                catalog_logger.error(
-                    f"Disk space critically low ({free_bytes / 1e9:.1f} GB free). Stopping downloads."
-                )
-                progress.save(progress_path)
-                break
+                # Use direct download URL override if available, otherwise use catalog link
+                url = DIRECT_DOWNLOAD_URLS.get(entry.dataset_name, entry.link).strip()
+                if url != entry.link.strip():
+                    catalog_logger.info(f"Phase {phase}: using override URL for {entry.dataset_name}")
 
-            # Download to temp file
-            logger.info(f"Phase {phase}: downloading {entry.dataset_name} from {url}")
+                # --- Size guard: HEAD request to check Content-Length ---
+                try:
+                    head_resp = http_requests.head(url, timeout=30, allow_redirects=True,
+                                                   headers={"User-Agent": "ClimateRAG/1.0"})
+                    content_length = int(head_resp.headers.get("Content-Length", 0))
+                    max_size = MAX_DOWNLOAD_SIZE_MB * 1024 * 1024
+                    if content_length > max_size:
+                        msg = f"File too large: {content_length / 1e9:.1f} GB (limit: {max_size / 1e9:.1f} GB)"
+                        last_error = msg
+                        catalog_logger.warning(f"Skipping {entry.dataset_name}: {msg}")
+                        break  # No point retrying a size issue
+                except Exception as head_err:
+                    catalog_logger.warning(f"HEAD check failed for {entry.dataset_name}: {head_err} — proceeding anyway")
 
-            resp = http_requests.get(url, timeout=600, stream=True,
-                                     headers={"User-Agent": "ClimateRAG/1.0"})
-            resp.raise_for_status()
+                # --- Disk space guard ---
+                import shutil
+                try:
+                    free_bytes = shutil.disk_usage("/app/data").free
+                except OSError:
+                    free_bytes = shutil.disk_usage(".").free
+                if free_bytes < 5 * 1024**3:  # Less than 5 GB free
+                    catalog_logger.error(
+                        f"Disk space critically low ({free_bytes / 1e9:.1f} GB free). Stopping downloads."
+                    )
+                    progress.save(progress_path)
+                    return {"processed": processed, "failed": failed, "skipped": skipped}
 
-            # Check Content-Type before downloading body
-            content_type = resp.headers.get("Content-Type", "").lower()
-            if "text/html" in content_type:
-                raise ValueError(
-                    f"Server returned HTML (Content-Type: {content_type}). "
-                    "URL is likely a portal page, not a direct file download."
-                )
+                # Download to temp file
+                logger.info(f"Phase {phase}: downloading {entry.dataset_name} from {url}")
 
-            # Detect extension from URL — map format name to proper file extension
-            from src.climate_embeddings.loaders.detect_format import detect_format_from_url
-            fmt = detect_format_from_url(url)
-            ext = FORMAT_TO_EXT.get(fmt, ".nc")
+                resp = http_requests.get(url, timeout=600, stream=True,
+                                         headers={"User-Agent": "ClimateRAG/1.0"})
+                resp.raise_for_status()
 
-            with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
-                bytes_written = 0
-                max_bytes = MAX_DOWNLOAD_SIZE_MB * 1024 * 1024
-                for chunk in resp.iter_content(chunk_size=8192):
-                    bytes_written += len(chunk)
-                    if bytes_written > max_bytes:
-                        raise ValueError(
-                            f"Download exceeded {MAX_DOWNLOAD_SIZE_MB} MB limit "
-                            f"(streamed {bytes_written / 1e6:.0f} MB so far)"
+                # Check Content-Type before downloading body
+                content_type = resp.headers.get("Content-Type", "").lower()
+                if "text/html" in content_type:
+                    raise ValueError(
+                        f"Server returned HTML (Content-Type: {content_type}). "
+                        "URL is likely a portal page, not a direct file download."
+                    )
+
+                # Detect extension from URL — map format name to proper file extension
+                from src.climate_embeddings.loaders.detect_format import detect_format_from_url
+                fmt = detect_format_from_url(url)
+                ext = FORMAT_TO_EXT.get(fmt, ".nc")
+
+                with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
+                    bytes_written = 0
+                    max_bytes = MAX_DOWNLOAD_SIZE_MB * 1024 * 1024
+                    for chunk in resp.iter_content(chunk_size=8192):
+                        bytes_written += len(chunk)
+                        if bytes_written > max_bytes:
+                            raise ValueError(
+                                f"Download exceeded {MAX_DOWNLOAD_SIZE_MB} MB limit "
+                                f"(streamed {bytes_written / 1e6:.0f} MB so far)"
+                            )
+                        tmp.write(chunk)
+                    tmp_path = tmp.name
+
+                # --- Post-download content validation: detect HTML login pages ---
+                with open(tmp_path, "rb") as f:
+                    head_bytes = f.read(512)
+                head_text = head_bytes.decode("utf-8", errors="ignore").lower().strip()
+                if any(tag in head_text for tag in ["<!doctype", "<html", "<head", "<body", "<?xml"]):
+                    raise ValueError(
+                        "Downloaded file contains HTML/XML (likely a login/redirect page, not data). "
+                        "This dataset probably requires authentication."
+                    )
+
+                # --- Load raster with timeout ---
+                def _load_raster():
+                    return load_raster_auto(tmp_path)
+
+                with ThreadPoolExecutor(max_workers=1) as executor:
+                    future = executor.submit(_load_raster)
+                    try:
+                        raster_result = future.result(timeout=RASTER_TIMEOUT_SEC)
+                    except FuturesTimeoutError:
+                        future.cancel()
+                        raise TimeoutError(
+                            f"Raster loading timed out after {RASTER_TIMEOUT_SEC // 60} min "
+                            f"for {entry.dataset_name}"
                         )
-                    tmp.write(chunk)
-                tmp_path = tmp.name
 
-            # --- Post-download content validation: detect HTML login pages ---
-            with open(tmp_path, "rb") as f:
-                head_bytes = f.read(512)
-            head_text = head_bytes.decode("utf-8", errors="ignore").lower().strip()
-            if any(tag in head_text for tag in ["<!doctype", "<html", "<head", "<body", "<?xml"]):
-                raise ValueError(
-                    "Downloaded file contains HTML/XML (likely a login/redirect page, not data). "
-                    "This dataset probably requires authentication."
+                # --- Stream chunks through batched embed + upsert ---
+                # Accumulate texts, embed entire batch on GPU at once (10-20x faster),
+                # then upsert to Qdrant.  Prevents OOM on large files.
+                UPSERT_BATCH_SIZE = 500
+                batch_ids: list = []
+                batch_texts: list = []
+                batch_metadatas: list = []
+                total_chunks = 0
+
+                def _flush_batch():
+                    """Embed all texts in one GPU call, then upsert to Qdrant."""
+                    if not batch_ids:
+                        return
+                    vecs = embedder.embed_documents(batch_texts)
+                    db.add_embeddings(
+                        ids=batch_ids,
+                        embeddings=[v.tolist() for v in vecs],
+                        metadatas=batch_metadatas,
+                    )
+                    catalog_logger.info(
+                        f"Phase {phase}: {entry.dataset_name} — "
+                        f"upserted batch ({total_chunks} chunks so far)"
+                    )
+                    batch_ids.clear()
+                    batch_texts.clear()
+                    batch_metadatas.clear()
+                    gc.collect()
+
+                for chunk in raster_result.chunk_iterator:
+                    data = chunk.data
+                    valid = data[np.isfinite(data)]
+                    if valid.size == 0:
+                        continue
+
+                    # 8-dim stats vector
+                    mn = float(np.min(valid))
+                    mx = float(np.max(valid))
+                    stats = [
+                        float(np.mean(valid)), float(np.std(valid)),
+                        mn, mx,
+                        float(np.percentile(valid, 10)),
+                        float(np.percentile(valid, 50)),
+                        float(np.percentile(valid, 90)),
+                        mx - mn,
+                    ]
+
+                    meta = ClimateChunkMetadata.from_chunk_metadata(
+                        raw_metadata=chunk.metadata,
+                        stats_vector=stats,
+                        source_id=entry.source_id,
+                        dataset_name=entry.dataset_name,
+                    )
+                    meta_dict = meta.to_dict()
+
+                    # Add catalog metadata
+                    meta_dict["catalog_source"] = "D1.1.xlsx"
+                    if entry.hazard:
+                        meta_dict["hazard_type"] = entry.hazard
+                    if entry.impact_sector:
+                        meta_dict["impact_sector"] = entry.impact_sector
+                    if entry.region_country:
+                        meta_dict["location_name"] = entry.region_country
+
+                    text = generate_human_readable_text(meta_dict)
+
+                    batch_ids.append(f"{entry.source_id}_chunk_{total_chunks}")
+                    batch_texts.append(text)
+                    batch_metadatas.append(meta_dict)
+                    total_chunks += 1
+
+                    # Flush batch: embed all 500 texts in one GPU call, then upsert
+                    if len(batch_ids) >= UPSERT_BATCH_SIZE:
+                        _flush_batch()
+
+                # Flush remaining
+                _flush_batch()
+
+                if total_chunks == 0:
+                    raise ValueError(
+                        f"Loader produced 0 data chunks from {url} — file may be corrupt, "
+                        f"unsupported format, or xarray engine failed (check logs for details)"
+                    )
+
+                progress.mark_completed(entry.source_id, phase=phase)
+                processed += 1
+                entry_succeeded = True
+                catalog_logger.info(
+                    f"Phase {phase}: completed {entry.dataset_name} "
+                    f"({total_chunks} chunks, attempt {attempt}/{MAX_RETRIES})"
                 )
 
-            # Load and process
-            result = load_raster_auto(tmp_path)
-            embeddings_data = raster_to_embeddings(result)
+                # Update shelve SourceStore status
+                try:
+                    from src.sources import get_source_store
+                    store = get_source_store()
+                    store.update_processing_status(entry.source_id, "completed")
+                except Exception as store_err:
+                    catalog_logger.warning(f"Could not update SourceStore for {entry.source_id}: {store_err}")
 
-            if not embeddings_data:
-                raise ValueError(
-                    f"Loader produced 0 data chunks from {url} — file may be corrupt, "
-                    f"unsupported format, or xarray engine failed (check logs for details)"
+                break  # Success — exit retry loop
+
+            except Exception as e:
+                last_error = str(e)
+                tb_str = traceback.format_exc()
+                catalog_logger.warning(
+                    f"Phase {phase}: attempt {attempt}/{MAX_RETRIES} FAILED for "
+                    f"{entry.dataset_name}: {e}\n{tb_str}"
                 )
 
-            # Generate text embeddings and collect for batched upsert
-            all_ids = []
-            all_embeddings = []
-            all_metadatas = []
+            finally:
+                # Always clean up temp file
+                if tmp_path:
+                    Path(tmp_path).unlink(missing_ok=True)
 
-            for j, emb_data in enumerate(embeddings_data):
-                meta = ClimateChunkMetadata.from_chunk_metadata(
-                    raw_metadata=emb_data["metadata"],
-                    stats_vector=emb_data["vector"],
-                    source_id=entry.source_id,
-                    dataset_name=entry.dataset_name,
-                )
-                meta_dict = meta.to_dict()
-
-                # Add catalog metadata
-                meta_dict["catalog_source"] = "D1.1.xlsx"
-                if entry.hazard:
-                    meta_dict["hazard_type"] = entry.hazard
-                if entry.impact_sector:
-                    meta_dict["impact_sector"] = entry.impact_sector
-                if entry.region_country:
-                    meta_dict["location_name"] = entry.region_country
-
-                text = generate_human_readable_text(meta_dict)
-                text_embedding = embedder.embed_documents([text])[0]
-
-                all_ids.append(f"{entry.source_id}_chunk_{j}")
-                all_embeddings.append(text_embedding.tolist())
-                all_metadatas.append(meta_dict)
-
-            # Batched upsert (database.py handles chunking + retry)
-            db.add_embeddings(
-                ids=all_ids,
-                embeddings=all_embeddings,
-                metadatas=all_metadatas,
+        # All retries exhausted
+        if not entry_succeeded:
+            progress.mark_failed(entry.source_id, last_error, phase=phase)
+            failed += 1
+            catalog_logger.error(
+                f"Phase {phase}: FAILED {entry.dataset_name} after {MAX_RETRIES} attempts: {last_error}"
             )
 
-            progress.mark_completed(entry.source_id, phase=phase)
-            processed += 1
-            catalog_logger.info(f"Phase {phase}: completed {entry.dataset_name} ({len(embeddings_data)} chunks)")
+        # Save after every entry (Phase 1 entries are expensive, don't lose progress)
+        progress.save(progress_path)
 
-            # Update shelve SourceStore status
-            try:
-                from src.sources import get_source_store
-                store = get_source_store()
-                store.update_processing_status(entry.source_id, "completed")
-            except Exception as store_err:
-                catalog_logger.warning(f"Could not update SourceStore for {entry.source_id}: {store_err}")
-
-        except Exception as e:
-            tb = traceback.format_exc()
-            progress.mark_failed(entry.source_id, str(e), phase=phase)
-            failed += 1
-            catalog_logger.error(f"Phase {phase}: FAILED {entry.dataset_name}: {e}\n{tb}")
-
-        finally:
-            # Always clean up temp file
-            if tmp_path:
-                Path(tmp_path).unlink(missing_ok=True)
-
-        if (processed + failed) % 5 == 0:
-            progress.save(progress_path)
-
-    progress.save(progress_path)
     return {"processed": processed, "failed": failed, "skipped": skipped}
 
 

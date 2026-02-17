@@ -1384,6 +1384,17 @@ class CatalogProgressResponse(BaseModel):
     current_source: Optional[str] = None
     started_at: Optional[str] = None
     updated_at: Optional[str] = None
+    thread_alive: bool = False
+    thread_crashed: bool = False
+    thread_error: Optional[str] = None
+
+
+# --- Module-level batch thread tracking ---
+import threading as _threading
+
+_batch_thread: Optional[_threading.Thread] = None
+_batch_thread_error: Optional[str] = None
+_batch_thread_phases: Optional[List[int]] = None
 
 
 @app.get("/catalog", response_model=List[CatalogEntryResponse])
@@ -1430,12 +1441,33 @@ async def list_catalog():
 @app.post("/catalog/process")
 async def trigger_catalog_processing(request: CatalogProcessRequest):
     """Trigger batch processing of catalog entries."""
-    import threading
+    global _batch_thread, _batch_thread_error, _batch_thread_phases
 
     try:
         from src.catalog.batch_orchestrator import run_batch_pipeline
 
+        if request.dry_run:
+            result = run_batch_pipeline(
+                excel_path=CATALOG_EXCEL_PATH,
+                phases=request.phases,
+                dry_run=True,
+            )
+            return result
+
+        # Prevent duplicate batch starts
+        if _batch_thread is not None and _batch_thread.is_alive():
+            raise HTTPException(
+                409,
+                "Batch processing is already running. "
+                "Check /catalog/progress for status.",
+            )
+
+        # Reset crash state
+        _batch_thread_error = None
+        _batch_thread_phases = request.phases
+
         def _run_in_background():
+            global _batch_thread_error
             try:
                 run_batch_pipeline(
                     excel_path=CATALOG_EXCEL_PATH,
@@ -1446,41 +1478,47 @@ async def trigger_catalog_processing(request: CatalogProcessRequest):
             except Exception as e:
                 import traceback
                 tb = traceback.format_exc()
+                _batch_thread_error = f"{e}\n{tb}"
                 logger.error(f"Background catalog processing failed: {e}\n{tb}")
-                # Also write to persistent log
                 from src.utils.logger import setup_logger
                 cl = setup_logger("catalog_pipeline", "logs/catalog_pipeline.log", "INFO")
                 cl.error(f"BACKGROUND THREAD CRASHED: {e}\n{tb}")
 
-        if request.dry_run:
-            # Dry run: execute synchronously and return result
-            from src.catalog.batch_orchestrator import run_batch_pipeline
-            result = run_batch_pipeline(
-                excel_path=CATALOG_EXCEL_PATH,
-                phases=request.phases,
-                dry_run=True,
-            )
-            return result
-
-        # Start processing in background thread
-        thread = threading.Thread(target=_run_in_background, daemon=True)
-        thread.start()
+        _batch_thread = _threading.Thread(
+            target=_run_in_background, daemon=True, name="catalog-batch"
+        )
+        _batch_thread.start()
 
         return {
             "status": "started",
             "phases": request.phases,
             "message": f"Catalog processing started for phases {request.phases}",
         }
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(500, str(e))
 
 
 @app.get("/catalog/progress", response_model=CatalogProgressResponse)
 async def get_catalog_progress():
-    """Get current batch processing progress."""
+    """Get current batch processing progress, including thread health."""
     try:
         from src.catalog.batch_orchestrator import get_progress
-        return get_progress()
+        data = get_progress()
+
+        thread_alive = _batch_thread is not None and _batch_thread.is_alive()
+        thread_crashed = (
+            _batch_thread is not None
+            and not _batch_thread.is_alive()
+            and _batch_thread_error is not None
+        )
+
+        data["thread_alive"] = thread_alive
+        data["thread_crashed"] = thread_crashed
+        data["thread_error"] = _batch_thread_error if thread_crashed else None
+
+        return data
     except Exception as e:
         logger.error(f"Failed to get progress: {e}")
         return CatalogProgressResponse()
@@ -1529,6 +1567,67 @@ async def retry_failed_catalog():
         thread.start()
 
         return {"status": "started", "message": "Retrying failed sources in background"}
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
+@app.post("/catalog/auto-restart")
+async def auto_restart_catalog():
+    """Detect crashed batch, reset interrupted entries, and restart processing.
+
+    - Resets any 'processing' entries back to 'pending'.
+    - Auto-detects which phases were running from the interrupted progress state.
+    - Returns 409 if a batch is already running.
+    """
+    global _batch_thread, _batch_thread_error, _batch_thread_phases
+
+    if _batch_thread is not None and _batch_thread.is_alive():
+        raise HTTPException(
+            409, "Batch thread is still alive — no restart needed."
+        )
+
+    try:
+        from src.catalog.batch_orchestrator import BatchProgress, run_batch_pipeline
+
+        progress = BatchProgress.load()
+        reset_count = progress.mark_interrupted()
+        progress.save()
+
+        # Determine which phases to restart
+        phases = _batch_thread_phases or [0, 1]
+        # Also check progress state for the interrupted phase
+        if progress.current_phase is not None and progress.current_phase not in phases:
+            phases = sorted(set(phases) | {progress.current_phase})
+
+        _batch_thread_error = None
+
+        def _run_in_background():
+            global _batch_thread_error
+            try:
+                run_batch_pipeline(
+                    excel_path=CATALOG_EXCEL_PATH,
+                    phases=phases,
+                    resume=True,
+                )
+            except Exception as e:
+                import traceback
+                tb = traceback.format_exc()
+                _batch_thread_error = f"{e}\n{tb}"
+                logger.error(f"Auto-restart batch failed: {e}\n{tb}")
+
+        _batch_thread = _threading.Thread(
+            target=_run_in_background, daemon=True, name="catalog-batch-restart"
+        )
+        _batch_thread.start()
+
+        return {
+            "status": "restarted",
+            "entries_reset": reset_count,
+            "phases": phases,
+            "message": f"Reset {reset_count} interrupted entries and restarted phases {phases}",
+        }
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(500, str(e))
 

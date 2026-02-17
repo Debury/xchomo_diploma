@@ -329,14 +329,48 @@ def _load_xarray_generic(path: Path, engine: Optional[str] = None, **kwargs) -> 
             if hasattr(ds, 'attrs'):
                 ds_attrs = dict(ds.attrs)
             
-            # Iterate
+            # --- Pre-load strategy: load entire variable into RAM once ---
+            # This avoids 10-100K individual dask.compute() calls (huge overhead).
+            # Falls back to per-chunk compute if the variable doesn't fit in memory.
+            var_data_np = None
+            try:
+                var_nbytes = da_var.nbytes
+
+                # Dynamic threshold: use at most 30% of *available* RAM,
+                # capped at 2 GB absolute, so future large datasets degrade
+                # gracefully instead of OOM-crashing.
+                max_preload = 2 * 1024**3  # 2 GB absolute cap
+                try:
+                    import psutil
+                    avail = psutil.virtual_memory().available
+                    max_preload = min(max_preload, int(avail * 0.3))
+                except ImportError:
+                    pass  # psutil not installed — use absolute cap
+
+                if var_nbytes < max_preload:
+                    logger.info(
+                        f"Pre-loading {var} ({var_nbytes / 1e6:.0f} MB) into RAM for fast slicing"
+                    )
+                    var_data_np = da_var.values  # single read, decompresses everything
+                else:
+                    logger.info(
+                        f"Variable {var} ({var_nbytes / 1e6:.0f} MB) exceeds pre-load limit "
+                        f"({max_preload / 1e6:.0f} MB avail), using per-chunk dask compute"
+                    )
+            except MemoryError:
+                logger.warning(f"MemoryError pre-loading {var}, falling back to per-chunk")
+                var_data_np = None
+            except Exception as preload_err:
+                logger.warning(f"Pre-load failed for {var}: {preload_err}, falling back to per-chunk")
+
+            # Iterate over chunk slices
             for slices in da.core.slices_from_chunks(da_chunked.chunks):
                 meta = {
                     "variable": str(var),
                     "source": str(path.name),
                     "format": "netcdf" if path.suffix.lower() in {'.nc', '.nc4', '.hdf', '.h5'} else "grib"
                 }
-                
+
                 # Store ALL variable attributes (no hardcoding - works for ANY dataset)
                 for attr_key, attr_val in var_attrs.items():
                     # Skip internal/technical attributes
@@ -351,7 +385,7 @@ def _load_xarray_generic(path: Path, engine: Optional[str] = None, **kwargs) -> 
                             meta[attr_key] = str(attr_val)
                     except:
                         meta[attr_key] = str(attr_val)
-                
+
                 # Store ALL dataset-level attributes
                 for attr_key, attr_val in ds_attrs.items():
                     if attr_key.startswith('_'):
@@ -363,7 +397,7 @@ def _load_xarray_generic(path: Path, engine: Optional[str] = None, **kwargs) -> 
                             meta[f"dataset_{attr_key}"] = str(attr_val)
                     except:
                         meta[f"dataset_{attr_key}"] = str(attr_val)
-                
+
                 # Extract ALL coordinate dimensions (no hardcoding - detect by value, not name)
                 for dim, sl in zip(da_var.dims, slices):
                     if dim in da_var.coords:
@@ -373,7 +407,7 @@ def _load_xarray_generic(path: Path, engine: Optional[str] = None, **kwargs) -> 
                             meta[f"{dim}_start"] = str(vals.min())
                             if len(vals) > 1:
                                 meta[f"{dim}_end"] = str(vals.max())
-                            
+
                             # Try to detect time by attempting to parse as datetime
                             try:
                                 from datetime import datetime
@@ -401,7 +435,12 @@ def _load_xarray_generic(path: Path, engine: Optional[str] = None, **kwargs) -> 
                                     pass
 
                 try:
-                    data = da_chunked[slices].compute().values
+                    if var_data_np is not None:
+                        # Fast path: pure numpy slicing (no dask overhead)
+                        data = var_data_np[slices]
+                    else:
+                        # Slow path: per-chunk dask compute
+                        data = da_chunked[slices].compute().values
                     if np.isnan(data).all(): continue
                     yield RasterChunk(data=data, metadata=meta)
                 except MemoryError:
@@ -410,6 +449,9 @@ def _load_xarray_generic(path: Path, engine: Optional[str] = None, **kwargs) -> 
                 except Exception as e:
                     logger.warning(f"Failed to compute chunk for var={var} in {path.name}: {e}")
                     continue
+
+            # Free pre-loaded data after processing all chunks for this variable
+            del var_data_np
                     
     except Exception as e:
         logger.error(f"Xarray Load Error ({engine}) for {path}: {e}")

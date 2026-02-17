@@ -3,21 +3,21 @@
     <!-- Header -->
     <div class="flex items-center justify-between">
       <div>
-        <h1 class="text-2xl font-bold text-white">Settings</h1>
-        <p class="text-gray-400">System configuration and status</p>
+        <h1 class="text-xl font-semibold text-white">Settings</h1>
+        <p class="text-sm text-gray-500">System configuration and status</p>
       </div>
       <button
         @click="refreshSettings"
         :disabled="loading"
-        class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50"
+        class="px-3 py-1.5 text-sm bg-dark-hover text-gray-300 rounded-md hover:bg-gray-600 transition-colors disabled:opacity-50"
       >
         Refresh
       </button>
     </div>
 
     <!-- LLM Configuration -->
-    <div class="card">
-      <h3 class="text-lg font-semibold text-white mb-4">LLM Providers</h3>
+    <div class="card !p-4">
+      <h3 class="text-sm font-semibold text-white mb-3">LLM Providers</h3>
       <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
         <div class="bg-dark-hover rounded-lg p-4">
           <div class="flex items-center justify-between mb-2">
@@ -44,53 +44,53 @@
     </div>
 
     <!-- Embedding Model -->
-    <div class="card">
-      <h3 class="text-lg font-semibold text-white mb-4">Embedding Model</h3>
+    <div class="card !p-4">
+      <h3 class="text-sm font-semibold text-white mb-3">Embedding Model</h3>
       <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
         <div>
-          <span class="text-gray-500 text-sm block">Model</span>
+          <span class="text-gray-500 text-xs block">Model</span>
           <span class="text-white font-mono text-sm">{{ settings?.embedding_model?.name || 'BAAI/bge-large-en-v1.5' }}</span>
         </div>
         <div>
-          <span class="text-gray-500 text-sm block">Dimensions</span>
+          <span class="text-gray-500 text-xs block">Dimensions</span>
           <span class="text-white font-mono text-sm">{{ settings?.embedding_model?.dimensions || 1024 }}</span>
         </div>
         <div>
-          <span class="text-gray-500 text-sm block">Distance Metric</span>
+          <span class="text-gray-500 text-xs block">Distance Metric</span>
           <span class="text-white font-mono text-sm">{{ settings?.embedding_model?.distance || 'COSINE' }}</span>
         </div>
         <div>
-          <span class="text-gray-500 text-sm block">Status</span>
+          <span class="text-gray-500 text-xs block">Status</span>
           <span class="text-green-400 text-sm">Active</span>
         </div>
       </div>
     </div>
 
     <!-- Qdrant -->
-    <div class="card">
-      <h3 class="text-lg font-semibold text-white mb-4">Vector Database (Qdrant)</h3>
+    <div class="card !p-4">
+      <h3 class="text-sm font-semibold text-white mb-3">Vector Database (Qdrant)</h3>
       <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
         <div>
-          <span class="text-gray-500 text-sm block">Host</span>
+          <span class="text-gray-500 text-xs block">Host</span>
           <span class="text-white font-mono text-sm">{{ settings?.qdrant?.host || 'localhost' }}</span>
         </div>
         <div>
-          <span class="text-gray-500 text-sm block">Port</span>
+          <span class="text-gray-500 text-xs block">Port</span>
           <span class="text-white font-mono text-sm">{{ settings?.qdrant?.port || 6333 }}</span>
         </div>
         <div>
-          <span class="text-gray-500 text-sm block">Embeddings</span>
+          <span class="text-gray-500 text-xs block">Embeddings</span>
           <span class="text-white font-mono text-sm">{{ embeddingStats?.total_embeddings?.toLocaleString() || '—' }}</span>
         </div>
         <div>
-          <span class="text-gray-500 text-sm block">Collection</span>
+          <span class="text-gray-500 text-xs block">Collection</span>
           <span class="text-white font-mono text-sm">{{ embeddingStats?.collection_name || 'climate_data' }}</span>
         </div>
       </div>
       <div class="mt-4 flex gap-3">
         <button
           @click="clearEmbeddings"
-          class="px-4 py-2 bg-red-600/20 text-red-400 rounded-lg hover:bg-red-600/40 transition-colors text-sm"
+          class="px-3 py-1.5 text-sm bg-red-600/20 text-red-400 rounded-md hover:bg-red-600/40 transition-colors"
         >
           Clear Collection
         </button>
@@ -98,11 +98,11 @@
     </div>
 
     <!-- System Resources -->
-    <div class="card">
-      <h3 class="text-lg font-semibold text-white mb-4">System Resources</h3>
+    <div class="card !p-4">
+      <h3 class="text-sm font-semibold text-white mb-3">System Resources</h3>
       <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
         <div>
-          <span class="text-gray-500 text-sm block mb-2">Disk Usage</span>
+          <span class="text-gray-500 text-xs block mb-2">Disk Usage</span>
           <div v-if="settings?.disk" class="space-y-1">
             <div class="w-full bg-gray-700 rounded-full h-3">
               <div
@@ -155,7 +155,7 @@ async function clearEmbeddings() {
   try {
     const resp = await fetch('/embeddings/clear?confirm=true', { method: 'POST' })
     if (resp.ok) {
-      alert('Embeddings cleared successfully')
+      console.log('Embeddings cleared successfully')
       refreshSettings()
     }
   } catch (e) {

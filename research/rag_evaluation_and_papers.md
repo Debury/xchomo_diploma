@@ -656,3 +656,134 @@ def ndcg_at_k(relevance_scores: list, k: int) -> float:
 | 32 | Kamradt et al. | 2024 | arXiv | Chunking strategies |
 | 33 | Sarmah et al. | 2024 | Bioengineering | Adaptive chunking |
 | 34 | Santhanam et al. | 2022 | NAACL | ColBERTv2 |
+| 35 | Salemi & Zamani | 2024 | SIGIR | eRAG: per-document downstream eval |
+| 36 | Chen et al. | 2024 | arXiv | BGE-M3 (BAAI/bge-m3) model |
+| 37 | — | 2024 | arXiv:2410.23902 | Responsible RAG for Climate |
+| 38 | — | 2025 | arXiv:2512.02251 | CAIRNS: Climate adaptation QA (7-dim rubric) |
+| 39 | — | 2024 | arXiv:2405.07437 | RAG Evaluation Survey (comprehensive) |
+
+---
+
+## Part D: Implementation Plan for Climate RAG Evaluation
+
+*Added: February 2026*
+
+This section describes the concrete evaluation methodology being implemented for the Climate Data RAG pipeline, building on the metrics and frameworks surveyed in Parts A–C.
+
+### D.1 Three-Tier Evaluation Architecture
+
+The evaluation is structured in three tiers of increasing complexity:
+
+**Tier 1: Retrieval Quality (embedding + Qdrant)**
+
+Measures how well the retrieval component returns relevant documents before any generation occurs. Uses a golden test set (`tests/fixtures/golden_queries.json`) with 50-100 climate questions and annotated relevant chunk IDs.
+
+Metrics:
+- **Hit@5, Hit@10** — baseline pass/fail: does the top-K contain at least one relevant chunk?
+- **MRR@10** — Mean Reciprocal Rank: how quickly does the first relevant result appear?
+- **NDCG@10** — Normalized Discounted Cumulative Gain: overall ranking quality (standard MTEB metric)
+- **Recall@K** at K=3, 5, 10 — coverage: what fraction of relevant chunks are retrieved?
+
+Implementation: Direct Qdrant client queries with BGE-M3 embeddings, compared against golden set annotations.
+
+**Tier 2: End-to-End RAG (RAGAS framework)**
+
+Uses the RAGAS framework (Es et al., EACL 2024, arXiv:2309.15217) for reference-free LLM-judge evaluation:
+- **Faithfulness** — are generated claims grounded in retrieved context? (Target: ≥ 0.85)
+- **Context Precision** — did we retrieve relevant chunks? (Target: ≥ 0.70)
+- **Context Recall** — did we retrieve ALL relevant chunks? (Target: ≥ 0.75)
+- **Answer Relevancy** — does the answer address the question? (Target: ≥ 0.80)
+
+Custom metric:
+- **Numerical Coverage** — fraction of key numbers (temperatures, dates, thresholds) from source data preserved in the answer. Critical for climate data accuracy. (Target: ≥ 0.90)
+
+**Tier 3: Embedding Space Analysis (intrinsic)**
+
+Evaluates the structure of the BGE-M3 embedding space:
+- Cosine similarity distribution within vs. between climate variables
+- t-SNE/UMAP visualization of embedding clusters by dataset/variable
+- Nearest-neighbor sanity checks (temperature chunks should cluster together)
+
+### D.2 Golden Test Set Construction
+
+The golden test set is stored in `tests/fixtures/golden_queries.json` with the following schema:
+
+```json
+{
+  "queries": [
+    {
+      "id": "q001",
+      "query": "What is the global mean temperature anomaly...",
+      "category": "variable-specific | spatial | temporal | cross-variable | methodological",
+      "dataset": "CMIP6 | CRU | E-OBS | null",
+      "relevant_chunk_ids": ["chunk_id_1", "chunk_id_2"],
+      "key_numbers": ["1.45", "2023"],
+      "difficulty": "easy | medium | hard"
+    }
+  ]
+}
+```
+
+**Construction guidelines:**
+1. Cover all 6 query categories (variable-specific, dataset-specific, spatial, temporal, cross-variable, methodological)
+2. Include queries at easy/medium/hard difficulty levels
+3. Annotate 2-5 relevant chunk IDs per query by manual inspection of Qdrant contents
+4. For numerical coverage metric, annotate key numbers that should appear in answers
+5. Target 50-100 queries for statistical significance (currently 10 seed queries provided)
+
+### D.3 RAGAS Integration
+
+```python
+from ragas import evaluate
+from ragas.metrics import faithfulness, context_precision, context_recall, answer_relevancy
+from datasets import Dataset
+
+# Build evaluation dataset from golden queries + RAG pipeline
+eval_data = {
+    "question": [q["query"] for q in golden_queries],
+    "answer": [rag_pipeline.query(q["query"]) for q in golden_queries],
+    "contexts": [rag_pipeline.retrieve(q["query"]) for q in golden_queries],
+    "ground_truth": [q.get("ground_truth", "") for q in golden_queries],
+}
+dataset = Dataset.from_dict(eval_data)
+
+result = evaluate(dataset, metrics=[faithfulness, context_precision, context_recall, answer_relevancy])
+```
+
+### D.4 Climate-Specific Evaluation Considerations
+
+Standard RAG evaluation metrics are necessary but not sufficient for climate data. Additional considerations:
+
+1. **Numerical precision:** Climate answers must preserve exact values (temperatures to 0.1°C, dates, thresholds). The custom Numerical Coverage metric addresses this.
+
+2. **Unit consistency:** Answers should use correct units (°C, mm, hPa) and not mix different unit systems.
+
+3. **Temporal specificity:** The system must distinguish between historical observations and future projections, and between different time periods.
+
+4. **Spatial accuracy:** Retrieved chunks should match the geographic region of the query. A query about "Czech Republic" should not return global averages.
+
+5. **Source attribution:** Answers should be traceable to specific datasets and variables, enabling verification.
+
+These considerations align with the CAIRNS framework (arXiv:2512.02251) which proposes a 7-dimension evaluation rubric for climate adaptation QA, and with the responsible RAG principles outlined in arXiv:2410.23902.
+
+### D.5 Additional Academic References
+
+| Paper | Venue | Key Contribution | Relevance |
+|-------|-------|-----------------|-----------|
+| eRAG (Salemi & Zamani, arXiv:2404.13781) | SIGIR 2024 | Per-document downstream evaluation | Alternative to aggregate metrics |
+| M3-Embedding (Chen et al., arXiv:2402.03216) | 2024 | BGE-M3 model paper | Our embedding model |
+| Responsible RAG for Climate (arXiv:2410.23902) | 2024 | Climate-domain RAG evaluation | Domain-specific eval considerations |
+| CAIRNS (arXiv:2512.02251) | 2025 | Climate adaptation QA with 7-dim rubric | Gold standard for climate QA eval |
+| RAG Evaluation Survey (arXiv:2405.07437) | 2024 | Comprehensive eval methods survey | Taxonomy of evaluation approaches |
+
+### D.6 Implementation Status
+
+| Component | Status | File |
+|-----------|--------|------|
+| Golden test set (seed) | ✅ Done (10 queries) | `tests/fixtures/golden_queries.json` |
+| Tier 1: Retrieval metrics | ✅ Done (skeleton) | `tests/test_rag_evaluation.py` |
+| Tier 2: RAGAS integration | ⬜ Pending (needs RAG endpoint) | `tests/test_rag_evaluation.py` |
+| Tier 3: Embedding analysis | ✅ Done (skeleton) | `tests/test_rag_evaluation.py` |
+| Golden test set expansion (50-100 queries) | ⬜ Pending | `tests/fixtures/golden_queries.json` |
+| Numerical coverage metric | ⬜ Pending (needs RAG endpoint) | `tests/test_rag_evaluation.py` |
+| t-SNE/UMAP visualization | ⬜ Pending | — |
