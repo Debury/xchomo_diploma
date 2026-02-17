@@ -1444,7 +1444,13 @@ async def trigger_catalog_processing(request: CatalogProcessRequest):
                     resume=True,
                 )
             except Exception as e:
-                logger.error(f"Background catalog processing failed: {e}")
+                import traceback
+                tb = traceback.format_exc()
+                logger.error(f"Background catalog processing failed: {e}\n{tb}")
+                # Also write to persistent log
+                from src.utils.logger import setup_logger
+                cl = setup_logger("catalog_pipeline", "logs/catalog_pipeline.log", "INFO")
+                cl.error(f"BACKGROUND THREAD CRASHED: {e}\n{tb}")
 
         if request.dry_run:
             # Dry run: execute synchronously and return result
