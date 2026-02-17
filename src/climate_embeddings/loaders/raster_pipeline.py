@@ -1,4 +1,6 @@
+import gzip
 import logging
+import shutil
 import zipfile
 import tempfile
 from pathlib import Path
@@ -50,6 +52,8 @@ def load_raster_auto(path: Union[str, Path], **kwargs) -> RasterLoadResult:
     elif suffix in {'.grib', '.grib2', '.grb'}:
         # Requires 'cfgrib' installed
         iterator = _load_xarray_generic(path, engine="cfgrib", **kwargs)
+    elif suffix == '.gz':
+        iterator = _load_gzip(path, **kwargs)
     else:
         # Fallback: Try CSV first (common), then NetCDF
         logger.warning(f"Unknown extension '{suffix}', trying CSV loader first...")
@@ -102,6 +106,24 @@ def raster_to_embeddings(source: RasterLoadResult, **kwargs) -> list:
 # ==============================================================================
 # INTERNAL LOADERS
 # ==============================================================================
+
+def _load_gzip(path: Path, **kwargs) -> Iterator[RasterChunk]:
+    """Decompress a .gz file and load the inner file via load_raster_auto."""
+    # Determine inner suffix: e.g. file.nc.gz → .nc
+    inner_suffix = Path(path.stem).suffix.lower() or ".nc"
+    tmp_decompressed = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=inner_suffix, delete=False) as tmp:
+            tmp_decompressed = tmp.name
+            with gzip.open(path, "rb") as gz_in:
+                shutil.copyfileobj(gz_in, tmp, length=16 * 1024 * 1024)
+        logger.info(f"Decompressed {path.name} → {inner_suffix} ({Path(tmp_decompressed).stat().st_size / 1e6:.1f} MB)")
+        result = load_raster_auto(tmp_decompressed, **kwargs)
+        yield from result.chunk_iterator
+    finally:
+        if tmp_decompressed:
+            Path(tmp_decompressed).unlink(missing_ok=True)
+
 
 def _load_zip(path, **kwargs):
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -185,7 +207,7 @@ def _load_xarray_generic(path: Path, engine: Optional[str] = None, **kwargs) -> 
                 meta = {
                     "variable": str(var),
                     "source": str(path.name),
-                    "format": "netcdf" if suffix in {'.nc', '.nc4', '.hdf', '.h5'} else "grib"
+                    "format": "netcdf" if path.suffix.lower() in {'.nc', '.nc4', '.hdf', '.h5'} else "grib"
                 }
                 
                 # Store ALL variable attributes (no hardcoding - works for ANY dataset)

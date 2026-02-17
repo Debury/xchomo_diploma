@@ -45,10 +45,10 @@ DIRECT_DOWNLOAD_URLS = {
     "Standardized Evapotranspiration Deficit Index (SEDI)": "https://digital.csic.es/bitstream/10261/160091/1/SEDI.zip",
     "Combined Drought Indicator": "https://jeodpp.jrc.ec.europa.eu/ftp/jrc-opendata/DROUGHTOBS/Drought_Observatories_datasets/EDO_Combined_Drought_Indicator/ver1-4-0/cdinx_m_euu_20190101_20191221_t.nc",
     "SPI-MARSMet": "https://jeodpp.jrc.ec.europa.eu/ftp/jrc-opendata/DROUGHTOBS/Drought_Observatories_datasets/EDO_Standardized_Precipitation_Index_blended_interpolated_SPI3/ver1-2-0/spb03_m_euu_20040101_20041201_m.nc",
-    "CERES-EBAF": "https://opendap.larc.nasa.gov/opendap/CERES/EBAF/TOA_Edition4.1/CERES_EBAF-TOA_Edition4.1_200003-201904.nc",
     "ISI-MIP": "https://files.isimip.org/ISIMIP3b/InputData/climate/atmosphere_composition/co2/historical/co2_historical_annual_1850_2014.txt",
-    "EURO-CORDEX": "http://esgf1.dkrz.de/thredds/fileServer/cordex/cordex/output/EUR-11/GERICS/ECMWF-ERAINT/evaluation/r0i0p0/GERICS-REMO2015/v1/fx/orog/orog_EUR-11_ECMWF-ERAINT_evaluation_r0i0p0_GERICS-REMO2015_v1_fx.nc",
-    "MED-CORDEX": "http://esgf1.dkrz.de/thredds/fileServer/cordex/cordex/output/EUR-11/GERICS/ECMWF-ERAINT/evaluation/r0i0p0/GERICS-REMO2015/v1/fx/orog/orog_EUR-11_ECMWF-ERAINT_evaluation_r0i0p0_GERICS-REMO2015_v1_fx.nc",
+    # CERES-EBAF removed: requires NASA Earthdata login (Phase 3)
+    # EURO-CORDEX removed: requires ESGF auth (Phase 3)
+    # MED-CORDEX removed: requires ESGF auth (Phase 3)
 }
 
 
@@ -327,6 +327,15 @@ def _run_phase_0(
     return {"processed": processed, "failed": failed, "skipped": len(entries) - len(to_process)}
 
 
+FORMAT_TO_EXT = {
+    "netcdf": ".nc", "grib": ".grib", "hdf5": ".h5",
+    "geotiff": ".tif", "csv": ".csv", "zip": ".zip", "gz": ".gz",
+    "ascii": ".asc", "zarr": ".zarr",
+}
+
+MAX_DOWNLOAD_SIZE_MB = int(os.getenv("MAX_DOWNLOAD_SIZE_MB", "2000"))
+
+
 def _run_phase_download(
     entries: List[CatalogEntry],
     phase: int,
@@ -363,6 +372,7 @@ def _run_phase_download(
 
         progress.mark_started(entry.source_id, entry.dataset_name or "unknown", phase)
 
+        tmp_path = None
         try:
             # Use direct download URL override if available, otherwise use catalog link
             url = DIRECT_DOWNLOAD_URLS.get(entry.dataset_name, entry.link).strip()
@@ -374,7 +384,7 @@ def _run_phase_download(
                 head_resp = http_requests.head(url, timeout=30, allow_redirects=True,
                                                headers={"User-Agent": "ClimateRAG/1.0"})
                 content_length = int(head_resp.headers.get("Content-Length", 0))
-                max_size = int(os.getenv("MAX_DOWNLOAD_SIZE_MB", "2000")) * 1024 * 1024
+                max_size = MAX_DOWNLOAD_SIZE_MB * 1024 * 1024
                 if content_length > max_size:
                     msg = f"File too large: {content_length / 1e9:.1f} GB (limit: {max_size / 1e9:.1f} GB)"
                     progress.mark_failed(entry.source_id, msg, phase=phase)
@@ -404,15 +414,33 @@ def _run_phase_download(
                                      headers={"User-Agent": "ClimateRAG/1.0"})
             resp.raise_for_status()
 
-            # Detect extension from URL or content-type
+            # Detect extension from URL — map format name to proper file extension
             from src.climate_embeddings.loaders.detect_format import detect_format_from_url
             fmt = detect_format_from_url(url)
-            ext = f".{fmt}" if fmt else ".nc"
+            ext = FORMAT_TO_EXT.get(fmt, ".nc")
 
             with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
+                bytes_written = 0
+                max_bytes = MAX_DOWNLOAD_SIZE_MB * 1024 * 1024
                 for chunk in resp.iter_content(chunk_size=8192):
+                    bytes_written += len(chunk)
+                    if bytes_written > max_bytes:
+                        raise ValueError(
+                            f"Download exceeded {MAX_DOWNLOAD_SIZE_MB} MB limit "
+                            f"(streamed {bytes_written / 1e6:.0f} MB so far)"
+                        )
                     tmp.write(chunk)
                 tmp_path = tmp.name
+
+            # --- Post-download content validation: detect HTML login pages ---
+            with open(tmp_path, "rb") as f:
+                head_bytes = f.read(512)
+            head_text = head_bytes.decode("utf-8", errors="ignore").lower().strip()
+            if "<!doctype" in head_text or "<html" in head_text:
+                raise ValueError(
+                    "Downloaded file contains HTML (likely a login/redirect page, not data). "
+                    "This dataset probably requires authentication."
+                )
 
             # Load and process
             result = load_raster_auto(tmp_path)
@@ -459,14 +487,16 @@ def _run_phase_download(
             except Exception as store_err:
                 catalog_logger.warning(f"Could not update SourceStore for {entry.source_id}: {store_err}")
 
-            # Clean up temp file
-            Path(tmp_path).unlink(missing_ok=True)
-
         except Exception as e:
             tb = traceback.format_exc()
             progress.mark_failed(entry.source_id, str(e), phase=phase)
             failed += 1
             catalog_logger.error(f"Phase {phase}: FAILED {entry.dataset_name}: {e}\n{tb}")
+
+        finally:
+            # Always clean up temp file
+            if tmp_path:
+                Path(tmp_path).unlink(missing_ok=True)
 
         if (processed + failed) % 5 == 0:
             progress.save(progress_path)
