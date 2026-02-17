@@ -31,7 +31,7 @@ DEFAULT_PROGRESS_PATH = Path("data/catalog_progress.json")
 # Values are actual file URLs that return data when fetched with HTTP GET.
 DIRECT_DOWNLOAD_URLS = {
     "WorldClim - Historical climate data": "https://geodata.ucdavis.edu/climate/worldclim/2_1/base/wc2.1_10m_tavg.zip",
-    "WorldClim - Future climate data": "https://geodata.ucdavis.edu/climate/worldclim/2_1/fut/10m/wc2.1_10m_bioc_MRI-ESM2-0_ssp245_2041-2060.zip",
+    "WorldClim - Future climate data": "https://geodata.ucdavis.edu/climate/worldclim/2_1/fut/10m/wc2.1_10m_tmin_ACCESS-CM2_ssp245_2041-2060.tif",
     "GISTEMP": "https://data.giss.nasa.gov/gistemp/tabledata_v4/GLB.Ts+dSST.csv",
     "CRU": "https://crudata.uea.ac.uk/cru/data/hrg/cru_ts_4.08/cruts.2406270035.v4.08/tmp/cru_ts4.08.1901.2023.tmp.dat.nc.gz",
     "CHIRPS": "https://data.chc.ucsb.edu/products/CHIRPS-2.0/global_annual/tifs/chirps-v2.0.2020.tif",
@@ -192,6 +192,20 @@ class BatchProgress:
 
     def get_summary(self) -> Dict[str, Any]:
         pending = self.total - self.processed - self.failed - self.skipped
+        # Build per-phase breakdown from sources dict
+        phase_counts: Dict[str, Dict[str, int]] = {}
+        for sid, info in self.sources.items():
+            phases = info.get("phases", {})
+            # Determine which phase this source belongs to
+            source_phase = str(info.get("phase", 0))
+            for p, status in phases.items():
+                if p not in phase_counts:
+                    phase_counts[p] = {"completed": 0, "failed": 0, "total": 0}
+                phase_counts[p]["total"] += 1
+                if status == "completed":
+                    phase_counts[p]["completed"] += 1
+                elif status == "failed":
+                    phase_counts[p]["failed"] += 1
         return {
             "total": self.total,
             "processed": self.processed,
@@ -202,6 +216,7 @@ class BatchProgress:
             "current_source": self.current_source,
             "started_at": self.started_at,
             "updated_at": self.updated_at,
+            "phases": phase_counts,
         }
 
 
@@ -337,7 +352,7 @@ def _run_phase_0(
 FORMAT_TO_EXT = {
     "netcdf": ".nc", "grib": ".grib", "hdf5": ".h5",
     "geotiff": ".tif", "csv": ".csv", "zip": ".zip", "gz": ".gz",
-    "ascii": ".asc", "zarr": ".zarr",
+    "ascii": ".asc", "zarr": ".zarr", "tar": ".tar",
 }
 
 MAX_DOWNLOAD_SIZE_MB = int(os.getenv("MAX_DOWNLOAD_SIZE_MB", "2000"))

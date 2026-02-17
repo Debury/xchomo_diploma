@@ -30,6 +30,36 @@ class RasterLoadResult:
     metadata: Dict[str, Any] = field(default_factory=dict)
 
 # ==============================================================================
+# MAGIC BYTE DETECTION
+# ==============================================================================
+
+def _detect_format_from_magic(path: Path) -> Optional[str]:
+    """Detect file format from header magic bytes."""
+    try:
+        with open(path, "rb") as f:
+            header = f.read(8)
+        if len(header) < 4:
+            return None
+        # NetCDF classic: starts with 'CDF\x01' or 'CDF\x02'
+        if header[:3] == b"CDF":
+            return "netcdf"
+        # HDF5 / NetCDF-4: starts with '\x89HDF\r\n\x1a\n'
+        if header[:8] == b"\x89HDF\r\n\x1a\n":
+            return "hdf5"
+        # GRIB: starts with 'GRIB'
+        if header[:4] == b"GRIB":
+            return "grib"
+        # TIFF / GeoTIFF: 'II*\x00' (little-endian) or 'MM\x00*' (big-endian)
+        if header[:4] in (b"II*\x00", b"MM\x00*"):
+            return "geotiff"
+        # Gzip: starts with '\x1f\x8b'
+        if header[:2] == b"\x1f\x8b":
+            return "gzip"
+        return None
+    except Exception:
+        return None
+
+# ==============================================================================
 # PUBLIC API
 # ==============================================================================
 
@@ -58,13 +88,28 @@ def load_raster_auto(path: Union[str, Path], **kwargs) -> RasterLoadResult:
     elif suffix == '.gz':
         iterator = _load_gzip(path, **kwargs)
     else:
-        # Fallback: Try CSV first (common), then NetCDF
-        logger.warning(f"Unknown extension '{suffix}', trying CSV loader first...")
-        try:
-            iterator = _load_csv(path, **kwargs)
-        except Exception as csv_err:
-            logger.warning(f"CSV load failed: {csv_err}, attempting generic Xarray load...")
-            iterator = _load_xarray_generic(path, engine=None, **kwargs)
+        # Fallback: detect format from file header magic bytes
+        detected = _detect_format_from_magic(path)
+        if detected == "netcdf":
+            logger.info(f"Magic bytes detected NetCDF for '{suffix}', using xarray")
+            iterator = _load_xarray_generic(path, engine="netcdf4", **kwargs)
+        elif detected == "hdf5":
+            logger.info(f"Magic bytes detected HDF5 for '{suffix}', using xarray")
+            iterator = _load_xarray_generic(path, engine="netcdf4", **kwargs)
+        elif detected == "geotiff":
+            logger.info(f"Magic bytes detected GeoTIFF for '{suffix}', using rasterio")
+            iterator = _load_geotiff(path, **kwargs)
+        elif detected == "grib":
+            logger.info(f"Magic bytes detected GRIB for '{suffix}', using cfgrib")
+            iterator = _load_xarray_generic(path, engine="cfgrib", **kwargs)
+        else:
+            # No magic match — try xarray first (handles most scientific formats), then CSV
+            logger.warning(f"Unknown extension '{suffix}', trying xarray first...")
+            try:
+                iterator = _load_xarray_generic(path, engine=None, **kwargs)
+            except Exception as xr_err:
+                logger.warning(f"Xarray load failed: {xr_err}, attempting CSV loader...")
+                iterator = _load_csv(path, **kwargs)
         
     return RasterLoadResult(
         chunk_iterator=iterator, 
@@ -110,16 +155,30 @@ def raster_to_embeddings(source: RasterLoadResult, **kwargs) -> list:
 # INTERNAL LOADERS
 # ==============================================================================
 
+MAX_DECOMPRESSED_SIZE_MB = 3000  # 3 GB limit for decompressed files
+
 def _load_gzip(path: Path, **kwargs) -> Iterator[RasterChunk]:
     """Decompress a .gz file and load the inner file via load_raster_auto."""
     # Determine inner suffix: e.g. file.nc.gz → .nc
     inner_suffix = Path(path.stem).suffix.lower() or ".nc"
     tmp_decompressed = None
     try:
+        max_bytes = MAX_DECOMPRESSED_SIZE_MB * 1024 * 1024
         with tempfile.NamedTemporaryFile(suffix=inner_suffix, delete=False) as tmp:
             tmp_decompressed = tmp.name
+            bytes_written = 0
             with gzip.open(path, "rb") as gz_in:
-                shutil.copyfileobj(gz_in, tmp, length=16 * 1024 * 1024)
+                while True:
+                    buf = gz_in.read(16 * 1024 * 1024)
+                    if not buf:
+                        break
+                    bytes_written += len(buf)
+                    if bytes_written > max_bytes:
+                        raise ValueError(
+                            f"Decompressed size exceeds {MAX_DECOMPRESSED_SIZE_MB} MB limit "
+                            f"({bytes_written / 1e6:.0f} MB so far) — file too large for processing"
+                        )
+                    tmp.write(buf)
         decompressed_size = Path(tmp_decompressed).stat().st_size
         logger.info(f"Decompressed {path.name} → {inner_suffix} ({decompressed_size / 1e6:.1f} MB)")
 

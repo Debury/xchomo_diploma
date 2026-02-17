@@ -1654,6 +1654,7 @@ async def toggle_schedule(schedule_name: str, enable: bool = True):
 async def get_etl_logs(lines: int = 100):
     """Get the last N lines of the ETL log file."""
     log_paths = [
+        _PROJECT_ROOT / "logs" / "catalog_pipeline.log",
         _PROJECT_ROOT / "logs" / "dagster_dynamic_etl.log",
         _PROJECT_ROOT / "logs" / "dagster_pipeline.log",
     ]

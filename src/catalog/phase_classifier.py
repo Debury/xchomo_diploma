@@ -41,6 +41,17 @@ _PORTAL_DOMAINS = {
     "earthdata.nasa.gov": "NASA",
     "podaac.jpl.nasa.gov": "NASA",
     "gpm.nasa.gov": "NASA",
+    # Additional portals discovered during Phase 1 audit
+    "rda.ucar.edu": "NCAR",
+    "publitheque.meteo.fr": "METEO",
+    "ogimet.com": "WMO",
+    "cost-g.org": "PORTAL",
+    "land.copernicus.eu": "CDS",
+    "mareografico.it": "PORTAL",
+    "scia.isprambiente.it": "PORTAL",
+    "meteo.data.gouv.fr": "PORTAL",
+    "meteo.gr": "PORTAL",
+    "esgf-node.ipsl.upmc.fr": "ESGF",
 }
 
 

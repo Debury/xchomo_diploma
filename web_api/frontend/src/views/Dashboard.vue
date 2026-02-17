@@ -63,24 +63,29 @@
     <!-- Catalog Progress -->
     <div v-if="catalogProgress && catalogProgress.total > 0" class="card">
       <h3 class="text-lg font-semibold text-white mb-4">Catalog Processing</h3>
-      <div class="flex items-center justify-between mb-2">
-        <span class="text-sm text-gray-400">{{ catalogProgress.processed }} / {{ catalogProgress.total }} sources processed</span>
-        <span class="text-sm text-white font-mono">{{ Math.round((catalogProgress.processed / catalogProgress.total) * 100) }}%</span>
-      </div>
-      <div class="w-full bg-gray-700 rounded-full h-3 mb-3">
-        <div class="flex h-3 rounded-full overflow-hidden">
-          <div
-            class="bg-green-500 transition-all duration-500"
-            :style="{ width: `${(catalogProgress.processed / catalogProgress.total) * 100}%` }"
-          ></div>
-          <div
-            class="bg-red-500 transition-all duration-500"
-            :style="{ width: `${(catalogProgress.failed / catalogProgress.total) * 100}%` }"
-          ></div>
+      <!-- Per-phase breakdown -->
+      <div v-if="catalogProgress.phases && Object.keys(catalogProgress.phases).length" class="grid grid-cols-1 md:grid-cols-3 gap-3 mb-4">
+        <div v-for="(info, phase) in catalogProgress.phases" :key="phase" class="bg-dark-hover rounded-lg p-3">
+          <div class="flex items-center justify-between mb-1">
+            <span class="text-sm text-white font-medium">Phase {{ phase }}</span>
+            <span class="text-xs text-gray-500">{{ phaseLabel(phase) }}</span>
+          </div>
+          <div class="flex gap-2 text-xs mb-2">
+            <span class="text-green-400">{{ info.completed }}/{{ info.total }}</span>
+            <span v-if="info.failed > 0" class="text-red-400">{{ info.failed }} failed</span>
+          </div>
+          <div class="w-full bg-gray-700 rounded-full h-1.5">
+            <div
+              class="bg-green-500 h-1.5 rounded-full transition-all"
+              :style="{ width: info.total > 0 ? `${(info.completed / info.total) * 100}%` : '0%' }"
+            ></div>
+          </div>
         </div>
       </div>
+      <!-- Overall summary -->
       <div class="flex gap-4 text-xs text-gray-500">
-        <span class="text-green-400">{{ catalogProgress.processed }} completed</span>
+        <span v-if="catalogProgress.current_phase != null" class="text-blue-400">Current: Phase {{ catalogProgress.current_phase }}</span>
+        <span class="text-green-400">{{ catalogProgress.processed }} processed</span>
         <span class="text-red-400">{{ catalogProgress.failed }} failed</span>
         <span class="text-gray-400">{{ catalogProgress.pending }} pending</span>
       </div>
@@ -109,18 +114,19 @@
       </div>
     </div>
 
-    <!-- Variables List -->
+    <!-- Datasets by Hazard Type -->
     <div class="card">
-      <h3 class="text-lg font-semibold text-white mb-4">Available Variables</h3>
+      <h3 class="text-lg font-semibold text-white mb-4">Datasets by Hazard Type</h3>
       <div class="flex flex-wrap gap-2">
         <span
-          v-for="v in stats.variables"
-          :key="v"
-          class="px-3 py-1.5 bg-dark-hover rounded-lg text-sm text-gray-300"
+          v-for="h in hazardCounts"
+          :key="h.name"
+          class="px-3 py-1.5 rounded-lg text-sm font-medium"
+          :class="hazardColor(h.name)"
         >
-          {{ v }}
+          {{ h.name }} <span class="opacity-70">{{ h.count }}</span>
         </span>
-        <span v-if="!stats.variables?.length" class="text-gray-500">No variables found</span>
+        <span v-if="!hazardCounts.length" class="text-gray-500">No catalog data loaded</span>
       </div>
     </div>
 
@@ -162,8 +168,27 @@ import { ref, onMounted } from 'vue'
 const stats = ref({})
 const health = ref({ llm: 'Checking...', qdrant: false, dagster: false, llmOnline: false })
 const catalogProgress = ref(null)
+const hazardCounts = ref([])
 const loading = ref(false)
 const runningPhase0 = ref(false)
+
+const HAZARD_COLORS = {
+  'Drought': 'bg-amber-500/20 text-amber-400',
+  'Temperature': 'bg-red-500/20 text-red-400',
+  'Precipitation': 'bg-blue-500/20 text-blue-400',
+  'Sea Level Rise': 'bg-cyan-500/20 text-cyan-400',
+  'Flood': 'bg-indigo-500/20 text-indigo-400',
+  'Wind': 'bg-teal-500/20 text-teal-400',
+}
+
+function hazardColor(name) {
+  return HAZARD_COLORS[name] || 'bg-gray-500/20 text-gray-300'
+}
+
+function phaseLabel(phase) {
+  const labels = { '0': 'Metadata', '1': 'Direct download', '2': 'Registration', '3': 'API portals', '4': 'Manual' }
+  return labels[String(phase)] || ''
+}
 
 async function loadStats() {
   try {
@@ -202,6 +227,25 @@ async function loadCatalogProgress() {
   }
 }
 
+async function loadCatalogHazards() {
+  try {
+    const resp = await fetch('/catalog')
+    if (resp.ok) {
+      const entries = await resp.json()
+      const counts = {}
+      for (const entry of entries) {
+        const h = entry.hazard || 'Other'
+        counts[h] = (counts[h] || 0) + 1
+      }
+      hazardCounts.value = Object.entries(counts)
+        .map(([name, count]) => ({ name, count }))
+        .sort((a, b) => b.count - a.count)
+    }
+  } catch (e) {
+    // Catalog endpoint may not be available
+  }
+}
+
 async function runPhase0() {
   runningPhase0.value = true
   try {
@@ -230,7 +274,7 @@ async function runPhase0() {
 async function refreshAll() {
   loading.value = true
   try {
-    await Promise.all([loadStats(), checkHealth(), loadCatalogProgress()])
+    await Promise.all([loadStats(), checkHealth(), loadCatalogProgress(), loadCatalogHazards()])
   } finally {
     loading.value = false
   }

@@ -79,7 +79,7 @@
         <div class="space-y-2 text-sm">
           <div class="flex justify-between">
             <span class="text-gray-500">Type:</span>
-            <span class="text-gray-300">{{ source.type || 'NetCDF' }}</span>
+            <span class="text-gray-300">{{ source.type || 'Unknown' }}</span>
           </div>
           <div class="flex justify-between">
             <span class="text-gray-500">Embeddings:</span>
@@ -194,7 +194,7 @@
               </div>
               <div class="flex justify-between">
                 <span class="text-gray-500">Format:</span>
-                <span class="text-gray-300">{{ selectedSource.type || 'NetCDF' }}</span>
+                <span class="text-gray-300">{{ selectedSource.type || 'Unknown' }}</span>
               </div>
               <div class="flex justify-between">
                 <span class="text-gray-500">URL:</span>
@@ -265,7 +265,7 @@ async function loadSources() {
       name: source.source_id || 'Unknown',
       enabled: source.is_active !== false,
       description: source.description || `Data source: ${source.source_id}`,
-      type: source.format || 'NetCDF',
+      type: source.format || 'Unknown',
       variables: source.variables || [],
       embedding_count: 0,
       url: source.url,

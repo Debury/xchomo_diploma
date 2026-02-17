@@ -157,9 +157,9 @@ def process_metadata_only(
             store = get_source_store()
             if store.get_source(entry.source_id) is None:
                 tags = [t for t in [entry.hazard, entry.data_type, entry.access] if t]
-                # Guess format from link extension
-                fmt = None
-                if entry.link:
+                # Use data_type from Excel catalog; fall back to URL extension guess
+                fmt = entry.data_type if entry.data_type else None
+                if not fmt and entry.link:
                     link_lower = entry.link.lower()
                     for ext in ["nc", "tif", "tiff", "grib", "csv", "zip"]:
                         if f".{ext}" in link_lower:

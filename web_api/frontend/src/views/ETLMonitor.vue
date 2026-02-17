@@ -93,20 +93,26 @@
       </div>
     </div>
 
-    <!-- Dagster Runs -->
-    <div class="card">
-      <h3 class="text-lg font-semibold text-white mb-4">Recent Dagster Runs</h3>
-      <div v-if="runs.length === 0" class="text-gray-500 text-sm">No recent runs found</div>
-      <div v-for="run in runs" :key="run.run_id" class="flex items-center justify-between py-3 border-b border-dark-border/50 last:border-0">
-        <div>
-          <span class="text-white font-medium">{{ run.job_name }}</span>
-          <span class="text-gray-500 text-xs ml-3">{{ run.run_id.slice(0, 8) }}</span>
-        </div>
-        <div class="flex items-center gap-3">
-          <span v-if="run.start_time" class="text-gray-500 text-xs">{{ formatTime(run.start_time) }}</span>
-          <span class="px-2 py-1 rounded-full text-xs font-medium" :class="runStatusClass(run.status)">
-            {{ run.status }}
-          </span>
+    <!-- Per-Phase Breakdown -->
+    <div v-if="progress && progress.phases" class="card">
+      <h3 class="text-lg font-semibold text-white mb-4">Per-Phase Breakdown</h3>
+      <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+        <div v-for="(info, phase) in progress.phases" :key="phase" class="bg-dark-hover rounded-lg p-4">
+          <div class="flex items-center justify-between mb-2">
+            <span class="text-white font-medium">Phase {{ phase }}</span>
+            <span class="text-xs text-gray-400">{{ phaseLabel(phase) }}</span>
+          </div>
+          <div class="flex gap-3 text-sm">
+            <span class="text-green-400">{{ info.completed }} done</span>
+            <span class="text-red-400">{{ info.failed }} failed</span>
+            <span class="text-gray-400">{{ info.total }} total</span>
+          </div>
+          <div class="w-full bg-gray-700 rounded-full h-2 mt-2">
+            <div
+              class="bg-green-500 h-2 rounded-full transition-all"
+              :style="{ width: info.total > 0 ? `${(info.completed / info.total) * 100}%` : '0%' }"
+            ></div>
+          </div>
         </div>
       </div>
     </div>
@@ -118,7 +124,6 @@ import { ref, onMounted, onUnmounted } from 'vue'
 
 const progress = ref(null)
 const logs = ref('')
-const runs = ref([])
 const loading = ref(false)
 const logLines = ref(100)
 
@@ -133,15 +138,9 @@ function formatTime(ts) {
   }
 }
 
-function runStatusClass(status) {
-  const map = {
-    SUCCESS: 'bg-green-500/20 text-green-400',
-    FAILURE: 'bg-red-500/20 text-red-400',
-    STARTED: 'bg-blue-500/20 text-blue-400',
-    QUEUED: 'bg-yellow-500/20 text-yellow-400',
-    CANCELED: 'bg-gray-500/20 text-gray-400',
-  }
-  return map[status] || 'bg-gray-500/20 text-gray-400'
+function phaseLabel(phase) {
+  const labels = { '0': 'Metadata', '1': 'Direct download', '2': 'Registration', '3': 'API portals', '4': 'Manual' }
+  return labels[String(phase)] || ''
 }
 
 async function fetchProgress() {
@@ -165,15 +164,6 @@ async function fetchLogs() {
   }
 }
 
-async function fetchRuns() {
-  try {
-    const resp = await fetch('/runs')
-    if (resp.ok) runs.value = await resp.json()
-  } catch (e) {
-    console.error('Failed to fetch runs:', e)
-  }
-}
-
 async function retryFailed() {
   try {
     const resp = await fetch('/catalog/retry-failed', { method: 'POST' })
@@ -189,7 +179,7 @@ async function retryFailed() {
 async function refreshAll() {
   loading.value = true
   try {
-    await Promise.all([fetchProgress(), fetchLogs(), fetchRuns()])
+    await Promise.all([fetchProgress(), fetchLogs()])
   } finally {
     loading.value = false
   }
