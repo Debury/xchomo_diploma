@@ -22,6 +22,13 @@
           {{ processing ? 'Processing...' : 'Run Phase 0' }}
         </button>
         <button
+          @click="triggerProcessing([1])"
+          :disabled="processing"
+          class="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors disabled:opacity-50"
+        >
+          {{ processing ? 'Processing...' : 'Run Phase 1' }}
+        </button>
+        <button
           @click="refreshCatalog"
           :disabled="loading"
           class="px-4 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700 transition-colors disabled:opacity-50"
@@ -87,6 +94,7 @@
           <option value="pending">Pending</option>
           <option value="processing">Processing</option>
           <option value="completed">Completed</option>
+          <option value="metadata_only">Metadata Only</option>
           <option value="failed">Failed</option>
         </select>
       </div>
@@ -272,6 +280,7 @@ function statusBadgeClass(status) {
     pending: 'bg-gray-500/20 text-gray-400',
     processing: 'bg-blue-500/20 text-blue-400',
     completed: 'bg-green-500/20 text-green-400',
+    metadata_only: 'bg-amber-500/20 text-amber-400',
     failed: 'bg-red-500/20 text-red-400',
   }
   return map[status] || 'bg-gray-500/20 text-gray-400'

@@ -59,7 +59,15 @@
           </div>
         </div>
         
-        <h3 class="text-lg font-semibold text-white mb-2">{{ source.name }}</h3>
+        <div class="flex items-center gap-2 mb-2">
+          <h3 class="text-lg font-semibold text-white">{{ source.name }}</h3>
+          <span
+            v-if="isCatalogSource(source)"
+            class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-purple-500/20 text-purple-400 border border-purple-500/30"
+          >
+            D1.1
+          </span>
+        </div>
         <p class="text-gray-400 text-sm mb-2">{{ source.description || 'No description' }}</p>
         
         <!-- Error message if processing failed -->
@@ -259,12 +267,13 @@ async function loadSources() {
       description: source.description || `Data source: ${source.source_id}`,
       type: source.format || 'NetCDF',
       variables: source.variables || [],
-      embedding_count: 0, // Will be calculated separately if needed
+      embedding_count: 0,
       url: source.url,
       source_id: source.source_id,
       processing_status: source.processing_status || 'pending',
       error_message: source.error_message || null,
       last_processed: source.last_processed || null,
+      tags: source.tags || [],
       refreshing: false
     }))
   } catch (e) {
@@ -282,10 +291,15 @@ function viewDetails(source) {
   }
 }
 
+function isCatalogSource(source) {
+  return source.tags && source.tags.some(t => t === 'catalog:D1.1')
+}
+
 function getStatusClass(status) {
   const classes = {
     'success': 'bg-green-500/20 text-green-400',
     'completed': 'bg-green-500/20 text-green-400',
+    'metadata_only': 'bg-amber-500/20 text-amber-400',
     'failed': 'bg-red-500/20 text-red-400',
     'error': 'bg-red-500/20 text-red-400',
     'processing': 'bg-yellow-500/20 text-yellow-400',
@@ -298,6 +312,7 @@ function getStatusLabel(status) {
   const labels = {
     'success': '✓ Success',
     'completed': '✓ Completed',
+    'metadata_only': '◉ Metadata Only',
     'failed': '✗ Failed',
     'error': '✗ Error',
     'processing': '⟳ Processing',

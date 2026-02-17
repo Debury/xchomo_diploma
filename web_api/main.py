@@ -1398,8 +1398,7 @@ async def list_catalog():
         result = []
         for entry in entries:
             phase = classify_source(entry)
-            status_info = progress.sources.get(entry.source_id, {})
-            processing_status = status_info.get("status", "pending")
+            processing_status = progress.get_overall_status(entry.source_id, phase)
 
             result.append(CatalogEntryResponse(
                 row_index=entry.row_index,

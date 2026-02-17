@@ -6,6 +6,7 @@ Supports resume (via JSON state file), dry-run, and phase filtering.
 
 import json
 import logging
+import os
 import time
 import traceback
 from dataclasses import dataclass, field, asdict
@@ -75,32 +76,87 @@ class BatchProgress:
     def mark_started(self, source_id: str, dataset_name: str, phase: int):
         self.current_source = source_id
         self.current_phase = phase
-        self.sources[source_id] = {
-            "dataset_name": dataset_name,
-            "phase": phase,
-            "status": "processing",
-            "started_at": datetime.now().isoformat(),
-        }
+        if source_id not in self.sources:
+            self.sources[source_id] = {
+                "dataset_name": dataset_name,
+                "phases": {},
+            }
+        self.sources[source_id]["phase"] = phase
+        self.sources[source_id].setdefault("phases", {})
+        self.sources[source_id]["phases"][str(phase)] = "processing"
+        self.sources[source_id]["started_at"] = datetime.now().isoformat()
+        # Keep legacy "status" field in sync with current phase
+        self.sources[source_id]["status"] = "processing"
         self.updated_at = datetime.now().isoformat()
 
-    def mark_completed(self, source_id: str):
+    def mark_completed(self, source_id: str, phase: Optional[int] = None):
         if source_id in self.sources:
-            self.sources[source_id]["status"] = "completed"
+            p = str(phase if phase is not None else self.sources[source_id].get("phase", 0))
+            self.sources[source_id].setdefault("phases", {})
+            self.sources[source_id]["phases"][p] = "completed"
             self.sources[source_id]["completed_at"] = datetime.now().isoformat()
+            self.sources[source_id]["status"] = "completed"
         self.processed += 1
         self.updated_at = datetime.now().isoformat()
 
-    def mark_failed(self, source_id: str, error: str):
+    def mark_failed(self, source_id: str, error: str, phase: Optional[int] = None):
         if source_id in self.sources:
-            self.sources[source_id]["status"] = "failed"
+            p = str(phase if phase is not None else self.sources[source_id].get("phase", 0))
+            self.sources[source_id].setdefault("phases", {})
+            self.sources[source_id]["phases"][p] = "failed"
             self.sources[source_id]["error"] = error
             self.sources[source_id]["completed_at"] = datetime.now().isoformat()
+            self.sources[source_id]["status"] = "failed"
         self.failed += 1
         self.updated_at = datetime.now().isoformat()
 
-    def is_completed(self, source_id: str) -> bool:
+    def is_completed(self, source_id: str, phase: Optional[int] = None) -> bool:
+        """Check if a specific phase is completed for a source."""
         entry = self.sources.get(source_id, {})
+        if phase is not None:
+            phases = entry.get("phases", {})
+            return phases.get(str(phase)) == "completed"
+        # Legacy: check overall status
         return entry.get("status") == "completed"
+
+    def get_overall_status(self, source_id: str, target_phase: int) -> str:
+        """
+        Get display status considering target phase.
+
+        Returns:
+            "completed" — target phase is done
+            "metadata_only" — only Phase 0 done, target > 0
+            "processing" / "failed" / "pending" — current state
+        """
+        entry = self.sources.get(source_id, {})
+        if not entry:
+            return "pending"
+
+        phases = entry.get("phases", {})
+
+        # Migrate legacy entries: old format has "status" but no "phases" dict
+        if not phases and entry.get("status") == "completed":
+            old_phase = entry.get("phase", 0)
+            phases = {str(old_phase): "completed"}
+
+        # Check if target phase is done
+        if phases.get(str(target_phase)) == "completed":
+            return "completed"
+
+        # Check if target phase failed
+        if phases.get(str(target_phase)) == "failed":
+            return "failed"
+
+        # Check if target phase is processing
+        if phases.get(str(target_phase)) == "processing":
+            return "processing"
+
+        # Phase 0 done but target phase > 0 — metadata only
+        if target_phase > 0 and phases.get("0") == "completed":
+            return "metadata_only"
+
+        # Legacy fallback
+        return entry.get("status", "pending")
 
     def get_summary(self) -> Dict[str, Any]:
         pending = self.total - self.processed - self.failed - self.skipped
@@ -205,7 +261,7 @@ def _run_phase_0(
 
     to_process = []
     for entry in entries:
-        if resume and progress.is_completed(entry.source_id):
+        if resume and progress.is_completed(entry.source_id, phase=0):
             progress.skipped += 1
             continue
         to_process.append(entry)
@@ -225,16 +281,16 @@ def _run_phase_0(
         try:
             ok = process_metadata_only(entry, embedder, db)
             if ok:
-                progress.mark_completed(entry.source_id)
+                progress.mark_completed(entry.source_id, phase=0)
                 processed += 1
                 catalog_logger.info(f"Phase 0: completed {entry.dataset_name}")
             else:
-                progress.mark_failed(entry.source_id, "process_metadata_only returned False")
+                progress.mark_failed(entry.source_id, "process_metadata_only returned False", phase=0)
                 failed += 1
                 catalog_logger.warning(f"Phase 0: returned False for {entry.dataset_name}")
         except Exception as e:
             tb = traceback.format_exc()
-            progress.mark_failed(entry.source_id, str(e))
+            progress.mark_failed(entry.source_id, str(e), phase=0)
             failed += 1
             catalog_logger.error(f"Phase 0: FAILED {entry.dataset_name}: {e}\n{tb}")
 
@@ -272,7 +328,7 @@ def _run_phase_download(
     skipped = 0
 
     for entry in entries:
-        if resume and progress.is_completed(entry.source_id):
+        if resume and progress.is_completed(entry.source_id, phase=phase):
             skipped += 1
             continue
 
@@ -283,8 +339,37 @@ def _run_phase_download(
         progress.mark_started(entry.source_id, entry.dataset_name or "unknown", phase)
 
         try:
-            # Download to temp file
             url = entry.link.strip()
+
+            # --- Size guard: HEAD request to check Content-Length ---
+            try:
+                head_resp = http_requests.head(url, timeout=30, allow_redirects=True,
+                                               headers={"User-Agent": "ClimateRAG/1.0"})
+                content_length = int(head_resp.headers.get("Content-Length", 0))
+                max_size = int(os.getenv("MAX_DOWNLOAD_SIZE_MB", "2000")) * 1024 * 1024
+                if content_length > max_size:
+                    msg = f"File too large: {content_length / 1e9:.1f} GB (limit: {max_size / 1e9:.1f} GB)"
+                    progress.mark_failed(entry.source_id, msg, phase=phase)
+                    catalog_logger.warning(f"Skipping {entry.dataset_name}: {msg}")
+                    failed += 1
+                    continue
+            except Exception as head_err:
+                catalog_logger.warning(f"HEAD check failed for {entry.dataset_name}: {head_err} — proceeding anyway")
+
+            # --- Disk space guard ---
+            import shutil
+            try:
+                free_bytes = shutil.disk_usage("/app/data").free
+            except OSError:
+                free_bytes = shutil.disk_usage(".").free
+            if free_bytes < 5 * 1024**3:  # Less than 5 GB free
+                catalog_logger.error(
+                    f"Disk space critically low ({free_bytes / 1e9:.1f} GB free). Stopping downloads."
+                )
+                progress.save(progress_path)
+                break
+
+            # Download to temp file
             logger.info(f"Phase {phase}: downloading {entry.dataset_name} from {url}")
 
             resp = http_requests.get(url, timeout=120, stream=True,
@@ -334,16 +419,24 @@ def _run_phase_download(
                     metadatas=[meta_dict],
                 )
 
-            progress.mark_completed(entry.source_id)
+            progress.mark_completed(entry.source_id, phase=phase)
             processed += 1
-            logger.info(f"Phase {phase}: completed {entry.dataset_name} ({len(embeddings_data)} chunks)")
+            catalog_logger.info(f"Phase {phase}: completed {entry.dataset_name} ({len(embeddings_data)} chunks)")
+
+            # Update shelve SourceStore status
+            try:
+                from src.sources import get_source_store
+                store = get_source_store()
+                store.update_processing_status(entry.source_id, "completed")
+            except Exception as store_err:
+                catalog_logger.warning(f"Could not update SourceStore for {entry.source_id}: {store_err}")
 
             # Clean up temp file
             Path(tmp_path).unlink(missing_ok=True)
 
         except Exception as e:
             tb = traceback.format_exc()
-            progress.mark_failed(entry.source_id, str(e))
+            progress.mark_failed(entry.source_id, str(e), phase=phase)
             failed += 1
             catalog_logger.error(f"Phase {phase}: FAILED {entry.dataset_name}: {e}\n{tb}")
 
@@ -368,7 +461,7 @@ def _run_phase_portal(
     skipped = 0
 
     for entry in entries:
-        if resume and progress.is_completed(entry.source_id):
+        if resume and progress.is_completed(entry.source_id, phase=3):
             skipped += 1
             continue
 
@@ -378,21 +471,21 @@ def _run_phase_portal(
             adapter = get_adapter(entry)
             if adapter is None:
                 logger.warning(f"No adapter for {entry.dataset_name} ({entry.link})")
-                progress.mark_failed(entry.source_id, "No portal adapter available")
+                progress.mark_failed(entry.source_id, "No portal adapter available", phase=3)
                 failed += 1
                 continue
 
             ok = adapter.download_and_process(entry)
             if ok:
-                progress.mark_completed(entry.source_id)
+                progress.mark_completed(entry.source_id, phase=3)
                 processed += 1
             else:
-                progress.mark_failed(entry.source_id, "Adapter returned False")
+                progress.mark_failed(entry.source_id, "Adapter returned False", phase=3)
                 failed += 1
 
         except Exception as e:
             tb = traceback.format_exc()
-            progress.mark_failed(entry.source_id, str(e))
+            progress.mark_failed(entry.source_id, str(e), phase=3)
             failed += 1
             catalog_logger.error(f"Phase 3: FAILED {entry.dataset_name}: {e}\n{tb}")
 
@@ -415,18 +508,23 @@ def retry_failed(
 ) -> Dict[str, Any]:
     """Re-run all failed sources."""
     progress = BatchProgress.load(progress_path)
-    failed_ids = {
-        sid for sid, info in progress.sources.items()
-        if info.get("status") == "failed"
-    }
+    failed_ids = set()
+    for sid, info in progress.sources.items():
+        phases = info.get("phases", {})
+        if any(v == "failed" for v in phases.values()) or info.get("status") == "failed":
+            failed_ids.add(sid)
 
     if not failed_ids:
         return {"message": "No failed sources to retry", "count": 0}
 
-    # Reset failed entries to pending
+    # Reset failed phases to pending
     for sid in failed_ids:
         progress.sources[sid]["status"] = "pending"
         progress.sources[sid].pop("error", None)
+        phases = progress.sources[sid].get("phases", {})
+        for p, status in list(phases.items()):
+            if status == "failed":
+                phases[p] = "pending"
     progress.failed -= len(failed_ids)
     progress.save(progress_path)
 

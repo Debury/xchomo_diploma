@@ -151,6 +151,42 @@ def process_metadata_only(
             metadatas=[payload],
         )
 
+        # Auto-create source in shelve DB for Sources tab integration
+        try:
+            from src.sources import get_source_store
+            store = get_source_store()
+            if store.get_source(entry.source_id) is None:
+                tags = [t for t in [entry.hazard, entry.data_type, entry.access] if t]
+                # Guess format from link extension
+                fmt = None
+                if entry.link:
+                    link_lower = entry.link.lower()
+                    for ext in ["nc", "tif", "tiff", "grib", "csv", "zip"]:
+                        if f".{ext}" in link_lower:
+                            fmt = ext
+                            break
+
+                desc_parts = [entry.dataset_name or ""]
+                if entry.hazard:
+                    desc_parts.append(entry.hazard)
+                if entry.data_type:
+                    desc_parts.append(entry.data_type)
+
+                store.create_source({
+                    "source_id": entry.source_id,
+                    "url": entry.link or "",
+                    "format": fmt,
+                    "variables": [entry.hazard] if entry.hazard else [],
+                    "is_active": True,
+                    "description": " — ".join(desc_parts),
+                    "tags": tags + ["catalog:D1.1"],
+                    "processing_status": "metadata_only",
+                    "embedding_model": "BAAI/bge-large-en-v1.5",
+                })
+                logger.info(f"Created source entry for {entry.dataset_name} in SourceStore")
+        except Exception as store_err:
+            logger.warning(f"Could not create source for {entry.dataset_name}: {store_err}")
+
         logger.info(f"Stored metadata for {entry.dataset_name} (row {entry.row_index})")
         return True
 
