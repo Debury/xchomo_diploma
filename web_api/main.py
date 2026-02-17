@@ -1426,34 +1426,6 @@ async def list_catalog():
         raise HTTPException(500, str(e))
 
 
-@app.get("/catalog/{row_index}")
-async def get_catalog_entry(row_index: int):
-    """Get a single catalog entry by row index."""
-    try:
-        from src.catalog.excel_reader import read_catalog
-        from src.catalog.phase_classifier import classify_source
-        from src.catalog.batch_orchestrator import BatchProgress
-
-        entries = read_catalog(CATALOG_EXCEL_PATH)
-        progress = BatchProgress.load()
-
-        for entry in entries:
-            if entry.row_index == row_index:
-                phase = classify_source(entry)
-                status_info = progress.sources.get(entry.source_id, {})
-                return {
-                    **entry.to_dict(),
-                    "phase": phase,
-                    "processing_status": status_info.get("status", "pending"),
-                    "processing_error": status_info.get("error"),
-                }
-        raise HTTPException(404, f"Catalog entry {row_index} not found")
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(500, str(e))
-
-
 @app.post("/catalog/process")
 async def trigger_catalog_processing(request: CatalogProcessRequest):
     """Trigger batch processing of catalog entries."""
@@ -1550,6 +1522,34 @@ async def retry_failed_catalog():
         thread.start()
 
         return {"status": "started", "message": "Retrying failed sources in background"}
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
+@app.get("/catalog/{row_index}")
+async def get_catalog_entry(row_index: int):
+    """Get a single catalog entry by row index."""
+    try:
+        from src.catalog.excel_reader import read_catalog
+        from src.catalog.phase_classifier import classify_source
+        from src.catalog.batch_orchestrator import BatchProgress
+
+        entries = read_catalog(CATALOG_EXCEL_PATH)
+        progress = BatchProgress.load()
+
+        for entry in entries:
+            if entry.row_index == row_index:
+                phase = classify_source(entry)
+                status_info = progress.sources.get(entry.source_id, {})
+                return {
+                    **entry.to_dict(),
+                    "phase": phase,
+                    "processing_status": status_info.get("status", "pending"),
+                    "processing_error": status_info.get("error"),
+                }
+        raise HTTPException(404, f"Catalog entry {row_index} not found")
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(500, str(e))
 
