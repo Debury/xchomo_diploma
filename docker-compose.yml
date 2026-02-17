@@ -132,6 +132,9 @@ services:
       - QDRANT_GRPC_PORT=6334
       - VECTOR_DB_MEMORY_ONLY=false
       - MAX_DOWNLOAD_SIZE_MB=1500
+      - CDS_API_URL=${CDS_API_URL:-https://cds.climate.copernicus.eu/api}
+      - CDS_API_KEY=${CDS_API_KEY:-}
+      - NASA_EARTHDATA_TOKEN=${NASA_EARTHDATA_TOKEN:-}
     depends_on:
       dagit:
         condition: service_started

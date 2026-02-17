@@ -46,14 +46,30 @@ DIRECT_DOWNLOAD_URLS = {
     "Combined Drought Indicator": "https://jeodpp.jrc.ec.europa.eu/ftp/jrc-opendata/DROUGHTOBS/Drought_Observatories_datasets/EDO_Combined_Drought_Indicator/ver1-4-0/cdinx_m_euu_20190101_20191221_t.nc",
     "SPI-MARSMet": "https://jeodpp.jrc.ec.europa.eu/ftp/jrc-opendata/DROUGHTOBS/Drought_Observatories_datasets/EDO_MARSMet_Standardized_Precipitation_Index_SPI3/ver1-0-0/spm03_m_euu_20040101_20041221_t.nc",
     "ISI-MIP": "https://files.isimip.org/ISIMIP3b/InputData/climate/atmosphere_composition/co2/historical/co2_historical_annual_1850_2014.txt",
-    # --- New overrides from Phase 1 audit ---
+    # --- Phase 1 audit overrides ---
     "E-OBS": "https://knmi-ecad-assets-prd.s3.amazonaws.com/ensembles/data/Grid_0.25deg_reg_ensemble/tg_ens_mean_0.25deg_reg_2011-2025_v32.0e.nc",
     "NOAAN": "https://www.ncei.noaa.gov/access/monitoring/climate-at-a-glance/global/time-series/globe/land_ocean/ytd/12/1880-2023.csv",
     "GSFC-NASA": "https://earth.gsfc.nasa.gov/sites/default/files/geo/gsfc.glb_.200204_202505_rl06v2.0_obp-ice6gd_halfdegree.nc",
     "ROCIO_IBEB": "https://www.aemet.es/documentos/es/serviciosclimaticos/cambio_climat/datos_diarios/dato_observacional/rejilla_5km/v2/Serie_AEMET_v2_pcp_2020_netcdf.tar.gz",
-    # CERES-EBAF removed: requires NASA Earthdata login (Phase 3)
-    # EURO-CORDEX removed: requires ESGF auth (Phase 3)
-    # MED-CORDEX removed: requires ESGF auth (Phase 3)
+    # --- NOAA PSL datasets (Phase 3→1 via direct NetCDF, verified anonymous) ---
+    "CPC": "https://downloads.psl.noaa.gov/Datasets/cpc_global_precip/precip.2023.nc",
+    "GPCC": "https://downloads.psl.noaa.gov/Datasets/gpcc/full_v2020/precip.mon.total.0.25x0.25.v2020.nc",
+    "GPCP": "https://downloads.psl.noaa.gov/Datasets/gpcp/precip.mon.mean.nc",
+    "NOAA-NCEP/NCAR Reanalysis 1": "https://downloads.psl.noaa.gov/Datasets/ncep.reanalysis/surface/air.sig995.2023.nc",
+    "NCEP-NCAR2": "https://downloads.psl.noaa.gov/Datasets/ncep.reanalysis2/surface/mslp.2023.nc",
+    # --- Other Phase 3/4→1 overrides (verified anonymous) ---
+    "HadlSST": "https://www.metoffice.gov.uk/hadobs/hadisst/data/HadISST_sst.nc.gz",
+    "SPI-GPCC": "https://opendata.dwd.de/climate_environment/GPCC/GPCC_DI/2023/GPCC_DI_202301.nc.gz",
+    "CSR GRACE": "https://download.csr.utexas.edu/outgoing/grace/RL0603_mascons/CSR_GRACE_GRACE-FO_RL0603_Mascons_all-corrections.nc",
+    "CMIP6": "https://dap.ceda.ac.uk/badc/cmip6/data/CMIP6/CMIP/MOHC/HadGEM3-GC31-LL/historical/r1i1p1f3/Amon/tas/gn/latest/tas_Amon_HadGEM3-GC31-LL_historical_r1i1p1f3_gn_195001-201412.nc",
+    # Hydro-JULES: CEDA DAP requires auth (removed from overrides, stays Phase 2)
+    # --- ISI-MIP alias ---
+    "ISIMIP": "https://files.isimip.org/ISIMIP3b/InputData/climate/atmosphere_composition/co2/historical/co2_historical_annual_1850_2014.txt",
+    # CERES-EBAF: requires NASA Earthdata login (Phase 3 NASA adapter)
+    # EURO-CORDEX: ESGF OpenDAP (Phase 3 ESGF adapter)
+    # MED-CORDEX: ESGF OpenDAP (Phase 3 ESGF adapter)
+    # ERA5, ERA5 Land, CERRA: CDS API (Phase 3 CDS adapter)
+    # IMERG, MERRA-2: NASA adapter (Phase 3)
     # HWE-DB: portal only (meteo.gr), no direct downloads
     # NOA-GR: auth required (meteosearch.meteo.gr), registration closed
 }

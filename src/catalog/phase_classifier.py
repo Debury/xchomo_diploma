@@ -64,6 +64,13 @@ _PORTAL_DOMAINS = {
     "www.g3p.eu": "PORTAL",
     "www.jpl.nasa.gov": "NASA",
     "drought.emergency.copernicus.eu": "CDS",
+    # Marine Copernicus
+    "data.marine.copernicus.eu": "MARINE",
+    "nrt.cmems-du.eu": "MARINE",
+    "my.cmems-du.eu": "MARINE",
+    # CEDA archive
+    "catalogue.ceda.ac.uk": "CEDA",
+    "dap.ceda.ac.uk": "CEDA",
 }
 
 
@@ -102,6 +109,11 @@ def classify_source(entry: CatalogEntry) -> int:
         3 = API-based portal
         4 = manual / contact-required
     """
+    # Check if this dataset has a direct download override URL
+    from src.catalog.batch_orchestrator import DIRECT_DOWNLOAD_URLS
+    if entry.dataset_name and entry.dataset_name in DIRECT_DOWNLOAD_URLS:
+        return 1
+
     access = (entry.access or "").lower().strip()
     link = (entry.link or "").strip()
 
