@@ -118,6 +118,9 @@ services:
       - ./tests:/app/tests
       - ./.env:/app/.env:ro
       - ./data:/app/data
+      - ./logs:/app/logs
+      - ./config:/app/config
+      - ./web_api:/app/web_api
     env_file:
       - .env
     environment:
@@ -128,6 +131,7 @@ services:
       - QDRANT_REST_PORT=6333
       - QDRANT_GRPC_PORT=6334
       - VECTOR_DB_MEMORY_ONLY=false
+      - MAX_DOWNLOAD_SIZE_MB=1500
     depends_on:
       dagit:
         condition: service_started
