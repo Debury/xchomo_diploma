@@ -108,6 +108,16 @@ def load_raster_auto(path: Union[str, Path], **kwargs) -> RasterLoadResult:
             try:
                 iterator = _load_xarray_generic(path, engine=None, **kwargs)
             except Exception as xr_err:
+                # Only try CSV if file appears to be plausible text (not binary/HTML)
+                with open(path, "rb") as f:
+                    probe = f.read(512)
+                probe_text = probe.decode("utf-8", errors="ignore").lower()
+                if any(tag in probe_text for tag in ["<html", "<!doctype", "<head", "<body"]):
+                    raise ValueError(f"File appears to be HTML, not data: {path.name}") from xr_err
+                try:
+                    probe.decode("utf-8", errors="strict")
+                except UnicodeDecodeError:
+                    raise ValueError(f"File appears to be binary, not CSV: {path.name}") from xr_err
                 logger.warning(f"Xarray load failed: {xr_err}, attempting CSV loader...")
                 iterator = _load_csv(path, **kwargs)
         

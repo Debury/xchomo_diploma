@@ -109,6 +109,14 @@ def classify_source(entry: CatalogEntry) -> int:
     if not link:
         return 4
 
+    # Not a URL (free text like "Access through several weather services")
+    if not link.startswith(("http://", "https://")):
+        return 4
+
+    # Multi-value links ("meteo.data.gouv.fr or https://...")
+    if " or " in link:
+        return 4
+
     # Contact-required
     if "contact" in access:
         return 4

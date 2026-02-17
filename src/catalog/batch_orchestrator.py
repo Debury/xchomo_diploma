@@ -31,9 +31,9 @@ DEFAULT_PROGRESS_PATH = Path("data/catalog_progress.json")
 # Values are actual file URLs that return data when fetched with HTTP GET.
 DIRECT_DOWNLOAD_URLS = {
     "WorldClim - Historical climate data": "https://geodata.ucdavis.edu/climate/worldclim/2_1/base/wc2.1_10m_tavg.zip",
-    "WorldClim - Future climate data": "https://geodata.ucdavis.edu/climate/worldclim/2_1/fut/10m/wc2.1_10m_tmin_ACCESS-CM2_ssp245_2041-2060.tif",
+    "WorldClim - Future climate data": "https://geodata.ucdavis.edu/cmip6/10m/ACCESS-CM2/ssp245/wc2.1_10m_tmin_ACCESS-CM2_ssp245_2041-2060.tif",
     "GISTEMP": "https://data.giss.nasa.gov/gistemp/tabledata_v4/GLB.Ts+dSST.csv",
-    "CRU": "https://crudata.uea.ac.uk/cru/data/hrg/cru_ts_4.08/cruts.2406270035.v4.08/tmp/cru_ts4.08.1901.2023.tmp.dat.nc.gz",
+    "CRU": "https://crudata.uea.ac.uk/cru/data/hrg/cru_ts_4.09/cruts.2503051245.v4.09/tmp/cru_ts4.09.2021.2024.tmp.dat.nc.gz",
     "CHIRPS": "https://data.chc.ucsb.edu/products/CHIRPS-2.0/global_annual/tifs/chirps-v2.0.2020.tif",
     # Figshare Aridity removed: AWS WAF blocks automated downloads (Phase 0 metadata-only)
     "SPEI-GD": "https://zenodo.org/api/records/8060268/files/30days.zip/content",
@@ -47,7 +47,7 @@ DIRECT_DOWNLOAD_URLS = {
     "SPI-MARSMet": "https://jeodpp.jrc.ec.europa.eu/ftp/jrc-opendata/DROUGHTOBS/Drought_Observatories_datasets/EDO_MARSMet_Standardized_Precipitation_Index_SPI3/ver1-0-0/spm03_m_euu_20040101_20041221_t.nc",
     "ISI-MIP": "https://files.isimip.org/ISIMIP3b/InputData/climate/atmosphere_composition/co2/historical/co2_historical_annual_1850_2014.txt",
     # --- New overrides from Phase 1 audit ---
-    "E-OBS": "https://knmi-ecad-assets-prd.s3.amazonaws.com/ensembles/data/Grid_0.25deg_reg_ensemble/tg_ens_mean_0.25deg_reg_v32.0e.nc",
+    "E-OBS": "https://knmi-ecad-assets-prd.s3.amazonaws.com/ensembles/data/Grid_0.25deg_reg_ensemble/tg_ens_mean_0.25deg_reg_2011-2025_v32.0e.nc",
     "NOAAN": "https://www.ncei.noaa.gov/access/monitoring/climate-at-a-glance/global/time-series/globe/land_ocean/ytd/12/1880-2023.csv",
     "GSFC-NASA": "https://earth.gsfc.nasa.gov/sites/default/files/geo/gsfc.glb_.200204_202505_rl06v2.0_obp-ice6gd_halfdegree.nc",
     "ROCIO_IBEB": "https://www.aemet.es/documentos/es/serviciosclimaticos/cambio_climat/datos_diarios/dato_observacional/rejilla_5km/v2/Serie_AEMET_v2_pcp_2020_netcdf.tar.gz",
@@ -56,6 +56,21 @@ DIRECT_DOWNLOAD_URLS = {
     # MED-CORDEX removed: requires ESGF auth (Phase 3)
     # HWE-DB: portal only (meteo.gr), no direct downloads
     # NOA-GR: auth required (meteosearch.meteo.gr), registration closed
+}
+
+# Datasets that should NOT be processed in Phase 1 (auth required, no direct downloads, portals).
+# These will be skipped during _run_phase_download() with a log message.
+SKIP_PHASE1 = {
+    "NOA-GR",           # auth required, portal down
+    "HWE-DB",           # portal only (meteo.gr)
+    "CERES-EBAF",       # NASA Earthdata login required
+    "JPL GRACE",        # NASA Earthdata login required
+    "COST-g",           # No direct downloads (GFC format, unsupported)
+    "G3P",              # registration required (g3p.eu portal)
+    "Rete Mareografica Italiana",  # Italian portal, no direct downloads
+    "MED-CORDEX",       # ESGF auth required
+    "EURO-CORDEX",      # ESGF auth required
+    "RMI-ISPRA",        # ISPRA portal, no direct downloads
 }
 
 
@@ -392,6 +407,12 @@ def _run_phase_download(
             skipped += 1
             continue
 
+        # Skip datasets known to require auth or have no direct downloads
+        if entry.dataset_name in SKIP_PHASE1:
+            catalog_logger.info(f"Phase {phase}: skipping {entry.dataset_name} (in SKIP_PHASE1)")
+            skipped += 1
+            continue
+
         progress.mark_started(entry.source_id, entry.dataset_name or "unknown", phase)
 
         tmp_path = None
@@ -436,6 +457,14 @@ def _run_phase_download(
                                      headers={"User-Agent": "ClimateRAG/1.0"})
             resp.raise_for_status()
 
+            # Check Content-Type before downloading body
+            content_type = resp.headers.get("Content-Type", "").lower()
+            if "text/html" in content_type:
+                raise ValueError(
+                    f"Server returned HTML (Content-Type: {content_type}). "
+                    "URL is likely a portal page, not a direct file download."
+                )
+
             # Detect extension from URL — map format name to proper file extension
             from src.climate_embeddings.loaders.detect_format import detect_format_from_url
             fmt = detect_format_from_url(url)
@@ -458,9 +487,9 @@ def _run_phase_download(
             with open(tmp_path, "rb") as f:
                 head_bytes = f.read(512)
             head_text = head_bytes.decode("utf-8", errors="ignore").lower().strip()
-            if "<!doctype" in head_text or "<html" in head_text:
+            if any(tag in head_text for tag in ["<!doctype", "<html", "<head", "<body", "<?xml"]):
                 raise ValueError(
-                    "Downloaded file contains HTML (likely a login/redirect page, not data). "
+                    "Downloaded file contains HTML/XML (likely a login/redirect page, not data). "
                     "This dataset probably requires authentication."
                 )
 
