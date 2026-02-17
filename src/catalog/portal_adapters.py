@@ -491,6 +491,18 @@ _NASA_DIRECT_URLS: Dict[str, str] = {
         "https://goldsmr4.gesdisc.eosdis.nasa.gov/opendap/MERRA2/M2T1NXSLV.5.12.4/"
         "2020/01/MERRA2_400.tavg1_2d_slv_Nx.20200115.nc4"
     ),
+    "MERRA2": (
+        "https://goldsmr4.gesdisc.eosdis.nasa.gov/opendap/MERRA2/M2T1NXSLV.5.12.4/"
+        "2020/01/MERRA2_400.tavg1_2d_slv_Nx.20200115.nc4"
+    ),
+    "CERES-EBAF": (
+        "https://asdc.larc.nasa.gov/data/CERES/EBAF/Edition4.2/"
+        "CERES_EBAF_Edition4.2_200003-202407.nc"
+    ),
+    "JPL GRACE": (
+        "https://podaac-tools.jpl.nasa.gov/drive/files/allData/tellus/L3/mascon/RL06.1/JPL/"
+        "CRI/netcdf/GRCTellus.JPL.200204_202312.GLO.RL06.1M.MSCNv03CRI.nc"
+    ),
 }
 
 
@@ -511,15 +523,24 @@ class NASAAdapter(PortalAdapter):
                 logger.warning(f"NASA: no direct URL for {entry.dataset_name}")
                 return False
 
-            headers = {"User-Agent": "ClimateRAG/1.0"}
             token = os.getenv("NASA_EARTHDATA_TOKEN", "")
-            if token:
-                headers["Authorization"] = f"Bearer {token}"
+            if not token:
+                logger.warning("NASA: NASA_EARTHDATA_TOKEN not set — most datasets require auth")
+                return False
+
+            # NASA Earthdata uses OAuth redirects — need a session with cookies
+            session = http_requests.Session()
+            session.headers.update({"User-Agent": "ClimateRAG/1.0"})
+            session.headers.update({"Authorization": f"Bearer {token}"})
 
             logger.info(f"NASA: downloading {entry.dataset_name} from {url}")
-            resp = http_requests.get(url, timeout=300, stream=True,
-                                     headers=headers, allow_redirects=True)
+            resp = session.get(url, timeout=300, stream=True, allow_redirects=True)
             resp.raise_for_status()
+
+            # Check we got data, not a login page
+            content_type = resp.headers.get("Content-Type", "").lower()
+            if "text/html" in content_type:
+                raise ValueError("Got HTML response — token may be expired or invalid")
 
             ext = ".nc4" if ".nc4" in url else ".nc"
             with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
@@ -557,26 +578,33 @@ class NASAAdapter(PortalAdapter):
 class MarineCopernicusAdapter(PortalAdapter):
     """
     Adapter for Copernicus Marine Service (CMEMS) datasets.
-    Uses the CMEMS API / direct HTTPS endpoints.
+    Uses the `copernicusmarine` Python toolbox for authenticated access.
+    Requires CMEMS_USERNAME and CMEMS_PASSWORD env vars.
     """
+
+    # Map product IDs to their dataset IDs for the copernicusmarine API
+    _PRODUCT_DATASETS: Dict[str, str] = {
+        "SST_MED_SST_L4_REP_OBSERVATIONS_010_021": "cmems_SST_MED_SST_L4_REP_OBSERVATIONS_010_021",
+        "SST_MED_SST_L4_NRT_OBSERVATIONS_010_004": "cmems_SST_MED_SST_L4_NRT_OBSERVATIONS_010_004",
+    }
 
     def download_and_process(self, entry: CatalogEntry) -> bool:
         tmp_path = None
         try:
-            import requests as http_requests
-
             product_id = self._extract_product_id(entry.link or "")
             if not product_id:
                 logger.warning(f"Marine: cannot extract product ID from {entry.link}")
                 return False
 
-            # Try the CMEMS Subsetter API for a small sample
-            url = (
-                f"https://nrt.cmems-du.eu/thredds/dodsC/{product_id}"
-            )
+            # Try copernicusmarine toolbox first
+            tmp_path = self._download_via_toolbox(product_id, entry)
 
-            logger.info(f"Marine: trying OpenDAP for {product_id}")
-            return self._download_via_opendap(url, entry)
+            if tmp_path is None:
+                logger.warning(f"Marine: could not download {entry.dataset_name}")
+                return False
+
+            ok = _process_file(tmp_path, entry, adapter_name="Marine")
+            return ok
 
         except Exception as e:
             logger.error(f"Marine adapter failed for {entry.dataset_name}: {e}\n{traceback.format_exc()}")
@@ -587,7 +615,6 @@ class MarineCopernicusAdapter(PortalAdapter):
 
     def _extract_product_id(self, link: str) -> Optional[str]:
         """Extract CMEMS product ID from URL."""
-        # https://data.marine.copernicus.eu/product/SST_MED_SST_L4_REP_OBSERVATIONS_010_021/description
         parsed = urlparse(link)
         parts = parsed.path.strip("/").split("/")
         for i, part in enumerate(parts):
@@ -595,35 +622,48 @@ class MarineCopernicusAdapter(PortalAdapter):
                 return parts[i + 1].split("?")[0]
         return None
 
-    def _download_via_opendap(self, url: str, entry: CatalogEntry) -> bool:
-        """Download via OpenDAP using xarray."""
-        tmp_path = None
+    def _download_via_toolbox(self, product_id: str, entry: CatalogEntry) -> Optional[str]:
+        """Download a small sample using the copernicusmarine Python toolbox."""
         try:
-            import xarray as xr
+            import copernicusmarine
 
-            ds = xr.open_dataset(url, engine="netcdf4")
-            # Take a small slice
-            time_dim = None
-            for dim in ["time", "Time"]:
-                if dim in ds.dims:
-                    time_dim = dim
-                    break
-            if time_dim and ds.sizes[time_dim] > 12:
-                ds = ds.isel({time_dim: slice(0, 12)})
+            username = os.getenv("CMEMS_USERNAME", "")
+            password = os.getenv("CMEMS_PASSWORD", "")
+            if not username or not password:
+                logger.warning("Marine: CMEMS_USERNAME/CMEMS_PASSWORD not set")
+                return None
 
             with tempfile.NamedTemporaryFile(suffix=".nc", delete=False) as tmp:
                 tmp_path = tmp.name
-            ds.to_netcdf(tmp_path)
-            ds.close()
 
-            ok = _process_file(tmp_path, entry, adapter_name="Marine")
-            return ok
+            # Download a small subset (1 month, Mediterranean bbox)
+            logger.info(f"Marine: downloading {product_id} via copernicusmarine toolbox")
+            copernicusmarine.subset(
+                dataset_id=product_id,
+                variables=["analysed_sst"],
+                minimum_longitude=0,
+                maximum_longitude=20,
+                minimum_latitude=35,
+                maximum_latitude=45,
+                start_datetime="2023-01-01",
+                end_datetime="2023-01-31",
+                output_filename=Path(tmp_path).name,
+                output_directory=str(Path(tmp_path).parent),
+                username=username,
+                password=password,
+                force_download=True,
+            )
+
+            if Path(tmp_path).exists() and Path(tmp_path).stat().st_size > 0:
+                return tmp_path
+            return None
+
+        except ImportError:
+            logger.warning("copernicusmarine not installed — pip install copernicusmarine")
+            return None
         except Exception as e:
-            logger.warning(f"Marine OpenDAP failed for {entry.dataset_name}: {e}")
-            return False
-        finally:
-            if tmp_path:
-                Path(tmp_path).unlink(missing_ok=True)
+            logger.warning(f"Marine toolbox failed for {entry.dataset_name}: {e}")
+            return None
 
 
 # ---------------------------------------------------------------------------

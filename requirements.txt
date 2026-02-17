@@ -103,3 +103,6 @@ python-multipart>=0.0.6
 
 # Excel file reading (for D1.1.xlsx climate dataset catalog)
 openpyxl>=3.1.0
+
+# Copernicus Marine Service data access (SST datasets)
+copernicusmarine>=1.0.0

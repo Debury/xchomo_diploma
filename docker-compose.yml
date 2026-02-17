@@ -135,6 +135,8 @@ services:
       - CDS_API_URL=${CDS_API_URL:-https://cds.climate.copernicus.eu/api}
       - CDS_API_KEY=${CDS_API_KEY:-}
       - NASA_EARTHDATA_TOKEN=${NASA_EARTHDATA_TOKEN:-}
+      - CMEMS_USERNAME=${CMEMS_USERNAME:-}
+      - CMEMS_PASSWORD=${CMEMS_PASSWORD:-}
     depends_on:
       dagit:
         condition: service_started
