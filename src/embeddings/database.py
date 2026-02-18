@@ -175,8 +175,8 @@ class VectorDatabase:
                 "payload": payload
             })
         
-        # Batch upserts to avoid Qdrant timeouts on large datasets
-        BATCH_SIZE = 50
+        # Batch upserts — 500 points per call (safe for 1024-dim vectors, ~2 MB per batch)
+        BATCH_SIZE = 500
         MAX_RETRIES = 3
         import time
 

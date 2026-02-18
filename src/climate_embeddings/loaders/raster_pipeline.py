@@ -304,10 +304,14 @@ def _load_xarray_generic(path: Path, engine: Optional[str] = None, **kwargs) -> 
             for dim in da_var.dims:
                 d = str(dim).lower()
                 if "time" in d or "date" in d or "step" in d:
-                    # CRITICAL: One chunk per time step -> High Resolution
-                    chunking[dim] = 1 
+                    # ~Monthly aggregation: 30 timesteps per chunk
+                    # For daily data: 1 chunk ≈ 1 month
+                    # For 6-hourly: 1 chunk ≈ 1 week
+                    # Stats (mean/std/min/max) computed across all timesteps in chunk
+                    chunking[dim] = 30
                 elif "lat" in d or "y" in d or "lon" in d or "x" in d:
-                    chunking[dim] = 100 # Spatial chunks
+                    # ~2.5° per chunk at 0.25° resolution (regional accuracy)
+                    chunking[dim] = 10
                 else:
                     chunking[dim] = -1
 
