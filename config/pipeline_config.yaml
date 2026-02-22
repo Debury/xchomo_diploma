@@ -235,11 +235,11 @@ logging:
 performance:
   parallel_processing:
     enabled: true
-    max_workers: 4
-  
+    max_workers: 12
+
   memory:
-    chunk_size: 1000
-    max_memory_gb: 8
+    chunk_size: 5000
+    max_memory_gb: 48
     use_dask: false
   
   caching:
@@ -291,14 +291,14 @@ notifications:
 embeddings:
   # Model configuration
   model:
-    name: "BAAI/bge-m3"
+    name: "BAAI/bge-large-en-v1.5"
     provider: "sentence-transformers"
-    device: "cpu"  # Options: cpu, cuda, mps
+    device: "cuda"  # Options: cpu, cuda, mps
     cache_dir: ".cache/models"
     normalize_embeddings: true
     
   # Batch processing
-  batch_size: 64
+  batch_size: 256
   max_seq_length: 512
   show_progress_bar: true
   
@@ -410,9 +410,10 @@ semantic_search:
       msl: "mean sea level pressure"
   
   reranking:
-    enabled: false
+    enabled: true
     method: "cross-encoder"
-    model: "cross-encoder/ms-marco-MiniLM-L-6-v2"
+    model: "BAAI/bge-reranker-v2-m3"
+    candidates: 40
   
   results:
     min_similarity_threshold: 0.5

@@ -1,25 +1,26 @@
 <template>
   <div class="space-y-6">
-    <div class="flex items-center justify-between">
-      <div>
-        <h1 class="text-xl font-semibold text-mendelu-black">Embeddings</h1>
-        <p class="text-sm text-mendelu-gray-dark">Vector store overview</p>
-      </div>
-      <button @click="refreshStats" :disabled="loading" class="btn-secondary disabled:opacity-50">
-        {{ loading ? 'Loading...' : 'Refresh' }}
-      </button>
-    </div>
+    <PageHeader title="Embeddings" subtitle="Vector store overview">
+      <template #actions>
+        <button @click="refreshStats" :disabled="loading" class="btn-secondary disabled:opacity-50">
+          {{ loading ? 'Loading...' : 'Refresh' }}
+        </button>
+      </template>
+    </PageHeader>
 
     <!-- Collection Health -->
-    <div class="card !p-4">
-      <div class="flex items-center gap-3 mb-3">
+    <div class="card">
+      <div class="flex items-center gap-3">
         <div class="w-10 h-10 rounded-full flex items-center justify-center"
-             :class="healthStatus === 'healthy' ? 'bg-green-50' : healthStatus === 'degraded' ? 'bg-amber-50' : 'bg-red-50'">
-          <div class="w-4 h-4 rounded-full"
-               :class="healthStatus === 'healthy' ? 'bg-mendelu-success' : healthStatus === 'degraded' ? 'bg-amber-400' : 'bg-mendelu-alert'"></div>
+             :class="healthStatus === 'healthy' ? 'bg-mendelu-success/10' : healthStatus === 'degraded' ? 'bg-mendelu-green/10' : 'bg-mendelu-gray-light'">
+          <span class="relative flex h-3 w-3">
+            <span v-if="healthStatus === 'healthy'" class="animate-ping absolute inline-flex h-full w-full rounded-full bg-mendelu-success opacity-75"></span>
+            <span class="relative inline-flex rounded-full h-3 w-3"
+                  :class="healthStatus === 'healthy' ? 'bg-mendelu-success' : healthStatus === 'degraded' ? 'bg-mendelu-green/50' : 'bg-mendelu-gray-semi'"></span>
+          </span>
         </div>
         <div>
-          <h3 class="text-sm font-semibold text-mendelu-black">Collection Health</h3>
+          <h3 class="text-sm font-medium text-mendelu-black">Collection Health</h3>
           <p class="text-xs text-mendelu-gray-dark capitalize">{{ healthStatus }}</p>
         </div>
       </div>
@@ -27,46 +28,49 @@
 
     <!-- Stats Overview -->
     <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
-      <div class="card">
-        <h3 class="text-xs text-mendelu-gray-dark uppercase tracking-wider mb-1">Total Vectors</h3>
-        <p class="text-2xl font-semibold text-mendelu-black tabular-nums">{{ stats.total_embeddings?.toLocaleString() || '0' }}</p>
-      </div>
-      <div class="card">
-        <h3 class="text-xs text-mendelu-gray-dark uppercase tracking-wider mb-1">Dimensions</h3>
-        <p class="text-2xl font-semibold text-mendelu-black">1024</p>
-      </div>
-      <div class="card">
-        <h3 class="text-xs text-mendelu-gray-dark uppercase tracking-wider mb-1">Collection</h3>
-        <p class="text-lg font-mono text-mendelu-black">climate_data</p>
-      </div>
+      <StatCard label="Total Vectors" :target="stats.total_embeddings || 0" :loading="loading" />
+      <StatCard label="Dimensions" value="1024" :loading="loading" />
+      <StatCard label="Collection" value="climate_data" :loading="loading" />
     </div>
 
-    <!-- Dataset Breakdown -->
-    <div class="card">
-      <h3 class="text-sm font-medium text-mendelu-black mb-3">Chunks by Dataset</h3>
-      <div v-if="datasetBreakdown.length" class="overflow-x-auto">
-        <table class="w-full text-sm">
-          <thead>
-            <tr class="text-left text-xs text-mendelu-gray-dark border-b border-mendelu-gray-semi uppercase tracking-wider">
-              <th class="pb-2 font-medium">Dataset</th>
-              <th class="pb-2 font-medium text-right">Chunks</th>
-              <th class="pb-2 font-medium w-1/3">Distribution</th>
-            </tr>
-          </thead>
-          <tbody class="divide-y divide-mendelu-gray-semi/50">
-            <tr v-for="ds in datasetBreakdown" :key="ds.name">
-              <td class="py-2.5 text-mendelu-black font-medium">{{ ds.name }}</td>
-              <td class="py-2.5 text-mendelu-black text-right tabular-nums">{{ ds.count.toLocaleString() }}</td>
-              <td class="py-2.5">
-                <div class="w-full bg-mendelu-gray-light rounded-full h-2">
-                  <div class="bg-mendelu-green h-2 rounded-full" :style="{ width: `${ds.percent}%` }"></div>
-                </div>
-              </td>
-            </tr>
-          </tbody>
-        </table>
+    <!-- Dataset Breakdown — Side by side with Donut -->
+    <div class="grid grid-cols-1 lg:grid-cols-12 gap-4">
+      <div class="lg:col-span-8 card">
+        <h3 class="text-sm font-medium text-mendelu-black mb-3">Chunks by Dataset</h3>
+        <div v-if="datasetBreakdown.length" class="overflow-x-auto">
+          <table class="w-full text-sm">
+            <thead>
+              <tr class="border-b border-mendelu-gray-semi">
+                <th class="table-header">Dataset</th>
+                <th class="table-header text-right">Chunks</th>
+                <th class="table-header w-1/3">Distribution</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-mendelu-gray-semi/50">
+              <tr v-for="ds in datasetBreakdown" :key="ds.name" class="hover:bg-mendelu-gray-light transition-all duration-150">
+                <td class="px-4 py-2.5 text-mendelu-black font-medium">{{ ds.name }}</td>
+                <td class="px-4 py-2.5 text-mendelu-black text-right tabular-nums">{{ ds.count.toLocaleString() }}</td>
+                <td class="px-4 py-2.5">
+                  <div class="flex items-center gap-2">
+                    <div class="flex-1 bg-mendelu-gray-light rounded-full h-1.5">
+                      <div class="bg-mendelu-green h-1.5 rounded-full transition-all duration-300" :style="{ width: `${ds.percent}%` }"></div>
+                    </div>
+                    <span class="text-xs text-mendelu-gray-dark tabular-nums w-8 text-right">{{ ds.percent }}%</span>
+                  </div>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p v-else class="text-mendelu-gray-dark text-sm">No dataset data available</p>
       </div>
-      <p v-else class="text-mendelu-gray-dark text-sm">No dataset data available</p>
+      <div class="lg:col-span-4 card flex items-center justify-center">
+        <DonutChart
+          :segments="datasetDonutSegments"
+          :size="150"
+          label="chunks"
+        />
+      </div>
     </div>
 
     <!-- Variable Breakdown -->
@@ -74,12 +78,19 @@
       <h3 class="text-sm font-medium text-mendelu-black mb-3">Chunks by Variable</h3>
       <div v-if="variableBreakdown.length" class="flex flex-wrap gap-2">
         <span
-          v-for="v in variableBreakdown"
+          v-for="(v, i) in displayedVariables"
           :key="v.name"
-          class="px-3 py-1.5 bg-mendelu-green/10 text-mendelu-green rounded-full text-xs font-medium"
+          class="badge-info"
         >
           {{ v.name }}
         </span>
+        <button
+          v-if="variableBreakdown.length > 20 && !showAllVariables"
+          @click="showAllVariables = true"
+          class="btn-ghost text-xs"
+        >
+          +{{ variableBreakdown.length - 20 }} more
+        </button>
       </div>
       <p v-else class="text-mendelu-gray-dark text-sm">No variable data available</p>
     </div>
@@ -90,23 +101,21 @@
       <div v-if="samples.length" class="overflow-x-auto">
         <table class="w-full text-sm">
           <thead>
-            <tr class="text-left text-mendelu-gray-dark border-b border-mendelu-gray-semi text-xs uppercase tracking-wider">
-              <th class="pb-2 font-medium">Variable</th>
-              <th class="pb-2 font-medium">Source</th>
-              <th class="pb-2 font-medium">Temporal</th>
-              <th class="pb-2 font-medium">Spatial</th>
-              <th class="pb-2 font-medium">Preview</th>
+            <tr class="border-b border-mendelu-gray-semi">
+              <th class="table-header">Variable</th>
+              <th class="table-header">Source</th>
+              <th class="table-header">Temporal</th>
+              <th class="table-header">Spatial</th>
+              <th class="table-header">Preview</th>
             </tr>
           </thead>
           <tbody class="divide-y divide-mendelu-gray-semi/50">
-            <tr v-for="sample in samples" :key="sample.id" class="text-mendelu-gray-dark">
-              <td class="py-2.5">
-                <span class="px-1.5 py-0.5 bg-mendelu-green/10 text-mendelu-green rounded text-xs font-medium">{{ sample.variable }}</span>
-              </td>
-              <td class="py-2.5">{{ sample.source }}</td>
-              <td class="py-2.5">{{ sample.temporal }}</td>
-              <td class="py-2.5">{{ sample.spatial }}</td>
-              <td class="py-2.5 max-w-xs truncate text-mendelu-gray-dark text-xs">{{ sample.text }}</td>
+            <tr v-for="sample in samples" :key="sample.id" class="hover:bg-mendelu-gray-light transition-all duration-150">
+              <td class="px-4 py-2.5"><span class="badge-info">{{ sample.variable }}</span></td>
+              <td class="px-4 py-2.5 text-mendelu-gray-dark">{{ sample.source }}</td>
+              <td class="px-4 py-2.5 text-mendelu-gray-dark">{{ sample.temporal }}</td>
+              <td class="px-4 py-2.5 text-mendelu-gray-dark">{{ sample.spatial }}</td>
+              <td class="px-4 py-2.5 max-w-xs truncate text-mendelu-gray-dark text-xs">{{ sample.text }}</td>
             </tr>
           </tbody>
         </table>
@@ -129,17 +138,36 @@
 
 <script setup>
 import { ref, computed, onMounted } from 'vue'
+import PageHeader from '../components/PageHeader.vue'
+import StatCard from '../components/StatCard.vue'
+import DonutChart from '../components/DonutChart.vue'
 
 const stats = ref({})
 const loading = ref(false)
 const samples = ref([])
 const datasetBreakdown = ref([])
 const variableBreakdown = ref([])
+const showAllVariables = ref(false)
+
+const donutColors = ['#79be15', '#82c55b', '#6aaa10', '#535a5d', '#dce3e4', '#4a9e0d', '#a3d977', '#3d8a0b']
 
 const healthStatus = computed(() => {
   if (!stats.value.total_embeddings) return 'empty'
   if (stats.value.total_embeddings > 0) return 'healthy'
   return 'degraded'
+})
+
+const datasetDonutSegments = computed(() => {
+  return datasetBreakdown.value.slice(0, 8).map((ds, i) => ({
+    label: ds.name.length > 15 ? ds.name.slice(0, 15) + '...' : ds.name,
+    value: ds.count,
+    color: donutColors[i % donutColors.length],
+  }))
+})
+
+const displayedVariables = computed(() => {
+  if (showAllVariables.value) return variableBreakdown.value
+  return variableBreakdown.value.slice(0, 20)
 })
 
 async function refreshStats() {
@@ -150,7 +178,6 @@ async function refreshStats() {
     const data = await resp.json()
     stats.value = data
 
-    // Build dataset breakdown
     const sources = data.sources || []
     const total = data.total_embeddings || 1
     datasetBreakdown.value = sources.map(s => ({
@@ -159,20 +186,17 @@ async function refreshStats() {
       percent: Math.round(100 / sources.length)
     }))
 
-    // Build variable breakdown
     variableBreakdown.value = (data.variables || []).map(v => ({ name: v }))
 
-    // Build sample records
     samples.value = (data.variables || []).slice(0, 5).map((v, i) => ({
       id: i,
       variable: v,
       source: data.sources?.[0] || 'Unknown',
       temporal: '2020-2100',
       spatial: '0.5 grid',
-      text: `Climate data for ${v} — trends and patterns across the study region`
+      text: `Climate data for ${v} - trends and patterns across the study region`
     }))
 
-    // Try to get detailed health
     try {
       const healthResp = await fetch('/admin/qdrant/health')
       if (healthResp.ok) {

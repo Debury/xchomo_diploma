@@ -3,7 +3,6 @@ Tests for the catalog module: Excel reader, phase classifier,
 metadata pipeline, location enricher, and batch orchestrator.
 """
 
-import json
 import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -291,6 +290,8 @@ class TestMetadataPipeline:
         assert result["processed"] == 5
         assert result["failed"] == 0
         assert result["total"] == 5
+        assert len(result["succeeded_ids"]) == 5
+        assert result["failed_entries"] == []
 
 
 # ---------------------------------------------------------------------------
@@ -300,51 +301,157 @@ class TestMetadataPipeline:
 from src.catalog.batch_orchestrator import BatchProgress
 
 
+@pytest.fixture(autouse=False)
+def _setup_test_db(monkeypatch):
+    """Create an in-memory SQLite DB for BatchProgress tests."""
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from src.database.models import Base
+    from src.database import connection as conn_mod
+
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(bind=engine)
+    factory = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+
+    monkeypatch.setattr(conn_mod, "_engine", engine)
+    monkeypatch.setattr(conn_mod, "_SessionLocal", factory)
+    return engine
+
+
 class TestBatchProgress:
-    def test_save_and_load(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            path = Path(tmpdir) / "progress.json"
-
-            progress = BatchProgress(total=10, processed=5, failed=1)
-            progress.sources["source_1"] = {"status": "completed", "dataset_name": "ERA5", "phase": 0}
-            progress.save(path)
-
-            loaded = BatchProgress.load(path)
-            assert loaded.total == 10
-            assert loaded.processed == 5
-            assert loaded.failed == 1
-            assert loaded.sources["source_1"]["status"] == "completed"
+    @pytest.fixture(autouse=True)
+    def db(self, _setup_test_db):
+        """Ensure each test gets a clean in-memory DB."""
+        pass
 
     def test_mark_started_and_completed(self):
         progress = BatchProgress(total=10)
         progress.mark_started("src_1", "ERA5", 0)
-        assert progress.sources["src_1"]["status"] == "processing"
+        # After mark_started the row is "processing" in DB
+        assert not progress.is_completed("src_1", phase=0)
 
-        progress.mark_completed("src_1")
-        assert progress.sources["src_1"]["status"] == "completed"
-        assert progress.processed == 1
+        progress.mark_completed("src_1", phase=0)
+        assert progress.is_completed("src_1", phase=0)
 
     def test_mark_failed(self):
         progress = BatchProgress(total=10)
         progress.mark_started("src_1", "ERA5", 0)
-        progress.mark_failed("src_1", "Download timeout")
-        assert progress.sources["src_1"]["status"] == "failed"
-        assert progress.sources["src_1"]["error"] == "Download timeout"
-        assert progress.failed == 1
+        progress.mark_failed("src_1", "Download timeout", phase=0)
+        assert not progress.is_completed("src_1", phase=0)
+        assert progress.get_overall_status("src_1", 0) == "failed"
 
     def test_is_completed(self):
         progress = BatchProgress()
-        progress.sources["src_1"] = {"status": "completed"}
-        assert progress.is_completed("src_1") is True
-        assert progress.is_completed("src_2") is False
+        progress.mark_started("src_1", "ERA5", 0)
+        progress.mark_completed("src_1", phase=0)
+        assert progress.is_completed("src_1", phase=0) is True
+        assert progress.is_completed("src_2", phase=0) is False
 
     def test_get_summary(self):
-        progress = BatchProgress(total=10, processed=5, failed=2, skipped=1)
+        progress = BatchProgress(total=10)
+        # Simulate 5 completed phase-1 sources and 2 failed phase-1 sources
+        for i in range(5):
+            progress.mark_started(f"src_{i}", f"Dataset_{i}", 1)
+            progress.mark_completed(f"src_{i}", phase=1)
+        for i in range(5, 7):
+            progress.mark_started(f"src_{i}", f"Dataset_{i}", 1)
+            progress.mark_failed(f"src_{i}", "error", phase=1)
+        progress.skipped = 1
+
         summary = progress.get_summary()
         assert summary["total"] == 10
         assert summary["processed"] == 5
         assert summary["failed"] == 2
         assert summary["pending"] == 2
+
+    def test_mark_interrupted(self):
+        progress = BatchProgress(total=5)
+        progress.mark_started("src_1", "ERA5", 0)
+        # src_1 is now "processing"
+        count = progress.mark_interrupted()
+        assert count == 1
+        assert progress.get_overall_status("src_1", 0) == "pending"
+
+    def test_get_overall_status_metadata_only(self):
+        progress = BatchProgress(total=5)
+        progress.mark_started("src_1", "ERA5", 0)
+        progress.mark_completed("src_1", phase=0)
+        # Target phase is 1 but only phase 0 is done
+        assert progress.get_overall_status("src_1", 1) == "metadata_only"
+
+    def test_get_completed_set(self):
+        progress = BatchProgress(total=5)
+        for i in range(3):
+            progress.mark_started(f"src_{i}", f"DS_{i}", 0)
+            progress.mark_completed(f"src_{i}", phase=0)
+        # src_3 is started but not completed
+        progress.mark_started("src_3", "DS_3", 0)
+
+        completed = progress.get_completed_set(phase=0)
+        assert completed == {"src_0", "src_1", "src_2"}
+        assert "src_3" not in completed
+
+    def test_get_completed_set_empty(self):
+        progress = BatchProgress()
+        assert progress.get_completed_set(phase=0) == set()
+
+    def test_mark_started_bulk(self):
+        progress = BatchProgress(total=5)
+        entries = [
+            CatalogEntry(row_index=i, dataset_name=f"DS_{i}")
+            for i in range(3)
+        ]
+        progress.mark_started_bulk(entries, phase=0)
+        # All should be in processing state (not completed)
+        for entry in entries:
+            assert not progress.is_completed(entry.source_id, phase=0)
+            assert progress.get_overall_status(entry.source_id, 0) == "processing"
+
+    def test_mark_started_bulk_idempotent(self):
+        """Calling mark_started_bulk twice should not fail (upsert behavior)."""
+        progress = BatchProgress(total=3)
+        entries = [CatalogEntry(row_index=0, dataset_name="DS_0")]
+        progress.mark_started_bulk(entries, phase=0)
+        progress.mark_started_bulk(entries, phase=0)  # should not raise
+        assert progress.get_overall_status(entries[0].source_id, 0) == "processing"
+
+    def test_mark_completed_bulk(self):
+        progress = BatchProgress(total=5)
+        entries = [
+            CatalogEntry(row_index=i, dataset_name=f"DS_{i}")
+            for i in range(3)
+        ]
+        progress.mark_started_bulk(entries, phase=0)
+
+        ids = [e.source_id for e in entries]
+        progress.mark_completed_bulk(ids, phase=0)
+
+        completed = progress.get_completed_set(phase=0)
+        assert completed == set(ids)
+
+    def test_mark_failed_bulk(self):
+        progress = BatchProgress(total=5)
+        entries = [
+            CatalogEntry(row_index=i, dataset_name=f"DS_{i}")
+            for i in range(2)
+        ]
+        progress.mark_started_bulk(entries, phase=0)
+
+        pairs = [(entries[0].source_id, "timeout"), (entries[1].source_id, "404")]
+        progress.mark_failed_bulk(pairs, phase=0)
+
+        for entry in entries:
+            assert not progress.is_completed(entry.source_id, phase=0)
+            assert progress.get_overall_status(entry.source_id, 0) == "failed"
+
+    def test_mark_completed_bulk_empty(self):
+        """Passing empty list should be a no-op."""
+        progress = BatchProgress()
+        progress.mark_completed_bulk([], phase=0)  # should not raise
+
+    def test_mark_failed_bulk_empty(self):
+        progress = BatchProgress()
+        progress.mark_failed_bulk([], phase=0)  # should not raise
 
 
 # ---------------------------------------------------------------------------

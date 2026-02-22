@@ -1,7 +1,17 @@
 <template>
   <div class="min-h-screen flex">
+    <!-- Mobile overlay -->
+    <div
+      v-if="sidebarOpen"
+      class="fixed inset-0 bg-black/40 z-40 md:hidden"
+      @click="sidebarOpen = false"
+    ></div>
+
     <!-- Sidebar -->
-    <aside class="w-60 bg-mendelu-black flex flex-col">
+    <aside
+      class="w-60 bg-mendelu-black flex flex-col fixed inset-y-0 left-0 z-50 transform transition-transform duration-200 md:relative md:translate-x-0"
+      :class="sidebarOpen ? 'translate-x-0' : '-translate-x-full'"
+    >
       <!-- Logo -->
       <div class="px-5 py-5 border-b border-white/10">
         <div class="flex items-center gap-3">
@@ -18,13 +28,16 @@
       </div>
 
       <!-- Navigation -->
-      <nav class="flex-1 px-3 py-4 space-y-0.5">
+      <nav class="flex-1 px-3 py-4 space-y-0.5 overflow-y-auto">
         <router-link
           v-for="item in navItems"
           :key="item.path"
           :to="item.path"
-          class="flex items-center gap-3 px-3 py-2 rounded-lg text-[13px] text-gray-400 hover:bg-white/10 hover:text-white transition-colors"
-          :class="{ 'bg-mendelu-green/15 text-mendelu-green !hover:bg-mendelu-green/20': $route.path === item.path }"
+          class="flex items-center gap-3 px-3 py-2 rounded-lg text-[13px] transition-all duration-150"
+          :class="isActive(item.path)
+            ? 'bg-mendelu-green/15 text-mendelu-green'
+            : 'text-gray-400 hover:bg-white/10 hover:text-white'"
+          @click="sidebarOpen = false"
         >
           <component :is="item.icon" class="w-4 h-4 flex-shrink-0" />
           <span>{{ item.label }}</span>
@@ -34,13 +47,13 @@
       <!-- User Section -->
       <div class="px-4 py-3 border-t border-white/10">
         <div class="flex items-center justify-between">
-          <div class="flex items-center gap-2">
-            <div class="w-7 h-7 rounded-full bg-mendelu-green/20 flex items-center justify-center text-xs text-mendelu-green font-medium">
+          <div class="flex items-center gap-2 min-w-0">
+            <div class="w-7 h-7 rounded-full bg-mendelu-green/20 flex items-center justify-center text-xs text-mendelu-green font-medium flex-shrink-0">
               {{ authStore.user?.username?.[0]?.toUpperCase() || 'U' }}
             </div>
-            <span class="text-xs text-gray-400">{{ authStore.user?.username }}</span>
+            <span class="text-xs text-gray-400 truncate">{{ authStore.user?.username }}</span>
           </div>
-          <button @click="handleLogout" class="text-gray-500 hover:text-white transition-colors">
+          <button @click="handleLogout" class="text-gray-500 hover:text-white transition-all duration-150 p-1 rounded hover:bg-white/10">
             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"></path>
             </svg>
@@ -50,23 +63,37 @@
     </aside>
 
     <!-- Main Content -->
-    <main class="flex-1 flex flex-col overflow-hidden">
+    <main class="flex-1 flex flex-col overflow-hidden md:ml-0">
       <!-- Header -->
-      <header class="h-12 bg-white border-b border-mendelu-gray-semi flex items-center justify-between px-6">
-        <h2 class="text-sm font-medium text-mendelu-black">{{ $route.name }}</h2>
+      <header class="h-12 bg-white border-b border-mendelu-gray-semi flex items-center justify-between px-4 md:px-6 flex-shrink-0">
+        <div class="flex items-center gap-3">
+          <!-- Mobile hamburger -->
+          <button
+            @click="sidebarOpen = !sidebarOpen"
+            class="md:hidden p-1 rounded-lg text-mendelu-gray-dark hover:bg-mendelu-gray-light transition-all duration-150"
+          >
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16" />
+            </svg>
+          </button>
+          <h2 class="text-sm font-medium text-mendelu-black">{{ $route.name }}</h2>
+        </div>
         <div class="flex items-center gap-4">
           <div class="flex items-center gap-1.5 text-xs text-mendelu-gray-dark">
-            <div class="w-1.5 h-1.5 rounded-full bg-mendelu-success"></div>
-            <span>Online</span>
+            <div
+              class="w-1.5 h-1.5 rounded-full transition-colors duration-300"
+              :class="apiHealthy ? 'bg-mendelu-success' : 'bg-mendelu-alert'"
+            ></div>
+            <span>{{ apiHealthy ? 'Online' : 'Offline' }}</span>
           </div>
-          <a href="/docs" target="_blank" class="text-mendelu-gray-dark hover:text-mendelu-green text-xs transition-colors">
+          <a href="/docs" target="_blank" class="text-mendelu-gray-dark hover:text-mendelu-green text-xs transition-all duration-150">
             API Docs
           </a>
         </div>
       </header>
 
       <!-- Page Content -->
-      <div class="flex-1 overflow-auto p-6 bg-mendelu-gray-light">
+      <div class="flex-1 overflow-auto p-4 md:p-6 bg-mendelu-gray-light">
         <router-view />
       </div>
     </main>
@@ -74,12 +101,40 @@
 </template>
 
 <script setup>
-import { h } from 'vue'
-import { useRouter } from 'vue-router'
+import { h, ref, onMounted, onUnmounted } from 'vue'
+import { useRouter, useRoute } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
 
 const router = useRouter()
+const route = useRoute()
 const authStore = useAuthStore()
+
+const sidebarOpen = ref(false)
+const apiHealthy = ref(true)
+let healthInterval = null
+
+function isActive(path) {
+  if (path === '/') return route.path === '/' || route.path === ''
+  return route.path.startsWith(path)
+}
+
+async function checkHealth() {
+  try {
+    const resp = await fetch(`/health?t=${Date.now()}`)
+    apiHealthy.value = resp.ok
+  } catch {
+    apiHealthy.value = false
+  }
+}
+
+onMounted(() => {
+  checkHealth()
+  healthInterval = setInterval(checkHealth, 30000)
+})
+
+onUnmounted(() => {
+  if (healthInterval) clearInterval(healthInterval)
+})
 
 // SVG icon components
 const IconDashboard = (_, { attrs }) => h('svg', { ...attrs, fill: 'none', stroke: 'currentColor', viewBox: '0 0 24 24' }, [

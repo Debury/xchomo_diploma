@@ -1,38 +1,33 @@
 <template>
   <div class="space-y-5">
-    <!-- Header -->
-    <div class="flex items-center justify-between">
-      <div>
-        <h1 class="text-xl font-semibold text-mendelu-black">Dataset Catalog</h1>
-        <p class="text-sm text-mendelu-gray-dark">{{ catalog.length || 246 }} climate data sources from D1.1.xlsx</p>
-      </div>
-      <div class="flex gap-2">
-        <button @click="classifyCatalog" :disabled="loading" class="btn-secondary disabled:opacity-50">
+    <PageHeader title="Dataset Catalog" :subtitle="`${catalog.length || 246} climate data sources from D1.1.xlsx`">
+      <template #actions>
+        <button @click="classifyCatalog" :disabled="loading" class="btn-ghost disabled:opacity-50">
           Classify
         </button>
-        <button @click="triggerProcessing([0])" :disabled="processing" class="btn-primary disabled:opacity-50">
-          {{ processing ? 'Processing...' : 'Phase 0' }}
-        </button>
-        <button @click="triggerProcessing([1])" :disabled="processing" class="btn-primary !bg-mendelu-success disabled:opacity-50">
-          {{ processing ? 'Processing...' : 'Phase 1' }}
-        </button>
-        <button @click="triggerProcessing([2])" :disabled="processing" class="btn-primary !bg-amber-500 hover:!bg-amber-600 disabled:opacity-50">
-          {{ processing ? 'Processing...' : 'Phase 2' }}
-        </button>
-        <button @click="triggerProcessing([3])" :disabled="processing" class="btn-primary !bg-orange-500 hover:!bg-orange-600 disabled:opacity-50">
-          {{ processing ? 'Processing...' : 'Phase 3' }}
-        </button>
+        <div class="flex rounded-lg border border-mendelu-gray-semi overflow-hidden">
+          <button
+            v-for="p in [0, 1, 2, 3]"
+            :key="p"
+            @click="triggerProcessing([p])"
+            :disabled="processing"
+            class="px-3 py-1.5 text-xs font-medium transition-all duration-150 disabled:opacity-50 border-r border-mendelu-gray-semi last:border-r-0"
+            :class="processing ? 'bg-mendelu-gray-light text-mendelu-gray-dark' : 'bg-white hover:bg-mendelu-gray-light text-mendelu-black'"
+          >
+            {{ processing ? '...' : `Phase ${p}` }}
+          </button>
+        </div>
         <button @click="refreshCatalog" :disabled="loading" class="btn-secondary disabled:opacity-50">
           Refresh
         </button>
-      </div>
-    </div>
+      </template>
+    </PageHeader>
 
     <!-- Phase Distribution -->
     <div v-if="phaseStats" class="grid grid-cols-5 gap-3">
-      <div v-for="(count, phase) in phaseStats.phases" :key="phase" class="card !p-4">
+      <div v-for="(count, phase) in phaseStats.phases" :key="phase" class="stat-card !p-4">
         <div class="flex items-center justify-between mb-1">
-          <span class="text-[11px] font-medium uppercase tracking-wider" :class="phaseColor(Number(phase))">Phase {{ phase }}</span>
+          <span class="text-[11px] font-medium uppercase tracking-wider text-mendelu-gray-dark">Phase {{ phase }}</span>
           <span class="text-lg font-semibold text-mendelu-black tabular-nums">{{ count }}</span>
         </div>
         <p class="text-[11px] text-mendelu-gray-dark">{{ phaseLabel(Number(phase)) }}</p>
@@ -40,7 +35,7 @@
     </div>
 
     <!-- Thread Crashed Banner -->
-    <div v-if="progress && progress.thread_crashed" class="card !p-4 border-mendelu-alert/40 bg-red-50">
+    <div v-if="progress && progress.thread_crashed" class="card !p-4 border-mendelu-alert/40">
       <div class="flex items-center justify-between">
         <div>
           <span class="text-sm font-medium text-mendelu-alert">Batch processing crashed</span>
@@ -52,15 +47,15 @@
       </div>
     </div>
 
-    <!-- Thread Alive Indicator -->
-    <div v-if="progress && progress.thread_alive" class="card !p-4 border-mendelu-green/30 bg-mendelu-green/5">
+    <!-- Thread Alive Banner -->
+    <div v-if="progress && progress.thread_alive" class="card !p-4 border-mendelu-green/30">
       <div class="flex items-center gap-2">
         <span class="relative flex h-2.5 w-2.5">
           <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-mendelu-green opacity-75"></span>
           <span class="relative inline-flex rounded-full h-2.5 w-2.5 bg-mendelu-green"></span>
         </span>
         <span class="text-sm text-mendelu-green font-medium">Processing in progress</span>
-        <span v-if="progress.current_source" class="text-xs text-mendelu-green/70 ml-auto font-mono">{{ progress.current_source }}</span>
+        <span v-if="progress.current_source" class="text-xs text-mendelu-gray-dark ml-auto font-mono">{{ progress.current_source }}</span>
       </div>
     </div>
 
@@ -73,16 +68,15 @@
       <div class="w-full bg-mendelu-gray-semi rounded-full h-2">
         <div class="flex h-2 rounded-full overflow-hidden">
           <div class="bg-mendelu-success transition-all duration-500" :style="{ width: `${pctOf(progress.processed)}%` }"></div>
-          <div v-if="progress.metadata_only" class="bg-amber-400 transition-all duration-500" :style="{ width: `${pctOf(progress.metadata_only)}%` }"></div>
+          <div v-if="progress.metadata_only" class="bg-mendelu-green/40 transition-all duration-500" :style="{ width: `${pctOf(progress.metadata_only)}%` }"></div>
           <div v-if="progress.failed" class="bg-mendelu-alert transition-all duration-500" :style="{ width: `${pctOf(progress.failed)}%` }"></div>
         </div>
       </div>
       <div class="flex gap-4 mt-1.5 text-[11px] text-mendelu-gray-dark">
         <span class="text-mendelu-success">{{ progress.processed }} processed</span>
-        <span v-if="progress.metadata_only" class="text-amber-500">{{ progress.metadata_only }} metadata only</span>
+        <span v-if="progress.metadata_only" class="text-mendelu-green/70">{{ progress.metadata_only }} metadata only</span>
         <span v-if="progress.failed" class="text-mendelu-alert">{{ progress.failed }} failed</span>
         <span>{{ progress.pending }} pending</span>
-        <span v-if="progress.current_source" class="text-mendelu-green ml-auto">{{ progress.current_source }}</span>
       </div>
     </div>
 
@@ -109,45 +103,45 @@
 
     <!-- Table -->
     <div class="card !p-0 overflow-hidden">
-      <table class="w-full text-sm">
-        <thead>
-          <tr class="border-b border-mendelu-gray-semi text-left text-xs text-mendelu-gray-dark uppercase tracking-wider">
-            <th class="px-4 py-2.5 cursor-pointer hover:text-mendelu-black" @click="toggleSort('dataset_name')">
-              Dataset {{ sortIcon('dataset_name') }}
-            </th>
-            <th class="px-4 py-2.5">Hazard</th>
-            <th class="px-4 py-2.5">Type</th>
-            <th class="px-4 py-2.5">Region</th>
-            <th class="px-4 py-2.5">Phase</th>
-            <th class="px-4 py-2.5">Status</th>
-            <th class="px-4 py-2.5">Access</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr
-            v-for="entry in filteredEntries"
-            :key="entry.row_index"
-            class="border-b border-mendelu-gray-semi/50 hover:bg-mendelu-gray-light cursor-pointer transition-colors"
-            @click="selectedEntry = entry"
-          >
-            <td class="px-4 py-2 text-mendelu-black text-sm font-medium">{{ entry.dataset_name }}</td>
-            <td class="px-4 py-2 text-mendelu-gray-dark text-xs">{{ entry.hazard || '--' }}</td>
-            <td class="px-4 py-2 text-mendelu-gray-dark text-xs">{{ entry.data_type || '--' }}</td>
-            <td class="px-4 py-2 text-mendelu-gray-dark text-xs">{{ entry.region_country || entry.spatial_coverage || '--' }}</td>
-            <td class="px-4 py-2">
-              <span class="px-1.5 py-0.5 rounded-full text-[11px] font-medium" :class="phaseBadgeClass(entry.phase)">
-                {{ entry.phase }}
-              </span>
-            </td>
-            <td class="px-4 py-2">
-              <span class="px-1.5 py-0.5 rounded-full text-[11px] font-medium" :class="statusBadgeClass(entry.processing_status)">
-                {{ entry.processing_status }}
-              </span>
-            </td>
-            <td class="px-4 py-2 text-mendelu-gray-dark text-xs">{{ entry.access || '--' }}</td>
-          </tr>
-        </tbody>
-      </table>
+      <div class="overflow-x-auto">
+        <table class="w-full text-sm">
+          <thead class="sticky top-0 bg-white z-10">
+            <tr class="border-b border-mendelu-gray-semi">
+              <th class="table-header cursor-pointer hover:text-mendelu-black transition-colors duration-150" @click="toggleSort('dataset_name')">
+                Dataset {{ sortIcon('dataset_name') }}
+              </th>
+              <th class="table-header">Hazard</th>
+              <th class="table-header">Type</th>
+              <th class="table-header">Region</th>
+              <th class="table-header">Phase</th>
+              <th class="table-header">Status</th>
+              <th class="table-header">Access</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr
+              v-for="entry in filteredEntries"
+              :key="entry.row_index"
+              class="border-b border-mendelu-gray-semi/50 hover:bg-mendelu-gray-light cursor-pointer transition-all duration-150"
+              @click="selectedEntry = entry"
+            >
+              <td class="px-4 py-2.5 text-mendelu-black text-sm font-medium">{{ entry.dataset_name }}</td>
+              <td class="px-4 py-2.5 text-mendelu-gray-dark text-xs">{{ entry.hazard || '--' }}</td>
+              <td class="px-4 py-2.5 text-mendelu-gray-dark text-xs">{{ entry.data_type || '--' }}</td>
+              <td class="px-4 py-2.5 text-mendelu-gray-dark text-xs">{{ entry.region_country || entry.spatial_coverage || '--' }}</td>
+              <td class="px-4 py-2.5">
+                <span class="badge-neutral">{{ entry.phase }}</span>
+              </td>
+              <td class="px-4 py-2.5">
+                <span :class="statusBadgeClass(entry.processing_status)">
+                  {{ entry.processing_status }}
+                </span>
+              </td>
+              <td class="px-4 py-2.5 text-mendelu-gray-dark text-xs">{{ entry.access || '--' }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
       <div class="text-center text-mendelu-gray-dark text-xs py-3 border-t border-mendelu-gray-semi/50">
         {{ filteredEntries.length }} of {{ catalog.length }} entries
       </div>
@@ -158,7 +152,7 @@
       <div class="bg-white border border-mendelu-gray-semi rounded-xl p-5 max-w-xl w-full mx-4 max-h-[80vh] overflow-y-auto shadow-lg">
         <div class="flex items-center justify-between mb-4">
           <h3 class="text-lg font-semibold text-mendelu-black">{{ selectedEntry.dataset_name }}</h3>
-          <button @click="selectedEntry = null" class="text-mendelu-gray-dark hover:text-mendelu-black text-lg leading-none">&times;</button>
+          <button @click="selectedEntry = null" class="btn-ghost !px-2 !py-1">&times;</button>
         </div>
         <div class="grid grid-cols-2 gap-3 text-sm">
           <div v-for="(value, key) in selectedEntryFields" :key="key">
@@ -167,7 +161,7 @@
           </div>
         </div>
         <div v-if="selectedEntry.link" class="mt-4 pt-3 border-t border-mendelu-gray-semi">
-          <a :href="selectedEntry.link" target="_blank" class="text-mendelu-green hover:text-mendelu-green-hover text-sm font-medium">
+          <a :href="selectedEntry.link" target="_blank" class="text-mendelu-green hover:text-mendelu-green-hover text-sm font-medium transition-colors duration-150">
             Open data link &rarr;
           </a>
         </div>
@@ -178,6 +172,7 @@
 
 <script setup>
 import { ref, computed, onMounted } from 'vue'
+import PageHeader from '../components/PageHeader.vue'
 
 const catalog = ref([])
 const phaseStats = ref(null)
@@ -232,14 +227,8 @@ function toggleSort(field) {
 }
 function sortIcon(field) { return sortField.value !== field ? '' : sortAsc.value ? '\u25B2' : '\u25BC' }
 
-function phaseColor(phase) {
-  return { 0: 'text-blue-600', 1: 'text-mendelu-success', 2: 'text-amber-500', 3: 'text-orange-500', 4: 'text-mendelu-alert' }[phase] || 'text-mendelu-gray-dark'
-}
 function phaseLabel(phase) {
   return { 0: 'Metadata only', 1: 'Direct download', 2: 'Registration', 3: 'API portal', 4: 'Manual' }[phase] || ''
-}
-function phaseBadgeClass(phase) {
-  return { 0: 'bg-blue-50 text-blue-600 border border-blue-200', 1: 'bg-green-50 text-green-700 border border-green-200', 2: 'bg-amber-50 text-amber-700 border border-amber-200', 3: 'bg-orange-50 text-orange-700 border border-orange-200', 4: 'bg-red-50 text-red-700 border border-red-200' }[phase] || 'bg-gray-100 text-gray-600 border border-gray-200'
 }
 function statusBadgeClass(status) {
   return { pending: 'badge-neutral', processing: 'badge-info', completed: 'badge-success', metadata_only: 'badge-warning', failed: 'badge-danger' }[status] || 'badge-neutral'

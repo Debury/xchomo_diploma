@@ -1,10 +1,11 @@
 import os
 import logging
 import requests
+import uuid
 import warnings
 from typing import List, Dict, Any, Optional
 from qdrant_client import QdrantClient
-from qdrant_client.http.models import Distance, VectorParams, ScoredPoint
+from qdrant_client.http.models import Distance, VectorParams, ScoredPoint, PointStruct
 
 logger = logging.getLogger(__name__)
 
@@ -42,11 +43,13 @@ class VectorDatabase:
             # Suppress version compatibility warnings
             with warnings.catch_warnings():
                 warnings.filterwarnings("ignore", message=".*version.*incompatible.*")
+                grpc_port = int(os.getenv("QDRANT_GRPC_PORT", 6334))
                 self.client = QdrantClient(
-                    host=self.host, 
+                    host=self.host,
                     port=self.port,
-                    prefer_grpc=False,  # Use REST API for compatibility
-                    timeout=10
+                    grpc_port=grpc_port,
+                    prefer_grpc=True,
+                    timeout=120
                 )
             logger.info(f"Qdrant Client initialized: {self.host}:{self.port}")
         except Exception as e:
@@ -141,6 +144,49 @@ class VectorDatabase:
         except Exception as e:
             logger.error(f"REST collection creation failed: {e}")
 
+    def disable_indexing(self):
+        """Disable HNSW indexing for bulk ingestion (Qdrant best practice).
+
+        Sets indexing_threshold very high so Qdrant skips incremental
+        HNSW graph rebuilds during upsert.  Call enable_indexing() after
+        the bulk load to trigger a single optimized index build.
+        """
+        if not self.client:
+            logger.warning("No client available — cannot disable indexing")
+            return
+        try:
+            from qdrant_client.http.models import OptimizersConfigDiff
+            self.client.update_collection(
+                collection_name=self.collection,
+                optimizer_config=OptimizersConfigDiff(
+                    indexing_threshold=100_000_000,
+                ),
+            )
+            logger.info(f"Disabled HNSW indexing on '{self.collection}' for bulk load")
+        except Exception as e:
+            logger.warning(f"Failed to disable indexing: {e}")
+
+    def enable_indexing(self):
+        """Re-enable HNSW indexing after bulk ingestion.
+
+        Restores the default indexing_threshold (20000) so Qdrant
+        triggers a single optimized HNSW build for all ingested points.
+        """
+        if not self.client:
+            logger.warning("No client available — cannot enable indexing")
+            return
+        try:
+            from qdrant_client.http.models import OptimizersConfigDiff
+            self.client.update_collection(
+                collection_name=self.collection,
+                optimizer_config=OptimizersConfigDiff(
+                    indexing_threshold=20_000,
+                ),
+            )
+            logger.info(f"Re-enabled HNSW indexing on '{self.collection}' (threshold=20000)")
+        except Exception as e:
+            logger.warning(f"Failed to enable indexing: {e}")
+
     def add_embeddings(self, ids: List[str], embeddings: List[List[float]], metadatas: List[Dict], documents: List[str] = None):
         """
         Add embeddings to vector database with structured metadata.
@@ -166,17 +212,17 @@ class VectorDatabase:
             # DO NOT store text_content - it's generated dynamically from metadata
             # This keeps the DB clean and filterable
             
-            # Deterministic integer ID
-            point_id = hash(uid) % (2**63 - 1)
-            
-            points.append({
-                "id": point_id, 
-                "vector": vec, 
-                "payload": payload
-            })
+            # Deterministic UUID from string ID (gRPC requires PointStruct)
+            point_id = str(uuid.uuid5(uuid.NAMESPACE_URL, str(uid)))
+
+            points.append(PointStruct(
+                id=point_id,
+                vector=vec,
+                payload=payload,
+            ))
         
-        # Batch upserts — 500 points per call (safe for 1024-dim vectors, ~2 MB per batch)
-        BATCH_SIZE = 500
+        # Batch upserts — 2000 points per call (gRPC binary protobuf handles large batches)
+        BATCH_SIZE = 2000
         MAX_RETRIES = 3
         import time
 
@@ -280,6 +326,69 @@ class VectorDatabase:
 
         # Strategy 2: Direct REST API (Fail-safe - always works)
         return self._search_via_rest(query_vector, limit, filter_dict)
+
+    def search_and_rerank(
+        self,
+        query_text: str,
+        query_vector: List[float],
+        limit: int = 5,
+        candidates: int = 40,
+        filter_dict: Optional[Dict[str, Any]] = None,
+        query_filter=None,
+        reranker=None,
+    ) -> List[Any]:
+        """Two-stage retrieval: over-retrieve with bi-encoder, rerank with cross-encoder.
+
+        Args:
+            query_text: Original query string (used by the cross-encoder).
+            query_vector: Pre-computed query embedding for the first-stage search.
+            limit: Final number of results to return after reranking.
+            candidates: Number of candidates to retrieve in the first stage.
+            filter_dict: Optional metadata filter dict for the first-stage search.
+            query_filter: Optional pre-built Qdrant Filter object.
+            reranker: A Reranker instance with a .rerank(query, passages, top_k) method.
+
+        Returns:
+            Reranked list of ScoredPoint-like objects (top ``limit``).
+        """
+        if reranker is None:
+            logger.warning("search_and_rerank called without reranker, falling back to search()")
+            return self.search(query_vector, limit=limit, filter_dict=filter_dict, query_filter=query_filter)
+
+        # Stage 1: over-retrieve
+        raw_results = self.search(
+            query_vector=query_vector,
+            limit=candidates,
+            filter_dict=filter_dict,
+            query_filter=query_filter,
+        )
+
+        if not raw_results:
+            return []
+
+        # Generate text passages for the cross-encoder
+        from src.climate_embeddings.schema import generate_human_readable_text
+
+        passages = []
+        for hit in raw_results:
+            payload = hit.payload if hasattr(hit, "payload") else (hit.get("payload", {}) if isinstance(hit, dict) else {})
+            passages.append(generate_human_readable_text(payload))
+
+        # Stage 2: cross-encoder rerank
+        ranked = reranker.rerank(query_text, passages, top_k=limit)
+
+        reranked_results = []
+        for entry in ranked:
+            idx = entry["index"]
+            hit = raw_results[idx]
+            # Overwrite the score with the cross-encoder score
+            if hasattr(hit, "score"):
+                hit.score = entry["score"]
+            elif isinstance(hit, dict):
+                hit["score"] = entry["score"]
+            reranked_results.append(hit)
+
+        return reranked_results
 
     def _search_via_rest(
         self, 

@@ -36,6 +36,30 @@ export default defineConfig({
       '/health': {
         target: 'http://localhost:8000',
         changeOrigin: true
+      },
+      '/catalog': {
+        target: 'http://localhost:8000',
+        changeOrigin: true
+      },
+      '/schedules': {
+        target: 'http://localhost:8000',
+        changeOrigin: true
+      },
+      '/settings': {
+        target: 'http://localhost:8000',
+        changeOrigin: true
+      },
+      '/logs': {
+        target: 'http://localhost:8000',
+        changeOrigin: true
+      },
+      '/admin': {
+        target: 'http://localhost:8000',
+        changeOrigin: true
+      },
+      '/docs': {
+        target: 'http://localhost:8000',
+        changeOrigin: true
       }
     }
   },

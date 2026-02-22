@@ -389,6 +389,8 @@ ANSWER:"""
     elif question_type == "comparison":
         # Build dynamic instructions based on available metadata
         dynamic_instructions = []
+        dynamic_instructions.append("- Answer based ONLY on the context provided — cite chunk numbers like [1], [2]")
+        dynamic_instructions.append("- Do NOT make up or infer any data not explicitly in the context")
         dynamic_instructions.append("- Compare the data points accurately")
         dynamic_instructions.append("- Reference specific values from the context")
         dynamic_instructions.append("- Mention source and variable names")
@@ -422,11 +424,13 @@ INSTRUCTIONS:
 {instructions_text}
 
 ANSWER:"""
-        max_tokens = 600
-        
+        max_tokens = 800
+
     elif question_type == "statistical":
         # Build dynamic instructions based on available metadata
         dynamic_instructions = []
+        dynamic_instructions.append("- Answer based ONLY on the context provided — cite chunk numbers like [1], [2]")
+        dynamic_instructions.append("- Do NOT make up or infer any data not explicitly in the context")
         dynamic_instructions.append("- Use EXACT statistical values from the context (mean, median, std, min, max, percentiles)")
         dynamic_instructions.append("- Reference the variable, source, and station/location for each statistic")
         dynamic_instructions.append("- Be PRECISE with numbers and units - use exact values from context")
@@ -518,11 +522,13 @@ INSTRUCTIONS:
 {instructions_text}
 
 ANSWER:"""
-        max_tokens = 600
-        
+        max_tokens = 800
+
     elif question_type == "temporal":
         # Build dynamic instructions based on available metadata
         dynamic_instructions = []
+        dynamic_instructions.append("- Answer based ONLY on the context provided — cite chunk numbers like [1], [2]")
+        dynamic_instructions.append("- Do NOT make up or infer any data not explicitly in the context")
         dynamic_instructions.append("- Reference specific dates/times from the context")
         dynamic_instructions.append("- Mention trends or changes over time")
         dynamic_instructions.append("- Include variable names and sources")
@@ -554,16 +560,17 @@ INSTRUCTIONS:
 {instructions_text}
 
 ANSWER:"""
-        max_tokens = 500
-        
+        max_tokens = 800
+
     else:  # general
         # Build dynamic instructions based on available metadata
         dynamic_instructions = []
-        dynamic_instructions.append("- Answer based ONLY on the context provided above")
+        dynamic_instructions.append("- Answer based ONLY on the context provided above — every claim must be traceable to a specific [N] chunk")
+        dynamic_instructions.append("- Cite your sources using the chunk numbers, e.g. 'according to [1]' or '(see [3])'")
         dynamic_instructions.append("- Reference specific values, variables, and sources from the context")
-        dynamic_instructions.append("- Be accurate and precise")
+        dynamic_instructions.append("- Be accurate and precise — quote exact numbers from the context")
         dynamic_instructions.append("- If information is not in the context, say 'I don't have that information in the provided data'")
-        dynamic_instructions.append("- Do NOT make up or invent information")
+        dynamic_instructions.append("- Do NOT make up, infer, or invent any information not explicitly stated in the context")
         
         # CRITICAL: Variable mapping instructions
         dynamic_instructions.append("")
@@ -612,8 +619,8 @@ INSTRUCTIONS:
 {instructions_text}
 
 ANSWER:"""
-        max_tokens = 500
-    
+        max_tokens = 800
+
     return prompt, max_tokens
 
 

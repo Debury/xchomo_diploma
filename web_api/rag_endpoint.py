@@ -26,6 +26,22 @@ _CACHED_VARIABLES_TS: float = 0.0
 _VARIABLES_LOCK = threading.Lock()
 
 
+_CACHED_RERANKER = None
+
+
+def _get_reranker():
+    """Lazy-load cross-encoder reranker on first use (separate from _get_components to avoid startup delay)."""
+    global _CACHED_RERANKER
+    if _CACHED_RERANKER is not None:
+        return _CACHED_RERANKER
+    with _INIT_LOCK:
+        if _CACHED_RERANKER is not None:
+            return _CACHED_RERANKER
+        from src.climate_embeddings.embeddings.text_models import Reranker
+        _CACHED_RERANKER = Reranker()
+        return _CACHED_RERANKER
+
+
 def _get_llm_client():
     """Get LLM client - OpenRouter only."""
     import os
@@ -126,6 +142,49 @@ def _get_variable_list(db, force_refresh: bool = False, max_vars: int = 1000) ->
         return _CACHED_VARIABLES
 
 
+_STOPWORDS = frozenset({
+    "a", "an", "the", "is", "are", "was", "were", "be", "been", "being",
+    "have", "has", "had", "do", "does", "did", "will", "would", "shall",
+    "should", "may", "might", "can", "could", "of", "in", "to", "for",
+    "with", "on", "at", "from", "by", "about", "as", "into", "through",
+    "during", "before", "after", "above", "below", "between", "and", "or",
+    "but", "not", "no", "what", "which", "who", "whom", "this", "that",
+    "these", "those", "i", "me", "my", "we", "our", "you", "your", "it",
+    "its", "they", "them", "their", "how", "when", "where", "why", "all",
+    "each", "every", "any", "some", "most", "more", "much", "many", "show",
+    "tell", "give", "get", "data", "climate",
+})
+
+
+def _boost_metadata_scores(results, query_text: str):
+    """Apply small score boosts when metadata fields match query keywords.
+
+    Boosts +0.05 per keyword match (variable, dataset_name, long_name),
+    capped at +0.15 total per result. Modifies results in-place.
+    """
+    keywords = {
+        w.lower()
+        for w in re.findall(r"[A-Za-z0-9_]+", query_text)
+        if len(w) >= 2 and w.lower() not in _STOPWORDS
+    }
+    if not keywords:
+        return
+
+    for hit in results:
+        payload = hit.payload if hasattr(hit, "payload") else (hit.get("payload", {}) if isinstance(hit, dict) else {})
+        boost = 0.0
+        for field in ("variable", "dataset_name", "long_name"):
+            val = (payload.get(field) or "").lower()
+            if any(kw in val for kw in keywords):
+                boost += 0.05
+        boost = min(boost, 0.15)
+        if boost > 0:
+            if hasattr(hit, "score"):
+                hit.score = float(hit.score) + boost
+            elif isinstance(hit, dict):
+                hit["score"] = float(hit.get("score", 0.0)) + boost
+
+
 _VARIABLE_LIST_RE = re.compile(
     r"\b(what|which|list|show|tell|give)\b.*\b(variable|variables|var|data|fields|columns)\b.*\b(available|in|does|are|have|contains|include)\b",
     re.IGNORECASE,
@@ -195,6 +254,7 @@ class RAGRequest(BaseModel):
     question: str
     top_k: int = 5
     use_llm: bool = True
+    use_reranker: bool = True
     temperature: float = 0.7
     source_id: Optional[str] = None
     variable: Optional[str] = None
@@ -207,6 +267,7 @@ class RAGResponse(BaseModel):
     chunks: List[Dict[str, Any]]
     references: List[str]
     llm_used: bool
+    reranker_used: bool = False
     search_time_ms: float
     llm_time_ms: Optional[float] = None
     conversation_id: Optional[str] = None  # For tracking conversations
@@ -276,11 +337,34 @@ async def rag_query(request: RAGRequest) -> RAGResponse:
         
         # First search: semantic search (general) - get more results to ensure diversity
         initial_top_k = max(effective_top_k, 20)  # Get more initial results
-        results = db.search(
-            query_vector=query_vec.tolist(),
-            limit=initial_top_k,
-            filter_dict=filter_dict if filter_dict else None
-        )
+        reranker_used = False
+        if request.use_reranker:
+            try:
+                reranker = _get_reranker()
+                rerank_candidates = max(40, initial_top_k * 3)
+                results = db.search_and_rerank(
+                    query_text=question_text,
+                    query_vector=query_vec.tolist(),
+                    limit=initial_top_k,
+                    candidates=rerank_candidates,
+                    filter_dict=filter_dict if filter_dict else None,
+                    reranker=reranker,
+                )
+                reranker_used = True
+                logger.info(f"Reranked {rerank_candidates} candidates → top {initial_top_k}")
+            except Exception as e:
+                logger.warning(f"Reranker failed ({e}), falling back to bi-encoder search")
+                results = db.search(
+                    query_vector=query_vec.tolist(),
+                    limit=initial_top_k,
+                    filter_dict=filter_dict if filter_dict else None,
+                )
+        else:
+            results = db.search(
+                query_vector=query_vec.tolist(),
+                limit=initial_top_k,
+                filter_dict=filter_dict if filter_dict else None,
+            )
         
         # Check what variables we got in initial search
         vars_in_initial = set()
@@ -550,6 +634,9 @@ async def rag_query(request: RAGRequest) -> RAGResponse:
             except Exception as e:
                 logger.warning(f"Data selection prompt failed: {e}, continuing with initial search results")
         
+        # Metadata keyword boosting — nudge results where metadata matches query terms
+        _boost_metadata_scores(results, question_text)
+
         # Re-sort results by score and limit
         results = sorted(results, key=lambda x: getattr(x, 'score', 0.0) if hasattr(x, 'score') else (x.get('score', 0.0) if isinstance(x, dict) else 0.0), reverse=True)[:effective_top_k * 3]  # Allow more results after targeted searches
         
@@ -734,6 +821,7 @@ async def rag_query(request: RAGRequest) -> RAGResponse:
             chunks=chunks,
             references=sorted(list(references)),
             llm_used=llm_used,
+            reranker_used=reranker_used,
             search_time_ms=round(search_time, 2),
             llm_time_ms=round(llm_time, 2) if llm_time else None
         )
@@ -768,12 +856,18 @@ async def get_collection_info() -> Dict[str, Any]:
         if _CACHED_INFO and (time.time() - _CACHED_INFO_TS) < 300:
             return _CACHED_INFO
         
-        _config, db, _embedder, _llm = _get_components()
-        
+        # Only need config + DB for info — no LLM or embedder required
+        from src.utils.config_loader import ConfigLoader
+        from src.embeddings.database import VectorDatabase
+
+        config_loader = ConfigLoader("config/pipeline_config.yaml")
+        config = config_loader.load()
+        db = VectorDatabase(config=config)
+
         variables = set()
         sources = set()
         count = 0
-        
+
         client = getattr(db, "client", None)
         collection = getattr(db, "collection_name", None)
         

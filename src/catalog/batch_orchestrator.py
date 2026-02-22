@@ -1,17 +1,15 @@
 """
 Batch orchestrator for processing catalog entries across all phases.
 
-Supports resume (via JSON state file), dry-run, and phase filtering.
+Supports resume (via PostgreSQL state), dry-run, and phase filtering.
 """
 
 import gc
-import json
 import logging
 import os
 import time
 import traceback
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
-from dataclasses import dataclass, field, asdict
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Any
@@ -21,14 +19,14 @@ import numpy as np
 from src.catalog.excel_reader import CatalogEntry, read_catalog
 from src.catalog.phase_classifier import classify_source, classify_all
 from src.catalog.metadata_pipeline import process_metadata_batch, process_metadata_only
+from src.database.connection import get_db_session
+from src.database.models import CatalogProgress as CatalogProgressRow
 from src.utils.logger import setup_logger
 
 logger = logging.getLogger(__name__)
 
 # Persistent file logger — writes to logs/catalog_pipeline.log (Docker volume mount)
 catalog_logger = setup_logger("catalog_pipeline", "logs/catalog_pipeline.log", "INFO")
-
-DEFAULT_PROGRESS_PATH = Path("data/catalog_progress.json")
 
 # Direct download URLs to override portal/landing page links in the Excel catalog.
 # Keys are dataset names (matching CatalogEntry.dataset_name).
@@ -91,203 +89,276 @@ SKIP_PHASE1 = {
     "MED-CORDEX",       # ESGF auth required
     "EURO-CORDEX",      # ESGF auth required
     "RMI-ISPRA",        # ISPRA portal, no direct downloads
+    "STEAD",            # 2GB file, server drops connection at ~1GB consistently (Phase 0 metadata available)
+    "SPEI-GD",          # 21GB file, too large for current pipeline (Phase 0 metadata available)
 }
 
 
-@dataclass
-class SourceProgress:
-    """Progress state for a single source."""
-    source_id: str
-    dataset_name: str
-    phase: int
-    status: str = "pending"  # pending | processing | completed | failed | skipped
-    error: Optional[str] = None
-    started_at: Optional[str] = None
-    completed_at: Optional[str] = None
-
-
-@dataclass
 class BatchProgress:
-    """Overall batch progress state."""
-    total: int = 0
-    processed: int = 0
-    failed: int = 0
-    skipped: int = 0
-    current_phase: Optional[int] = None
-    current_source: Optional[str] = None
-    started_at: Optional[str] = None
-    updated_at: Optional[str] = None
-    sources: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    """Overall batch progress state backed by PostgreSQL.
 
-    def save(self, path: Path = DEFAULT_PROGRESS_PATH):
-        """Persist state to JSON."""
-        path.parent.mkdir(parents=True, exist_ok=True)
-        data = asdict(self)
-        path.write_text(json.dumps(data, indent=2, default=str))
+    Each (source_id, phase) pair is a row in the ``catalog_progress`` table.
+    Every ``mark_*`` method commits immediately so progress is never lost.
+    """
 
-    @classmethod
-    def load(cls, path: Path = DEFAULT_PROGRESS_PATH) -> "BatchProgress":
-        """Load state from JSON, or return empty state."""
-        if not path.exists():
-            return cls()
-        try:
-            data = json.loads(path.read_text())
-            sources = data.pop("sources", {})
-            progress = cls(**{k: v for k, v in data.items() if k != "sources"})
-            progress.sources = sources
-            return progress
-        except Exception as e:
-            logger.warning(f"Failed to load progress from {path}: {e}")
-            return cls()
+    def __init__(self, total: int = 0):
+        self.total = total
+        self.skipped = 0
+        self.current_phase: Optional[int] = None
+        self.current_source: Optional[str] = None
+        self.started_at: Optional[str] = None
+
+    # ------------------------------------------------------------------
+    # Core mutation helpers
+    # ------------------------------------------------------------------
 
     def mark_started(self, source_id: str, dataset_name: str, phase: int):
         self.current_source = source_id
         self.current_phase = phase
-        if source_id not in self.sources:
-            self.sources[source_id] = {
-                "dataset_name": dataset_name,
-                "phases": {},
-            }
-        self.sources[source_id]["phase"] = phase
-        self.sources[source_id].setdefault("phases", {})
-        self.sources[source_id]["phases"][str(phase)] = "processing"
-        self.sources[source_id]["started_at"] = datetime.now().isoformat()
-        # Keep legacy "status" field in sync with current phase
-        self.sources[source_id]["status"] = "processing"
-        self.updated_at = datetime.now().isoformat()
+        with get_db_session() as session:
+            row = (
+                session.query(CatalogProgressRow)
+                .filter_by(source_id=source_id, phase=phase)
+                .first()
+            )
+            if row is None:
+                row = CatalogProgressRow(
+                    source_id=source_id,
+                    dataset_name=dataset_name,
+                    phase=phase,
+                    status="processing",
+                    started_at=datetime.utcnow(),
+                )
+                session.add(row)
+            else:
+                row.status = "processing"
+                row.dataset_name = dataset_name
+                row.error = None
+                row.started_at = datetime.utcnow()
+                row.completed_at = None
 
     def mark_completed(self, source_id: str, phase: Optional[int] = None):
-        if source_id in self.sources:
-            p = str(phase if phase is not None else self.sources[source_id].get("phase", 0))
-            self.sources[source_id].setdefault("phases", {})
-            self.sources[source_id]["phases"][p] = "completed"
-            self.sources[source_id]["completed_at"] = datetime.now().isoformat()
-            self.sources[source_id]["status"] = "completed"
-        self.processed += 1
-        self.updated_at = datetime.now().isoformat()
+        p = phase if phase is not None else (self.current_phase or 0)
+        with get_db_session() as session:
+            row = (
+                session.query(CatalogProgressRow)
+                .filter_by(source_id=source_id, phase=p)
+                .first()
+            )
+            if row:
+                row.status = "completed"
+                row.completed_at = datetime.utcnow()
 
     def mark_failed(self, source_id: str, error: str, phase: Optional[int] = None):
-        if source_id in self.sources:
-            p = str(phase if phase is not None else self.sources[source_id].get("phase", 0))
-            self.sources[source_id].setdefault("phases", {})
-            self.sources[source_id]["phases"][p] = "failed"
-            self.sources[source_id]["error"] = error
-            self.sources[source_id]["completed_at"] = datetime.now().isoformat()
-            self.sources[source_id]["status"] = "failed"
-        self.failed += 1
-        self.updated_at = datetime.now().isoformat()
+        p = phase if phase is not None else (self.current_phase or 0)
+        with get_db_session() as session:
+            row = (
+                session.query(CatalogProgressRow)
+                .filter_by(source_id=source_id, phase=p)
+                .first()
+            )
+            if row:
+                row.status = "failed"
+                row.error = error
+                row.completed_at = datetime.utcnow()
 
     def is_completed(self, source_id: str, phase: Optional[int] = None) -> bool:
-        """Check if a specific phase is completed for a source."""
-        entry = self.sources.get(source_id, {})
-        if phase is not None:
-            phases = entry.get("phases", {})
-            return phases.get(str(phase)) == "completed"
-        # Legacy: check overall status
-        return entry.get("status") == "completed"
+        with get_db_session() as session:
+            if phase is not None:
+                row = (
+                    session.query(CatalogProgressRow)
+                    .filter_by(source_id=source_id, phase=phase)
+                    .first()
+                )
+                return row is not None and row.status == "completed"
+            # Any phase completed?
+            rows = (
+                session.query(CatalogProgressRow)
+                .filter_by(source_id=source_id, status="completed")
+                .first()
+            )
+            return rows is not None
 
     def get_overall_status(self, source_id: str, target_phase: int) -> str:
-        """
-        Get display status considering target phase.
+        """Get display status considering target phase."""
+        with get_db_session() as session:
+            rows = (
+                session.query(CatalogProgressRow)
+                .filter_by(source_id=source_id)
+                .all()
+            )
+            if not rows:
+                return "pending"
 
-        Returns:
-            "completed" — target phase is done
-            "metadata_only" — only Phase 0 done, target > 0
-            "processing" / "failed" / "pending" — current state
-        """
-        entry = self.sources.get(source_id, {})
-        if not entry:
-            return "pending"
+            # Copy data within session to avoid DetachedInstanceError
+            phases = {r.phase: r.status for r in rows}
 
-        phases = entry.get("phases", {})
-
-        # Migrate legacy entries: old format has "status" but no "phases" dict
-        if not phases and entry.get("status") == "completed":
-            old_phase = entry.get("phase", 0)
-            phases = {str(old_phase): "completed"}
-
-        # Check if target phase is done
-        if phases.get(str(target_phase)) == "completed":
+        if phases.get(target_phase) == "completed":
             return "completed"
-
-        # Check if target phase failed
-        if phases.get(str(target_phase)) == "failed":
+        if phases.get(target_phase) == "failed":
             return "failed"
-
-        # Check if target phase is processing
-        if phases.get(str(target_phase)) == "processing":
+        if phases.get(target_phase) == "processing":
             return "processing"
-
-        # Phase 0 done but target phase > 0 — metadata only
-        if target_phase > 0 and phases.get("0") == "completed":
+        if target_phase > 0 and phases.get(0) == "completed":
             return "metadata_only"
+        return "pending"
 
-        # Legacy fallback
-        return entry.get("status", "pending")
+    # ------------------------------------------------------------------
+    # Bulk helpers — reduce DB round-trips from O(n) to O(1)
+    # ------------------------------------------------------------------
+
+    def get_completed_set(self, phase: int) -> set:
+        """Return set of all completed source_ids for a phase in one query."""
+        with get_db_session() as session:
+            rows = (
+                session.query(CatalogProgressRow.source_id)
+                .filter_by(phase=phase, status="completed")
+                .all()
+            )
+        return {r.source_id for r in rows}
+
+    def mark_started_bulk(self, entries: List[CatalogEntry], phase: int):
+        """Insert/update multiple rows to 'processing' in one transaction."""
+        if not entries:
+            return
+        with get_db_session() as session:
+            # Fetch existing rows for this phase in one query
+            source_ids = [e.source_id for e in entries]
+            existing = (
+                session.query(CatalogProgressRow)
+                .filter(
+                    CatalogProgressRow.source_id.in_(source_ids),
+                    CatalogProgressRow.phase == phase,
+                )
+                .all()
+            )
+            existing_map = {r.source_id: r for r in existing}
+
+            now = datetime.utcnow()
+            for entry in entries:
+                row = existing_map.get(entry.source_id)
+                if row is None:
+                    session.add(CatalogProgressRow(
+                        source_id=entry.source_id,
+                        dataset_name=entry.dataset_name or "unknown",
+                        phase=phase,
+                        status="processing",
+                        started_at=now,
+                    ))
+                else:
+                    row.status = "processing"
+                    row.dataset_name = entry.dataset_name or "unknown"
+                    row.error = None
+                    row.started_at = now
+                    row.completed_at = None
+
+    def mark_completed_bulk(self, source_ids: List[str], phase: int):
+        """Mark multiple rows as completed in one UPDATE."""
+        if not source_ids:
+            return
+        with get_db_session() as session:
+            now = datetime.utcnow()
+            session.query(CatalogProgressRow).filter(
+                CatalogProgressRow.source_id.in_(source_ids),
+                CatalogProgressRow.phase == phase,
+            ).update(
+                {"status": "completed", "completed_at": now},
+                synchronize_session="fetch",
+            )
+
+    def mark_failed_bulk(self, source_id_error_pairs: List[tuple], phase: int):
+        """Mark multiple rows as failed in one transaction.
+
+        Args:
+            source_id_error_pairs: list of (source_id, error_message) tuples
+        """
+        if not source_id_error_pairs:
+            return
+        with get_db_session() as session:
+            now = datetime.utcnow()
+            ids = [sid for sid, _ in source_id_error_pairs]
+            rows = (
+                session.query(CatalogProgressRow)
+                .filter(
+                    CatalogProgressRow.source_id.in_(ids),
+                    CatalogProgressRow.phase == phase,
+                )
+                .all()
+            )
+            error_map = dict(source_id_error_pairs)
+            for row in rows:
+                row.status = "failed"
+                row.error = error_map.get(row.source_id, "unknown error")
+                row.completed_at = now
 
     def mark_interrupted(self) -> int:
-        """Reset all 'processing' entries back to 'pending' (for crash recovery).
-
-        Returns:
-            Number of entries reset.
-        """
-        count = 0
-        for sid, info in self.sources.items():
-            if info.get("status") == "processing":
-                info["status"] = "pending"
-                count += 1
-            phases = info.get("phases", {})
-            for p, status in list(phases.items()):
-                if status == "processing":
-                    phases[p] = "pending"
-                    if info.get("status") != "pending":
-                        info["status"] = "pending"
-                        count += 1
-        self.updated_at = datetime.now().isoformat()
+        """Reset all 'processing' rows back to 'pending' (crash recovery)."""
+        with get_db_session() as session:
+            count = (
+                session.query(CatalogProgressRow)
+                .filter_by(status="processing")
+                .update({"status": "pending", "completed_at": None})
+            )
         return count
 
     def get_summary(self) -> Dict[str, Any]:
-        # Build per-phase breakdown from sources dict
-        phase_counts: Dict[str, Dict[str, int]] = {}
-        for sid, info in self.sources.items():
-            phases = info.get("phases", {})
-            for p, status in phases.items():
+        """Build summary dict compatible with the old JSON-based format."""
+        from sqlalchemy import func
+
+        with get_db_session() as session:
+            rows = (
+                session.query(
+                    CatalogProgressRow.phase,
+                    CatalogProgressRow.status,
+                    func.count().label("cnt"),
+                )
+                .group_by(CatalogProgressRow.phase, CatalogProgressRow.status)
+                .all()
+            )
+
+            # Per-phase breakdown
+            phase_counts: Dict[str, Dict[str, int]] = {}
+            for phase_val, status, cnt in rows:
+                p = str(phase_val)
                 if p not in phase_counts:
                     phase_counts[p] = {"completed": 0, "failed": 0, "total": 0}
-                phase_counts[p]["total"] += 1
+                phase_counts[p]["total"] += cnt
                 if status == "completed":
-                    phase_counts[p]["completed"] += 1
+                    phase_counts[p]["completed"] += cnt
                 elif status == "failed":
-                    phase_counts[p]["failed"] += 1
+                    phase_counts[p]["failed"] += cnt
 
-        # Compute unique source statuses to avoid double-counting across phases.
-        # "processed" = completed a real data phase (>0), not just metadata.
-        # "metadata_only" = only Phase 0 done, target phase not attempted.
+            # Unique source statuses — query all rows grouped by source
+            all_rows = session.query(CatalogProgressRow).all()
+
+            # Copy data within session to avoid DetachedInstanceError
+            source_phases: Dict[str, Dict[int, str]] = {}
+            for r in all_rows:
+                source_phases.setdefault(r.source_id, {})[r.phase] = r.status
+
         unique_processed = 0
         unique_failed = 0
         unique_metadata_only = 0
-        unique_processing = 0
-        for sid, info in self.sources.items():
-            phases = info.get("phases", {})
+        for sid, phases in source_phases.items():
             has_data_phase = any(
-                p != "0" and st == "completed"
-                for p, st in phases.items()
+                p != 0 and st == "completed" for p, st in phases.items()
             )
             has_failed = any(
-                p != "0" and st == "failed"
-                for p, st in phases.items()
+                p != 0 and st == "failed" for p, st in phases.items()
             )
             if has_data_phase:
                 unique_processed += 1
             elif has_failed:
                 unique_failed += 1
-            elif phases.get("0") == "completed":
+            elif phases.get(0) == "completed":
                 unique_metadata_only += 1
-            elif info.get("status") == "processing":
-                unique_processing += 1
 
-        effective_total = max(self.total, len(self.sources))
-        effective_pending = max(0, effective_total - unique_processed - unique_failed - unique_metadata_only - self.skipped)
+        effective_total = max(self.total, len(source_phases))
+        effective_pending = max(
+            0,
+            effective_total - unique_processed - unique_failed
+            - unique_metadata_only - self.skipped,
+        )
 
         return {
             "total": effective_total,
@@ -299,8 +370,28 @@ class BatchProgress:
             "current_phase": self.current_phase,
             "current_source": self.current_source,
             "started_at": self.started_at,
-            "updated_at": self.updated_at,
+            "updated_at": datetime.utcnow().isoformat(),
             "phases": phase_counts,
+        }
+
+    def get_source_info(self, source_id: str) -> Dict[str, Any]:
+        """Get per-source progress info (used by /catalog/{row_index})."""
+        with get_db_session() as session:
+            rows = (
+                session.query(CatalogProgressRow)
+                .filter_by(source_id=source_id)
+                .all()
+            )
+            if not rows:
+                return {}
+            # Copy data within session to avoid DetachedInstanceError
+            phases = {str(r.phase): r.status for r in rows}
+            errors = [r.error for r in rows if r.error]
+            last_status = rows[-1].status
+        return {
+            "status": last_status,
+            "phases": phases,
+            "error": errors[-1] if errors else None,
         }
 
 
@@ -309,7 +400,6 @@ def run_batch_pipeline(
     phases: Optional[List[int]] = None,
     dry_run: bool = False,
     resume: bool = True,
-    progress_path: Path = DEFAULT_PROGRESS_PATH,
 ) -> Dict[str, Any]:
     """
     Run the batch catalog processing pipeline.
@@ -319,7 +409,6 @@ def run_batch_pipeline(
         phases: Which phases to process (default: [0] for metadata-only).
         dry_run: If True, only classify and report — no processing.
         resume: If True, skip already-completed sources.
-        progress_path: Path to the progress JSON file.
 
     Returns:
         Summary dict with processing results.
@@ -338,10 +427,14 @@ def run_batch_pipeline(
         logger.info(f"Dry run — phase distribution: {summary}")
         return {"dry_run": True, "phases": summary, "total": len(entries)}
 
-    # Load or create progress state
-    progress = BatchProgress.load(progress_path) if resume else BatchProgress()
-    progress.total = len(entries)
-    progress.started_at = progress.started_at or datetime.now().isoformat()
+    # Create progress tracker (state lives in PostgreSQL)
+    if not resume:
+        # Clear existing progress when not resuming
+        with get_db_session() as session:
+            session.query(CatalogProgressRow).delete()
+
+    progress = BatchProgress(total=len(entries))
+    progress.started_at = datetime.utcnow().isoformat()
 
     results: Dict[str, Any] = {"phases_run": phases, "total": len(entries)}
 
@@ -354,23 +447,21 @@ def run_batch_pipeline(
         logger.info(f"Starting Phase {phase}: {len(phase_entries)} entries")
 
         if phase == 0:
-            results["phase_0"] = _run_phase_0(phase_entries, progress, progress_path, resume)
+            results["phase_0"] = _run_phase_0(phase_entries, progress, resume)
         elif phase in (1, 2):
             results[f"phase_{phase}"] = _run_phase_download(
-                phase_entries, phase, progress, progress_path, resume
+                phase_entries, phase, progress, resume
             )
         elif phase == 3:
-            results["phase_3"] = _run_phase_portal(phase_entries, progress, progress_path, resume)
+            results["phase_3"] = _run_phase_portal(phase_entries, progress, resume)
         elif phase == 4:
             # Phase 4 is metadata-only for manual sources
-            results["phase_4"] = _run_phase_0(phase_entries, progress, progress_path, resume)
-
-        progress.save(progress_path)
+            results["phase_4"] = _run_phase_0(phase_entries, progress, resume)
 
     results["summary"] = progress.get_summary()
     catalog_logger.info(
-        f"=== Batch pipeline finished | processed={progress.processed} "
-        f"failed={progress.failed} skipped={progress.skipped} total={progress.total} ==="
+        f"=== Batch pipeline finished | "
+        f"skipped={progress.skipped} total={progress.total} ==="
     )
     return results
 
@@ -378,10 +469,16 @@ def run_batch_pipeline(
 def _run_phase_0(
     entries: List[CatalogEntry],
     progress: BatchProgress,
-    progress_path: Path,
     resume: bool,
 ) -> Dict[str, int]:
-    """Run Phase 0: embed metadata only."""
+    """Run Phase 0: embed metadata only (batched).
+
+    Uses bulk DB operations and batch embedding to minimize round-trips:
+    - 1 DB query to get completed set (instead of 233 individual checks)
+    - 1 DB transaction to mark all as started
+    - ~4 batch embed + upsert calls (batch_size=64)
+    - 1 DB transaction each for completed/failed
+    """
     from src.climate_embeddings.embeddings.text_models import TextEmbedder
     from src.embeddings.database import VectorDatabase
     from src.utils.config_loader import ConfigLoader
@@ -390,47 +487,42 @@ def _run_phase_0(
     embedder = TextEmbedder()
     db = VectorDatabase(config=config)
 
-    to_process = []
-    for entry in entries:
-        if resume and progress.is_completed(entry.source_id, phase=0):
-            progress.skipped += 1
-            continue
-        to_process.append(entry)
+    # 1 DB query instead of 233 individual is_completed() calls
+    if resume:
+        completed = progress.get_completed_set(phase=0)
+        to_process = [e for e in entries if e.source_id not in completed]
+        skipped = len(entries) - len(to_process)
+        progress.skipped += skipped
+    else:
+        to_process = list(entries)
+        skipped = 0
 
     if not to_process:
         logger.info("Phase 0: nothing to process (all completed)")
         return {"processed": 0, "failed": 0, "skipped": len(entries)}
 
-    logger.info(f"Phase 0: processing {len(to_process)} entries (skipped {len(entries) - len(to_process)})")
+    logger.info(f"Phase 0: processing {len(to_process)} entries (skipped {skipped})")
+    catalog_logger.info(f"Phase 0: batch processing {len(to_process)} entries")
 
-    processed = 0
-    failed = 0
+    # 1 DB transaction to mark all as started
+    progress.mark_started_bulk(to_process, phase=0)
 
-    for entry in to_process:
-        progress.mark_started(entry.source_id, entry.dataset_name or "unknown", 0)
-        catalog_logger.info(f"Phase 0: started {entry.dataset_name} ({entry.source_id})")
-        try:
-            ok = process_metadata_only(entry, embedder, db)
-            if ok:
-                progress.mark_completed(entry.source_id, phase=0)
-                processed += 1
-                catalog_logger.info(f"Phase 0: completed {entry.dataset_name}")
-            else:
-                progress.mark_failed(entry.source_id, "process_metadata_only returned False", phase=0)
-                failed += 1
-                catalog_logger.warning(f"Phase 0: returned False for {entry.dataset_name}")
-        except Exception as e:
-            tb = traceback.format_exc()
-            progress.mark_failed(entry.source_id, str(e), phase=0)
-            failed += 1
-            catalog_logger.error(f"Phase 0: FAILED {entry.dataset_name}: {e}\n{tb}")
+    # Batch embed + upsert — RTX 5090 handles 233 texts in <0.2s,
+    # so use large batches to minimize Qdrant upsert round-trips
+    result = process_metadata_batch(to_process, embedder, db, batch_size=256)
 
-        # Save progress periodically (every 10 entries)
-        if (processed + failed) % 10 == 0:
-            progress.save(progress_path)
+    # 1 DB transaction each for completed/failed
+    progress.mark_completed_bulk(result["succeeded_ids"], phase=0)
+    progress.mark_failed_bulk(result["failed_entries"], phase=0)
 
-    progress.save(progress_path)
-    return {"processed": processed, "failed": failed, "skipped": len(entries) - len(to_process)}
+    processed = result["processed"]
+    failed = result["failed"]
+
+    catalog_logger.info(
+        f"Phase 0: batch complete — processed={processed}, failed={failed}, skipped={skipped}"
+    )
+
+    return {"processed": processed, "failed": failed, "skipped": skipped}
 
 
 # --- Retry & resource guard settings ---
@@ -440,7 +532,7 @@ RETRY_BACKOFF = [5, 10, 20]  # seconds between attempts
 MEMORY_WARN_PCT = 85   # trigger GC + wait
 MEMORY_ABORT_PCT = 90  # stop batch if still above after GC
 
-RASTER_TIMEOUT_SEC = 15 * 60  # 15 minutes for load + embed
+RASTER_TIMEOUT_SEC = 30 * 60  # 30 minutes for load + embed
 
 
 def _check_memory_pressure() -> bool:
@@ -483,14 +575,77 @@ FORMAT_TO_EXT = {
     "ascii": ".asc", "zarr": ".zarr", "tar": ".tar",
 }
 
-MAX_DOWNLOAD_SIZE_MB = int(os.getenv("MAX_DOWNLOAD_SIZE_MB", "2000"))
+# Size used when HEAD request fails or Content-Length is missing (sorts last)
+_UNKNOWN_SIZE = 10 * 1024**3  # 10 GB
 
+
+def _prefetch_sizes(entries: List[CatalogEntry], phase: int) -> List[CatalogEntry]:
+    """Sort entries by download file size (smallest first) using HEAD requests.
+
+    Does a HEAD request per unique (dataset_name, url) pair to read
+    Content-Length.  Entries whose size is unknown sort to the end.
+    """
+    import requests as http_requests
+
+    # Build unique URLs to probe
+    url_map: Dict[str, str] = {}  # dedup_key -> url
+    entry_keys: Dict[str, str] = {}  # source_id -> dedup_key
+    for entry in entries:
+        url = DIRECT_DOWNLOAD_URLS.get(entry.dataset_name, entry.link or "").strip()
+        if not url:
+            continue
+        dedup_key = f"{entry.dataset_name}||{url}"
+        url_map[dedup_key] = url
+        entry_keys[entry.source_id] = dedup_key
+
+    # HEAD requests (parallel with ThreadPoolExecutor for speed)
+    size_cache: Dict[str, int] = {}
+
+    def _head(dedup_key_url):
+        dk, url = dedup_key_url
+        try:
+            resp = http_requests.head(
+                url, timeout=10, allow_redirects=True,
+                headers={"User-Agent": "ClimateRAG/1.0"},
+            )
+            cl = resp.headers.get("Content-Length")
+            return dk, int(cl) if cl else _UNKNOWN_SIZE
+        except Exception:
+            return dk, _UNKNOWN_SIZE
+
+    unique_items = list(url_map.items())
+    catalog_logger.info(
+        f"Phase {phase}: prefetching sizes for {len(unique_items)} unique URLs …"
+    )
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        for dk, size in executor.map(_head, unique_items):
+            size_cache[dk] = size
+
+    # Log size distribution
+    known = {dk: s for dk, s in size_cache.items() if s != _UNKNOWN_SIZE}
+    if known:
+        sizes_mb = sorted(s / 1024**2 for s in known.values())
+        catalog_logger.info(
+            f"Phase {phase}: size prefetch done — "
+            f"{len(known)} known, {len(size_cache) - len(known)} unknown | "
+            f"range: {sizes_mb[0]:.1f} MB … {sizes_mb[-1]:.1f} MB"
+        )
+    else:
+        catalog_logger.info(f"Phase {phase}: no Content-Length headers returned")
+
+    # Sort entries by size (smallest first, unknown last)
+    def _sort_key(entry):
+        dk = entry_keys.get(entry.source_id)
+        return size_cache.get(dk, _UNKNOWN_SIZE) if dk else _UNKNOWN_SIZE
+
+    sorted_entries = sorted(entries, key=_sort_key)
+    return sorted_entries
 
 def _run_phase_download(
     entries: List[CatalogEntry],
     phase: int,
     progress: BatchProgress,
-    progress_path: Path,
     resume: bool,
 ) -> Dict[str, int]:
     """Run Phase 1/2: download + process + embed."""
@@ -511,25 +666,58 @@ def _run_phase_download(
     failed = 0
     skipped = 0
 
+    # Track datasets already processed in this run to avoid re-downloading
+    # the same file for duplicate rows (e.g. SLOCLIM appears on 3 rows for
+    # different hazards but uses the exact same download URL).
+    datasets_done_this_run: set = set()
+
+    # Prefetch completed set — 1 DB query instead of per-entry is_completed()
+    completed_set = progress.get_completed_set(phase=phase) if resume else set()
+
+    # Pre-filter entries that will definitely be skipped, so we only HEAD-request
+    # URLs we actually intend to download.
+    download_candidates = []
+    pre_skipped = 0
     for entry in entries:
-        if resume and progress.is_completed(entry.source_id, phase=phase):
-            skipped += 1
+        if resume and entry.source_id in completed_set:
+            pre_skipped += 1
             continue
-
         if not entry.link:
-            skipped += 1
+            pre_skipped += 1
             continue
-
-        # Skip datasets known to require auth or have no direct downloads
         if entry.dataset_name in SKIP_PHASE1:
-            catalog_logger.info(f"Phase {phase}: skipping {entry.dataset_name} (in SKIP_PHASE1)")
+            pre_skipped += 1
+            continue
+        download_candidates.append(entry)
+
+    # Sort by file size (smallest first) — HEAD requests on remaining candidates
+    if download_candidates:
+        download_candidates = _prefetch_sizes(download_candidates, phase)
+
+    # Re-combine: we'll iterate download_candidates and track skipped count separately
+    skipped += pre_skipped
+
+    # Disable HNSW indexing during bulk ingestion (rebuild once at the end)
+    db.disable_indexing()
+    try:
+      for entry in download_candidates:
+        # Deduplicate: same dataset_name + same download URL = same data.
+        # Mark all duplicate rows as completed (they share embeddings via Phase 0).
+        download_url = DIRECT_DOWNLOAD_URLS.get(entry.dataset_name, entry.link).strip()
+        dedup_key = f"{entry.dataset_name}||{download_url}"
+        if dedup_key in datasets_done_this_run:
+            catalog_logger.info(
+                f"Phase {phase}: skipping duplicate {entry.dataset_name} "
+                f"(row {entry.row_index}, already processed same URL)"
+            )
+            progress.mark_started(entry.source_id, entry.dataset_name or "unknown", phase)
+            progress.mark_completed(entry.source_id, phase=phase)
             skipped += 1
             continue
 
         # --- Memory guard ---
         if not _check_memory_pressure():
             catalog_logger.error("Batch stopped due to memory pressure. Remaining entries stay pending.")
-            progress.save(progress_path)
             break
 
         progress.mark_started(entry.source_id, entry.dataset_name or "unknown", phase)
@@ -558,20 +746,6 @@ def _run_phase_download(
                 if url != entry.link.strip():
                     catalog_logger.info(f"Phase {phase}: using override URL for {entry.dataset_name}")
 
-                # --- Size guard: HEAD request to check Content-Length ---
-                try:
-                    head_resp = http_requests.head(url, timeout=30, allow_redirects=True,
-                                                   headers={"User-Agent": "ClimateRAG/1.0"})
-                    content_length = int(head_resp.headers.get("Content-Length", 0))
-                    max_size = MAX_DOWNLOAD_SIZE_MB * 1024 * 1024
-                    if content_length > max_size:
-                        msg = f"File too large: {content_length / 1e9:.1f} GB (limit: {max_size / 1e9:.1f} GB)"
-                        last_error = msg
-                        catalog_logger.warning(f"Skipping {entry.dataset_name}: {msg}")
-                        break  # No point retrying a size issue
-                except Exception as head_err:
-                    catalog_logger.warning(f"HEAD check failed for {entry.dataset_name}: {head_err} — proceeding anyway")
-
                 # --- Disk space guard ---
                 import shutil
                 try:
@@ -582,15 +756,23 @@ def _run_phase_download(
                     catalog_logger.error(
                         f"Disk space critically low ({free_bytes / 1e9:.1f} GB free). Stopping downloads."
                     )
-                    progress.save(progress_path)
                     return {"processed": processed, "failed": failed, "skipped": skipped}
 
                 # Download to temp file
                 logger.info(f"Phase {phase}: downloading {entry.dataset_name} from {url}")
 
-                resp = http_requests.get(url, timeout=600, stream=True,
-                                         headers={"User-Agent": "ClimateRAG/1.0"})
-                resp.raise_for_status()
+                try:
+                    resp = http_requests.get(url, timeout=(30, 600), stream=True,
+                                             headers={"User-Agent": "ClimateRAG/1.0"})
+                    resp.raise_for_status()
+                except http_requests.exceptions.SSLError:
+                    catalog_logger.warning(
+                        f"Phase {phase}: SSL verification failed for {entry.dataset_name}, "
+                        "retrying without verification"
+                    )
+                    resp = http_requests.get(url, timeout=(30, 600), stream=True, verify=False,
+                                             headers={"User-Agent": "ClimateRAG/1.0"})
+                    resp.raise_for_status()
 
                 # Check Content-Type before downloading body
                 content_type = resp.headers.get("Content-Type", "").lower()
@@ -606,15 +788,7 @@ def _run_phase_download(
                 ext = FORMAT_TO_EXT.get(fmt, ".nc")
 
                 with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
-                    bytes_written = 0
-                    max_bytes = MAX_DOWNLOAD_SIZE_MB * 1024 * 1024
                     for chunk in resp.iter_content(chunk_size=8192):
-                        bytes_written += len(chunk)
-                        if bytes_written > max_bytes:
-                            raise ValueError(
-                                f"Download exceeded {MAX_DOWNLOAD_SIZE_MB} MB limit "
-                                f"(streamed {bytes_written / 1e6:.0f} MB so far)"
-                            )
                         tmp.write(chunk)
                     tmp_path = tmp.name
 
@@ -643,33 +817,62 @@ def _run_phase_download(
                             f"for {entry.dataset_name}"
                         )
 
-                # --- Stream chunks through batched embed + upsert ---
-                # Accumulate texts, embed entire batch on GPU at once (10-20x faster),
-                # then upsert to Qdrant.  Prevents OOM on large files.
-                UPSERT_BATCH_SIZE = 500
+                # --- Stream chunks through async embed + upsert pipeline ---
+                # Overlap GPU embedding with Qdrant network I/O using a background thread.
+                UPSERT_BATCH_SIZE = 2000
                 batch_ids: list = []
                 batch_texts: list = []
                 batch_metadatas: list = []
                 total_chunks = 0
+                upsert_executor = ThreadPoolExecutor(max_workers=1)
+                pending_upsert_future = None
+
+                def _wait_for_pending_upsert():
+                    """Wait for previous async upsert to complete (backpressure)."""
+                    nonlocal pending_upsert_future
+                    if pending_upsert_future is not None:
+                        try:
+                            pending_upsert_future.result(timeout=300)
+                        except Exception as upsert_err:
+                            catalog_logger.error(f"Async upsert failed: {upsert_err}")
+                        pending_upsert_future = None
 
                 def _flush_batch():
-                    """Embed all texts in one GPU call, then upsert to Qdrant."""
+                    """Embed all texts on GPU, then submit upsert to background thread."""
+                    nonlocal pending_upsert_future
                     if not batch_ids:
                         return
+                    t0 = time.time()
                     vecs = embedder.embed_documents(batch_texts)
-                    db.add_embeddings(
-                        ids=batch_ids,
-                        embeddings=[v.tolist() for v in vecs],
-                        metadatas=batch_metadatas,
-                    )
-                    catalog_logger.info(
-                        f"Phase {phase}: {entry.dataset_name} — "
-                        f"upserted batch ({total_chunks} chunks so far)"
-                    )
+                    embed_time = time.time() - t0
+
+                    # Wait for any previous upsert to finish before starting next
+                    _wait_for_pending_upsert()
+
+                    # Capture batch data for the background thread
+                    upsert_ids = list(batch_ids)
+                    upsert_vecs = [v.tolist() for v in vecs]
+                    upsert_metas = list(batch_metadatas)
+                    chunks_so_far = total_chunks
+
+                    def _do_upsert():
+                        t1 = time.time()
+                        db.add_embeddings(
+                            ids=upsert_ids,
+                            embeddings=upsert_vecs,
+                            metadatas=upsert_metas,
+                        )
+                        catalog_logger.info(
+                            f"Phase {phase}: {entry.dataset_name} — "
+                            f"upserted batch ({chunks_so_far} chunks so far, "
+                            f"embed={embed_time:.1f}s, upsert={time.time() - t1:.1f}s)"
+                        )
+
+                    pending_upsert_future = upsert_executor.submit(_do_upsert)
+
                     batch_ids.clear()
                     batch_texts.clear()
                     batch_metadatas.clear()
-                    gc.collect()
 
                 for chunk in raster_result.chunk_iterator:
                     data = chunk.data
@@ -713,12 +916,13 @@ def _run_phase_download(
                     batch_metadatas.append(meta_dict)
                     total_chunks += 1
 
-                    # Flush batch: embed all 500 texts in one GPU call, then upsert
                     if len(batch_ids) >= UPSERT_BATCH_SIZE:
                         _flush_batch()
 
                 # Flush remaining
                 _flush_batch()
+                _wait_for_pending_upsert()
+                upsert_executor.shutdown(wait=False)
 
                 if total_chunks == 0:
                     raise ValueError(
@@ -729,6 +933,7 @@ def _run_phase_download(
                 progress.mark_completed(entry.source_id, phase=phase)
                 processed += 1
                 entry_succeeded = True
+                datasets_done_this_run.add(dedup_key)
                 catalog_logger.info(
                     f"Phase {phase}: completed {entry.dataset_name} "
                     f"({total_chunks} chunks, attempt {attempt}/{MAX_RETRIES})"
@@ -765,8 +970,9 @@ def _run_phase_download(
                 f"Phase {phase}: FAILED {entry.dataset_name} after {MAX_RETRIES} attempts: {last_error}"
             )
 
-        # Save after every entry (Phase 1 entries are expensive, don't lose progress)
-        progress.save(progress_path)
+    finally:
+        # Re-enable HNSW indexing — triggers single optimized index build
+        db.enable_indexing()
 
     return {"processed": processed, "failed": failed, "skipped": skipped}
 
@@ -774,7 +980,6 @@ def _run_phase_download(
 def _run_phase_portal(
     entries: List[CatalogEntry],
     progress: BatchProgress,
-    progress_path: Path,
     resume: bool,
 ) -> Dict[str, int]:
     """Run Phase 3: API portal downloads (CDS, ESGF, etc.)."""
@@ -784,8 +989,11 @@ def _run_phase_portal(
     failed = 0
     skipped = 0
 
+    # Prefetch completed set — 1 DB query instead of per-entry is_completed()
+    completed_set = progress.get_completed_set(phase=3) if resume else set()
+
     for entry in entries:
-        if resume and progress.is_completed(entry.source_id, phase=3):
+        if resume and entry.source_id in completed_set:
             skipped += 1
             continue
 
@@ -813,51 +1021,36 @@ def _run_phase_portal(
             failed += 1
             catalog_logger.error(f"Phase 3: FAILED {entry.dataset_name}: {e}\n{tb}")
 
-        if (processed + failed) % 5 == 0:
-            progress.save(progress_path)
-
-    progress.save(progress_path)
     return {"processed": processed, "failed": failed, "skipped": skipped}
 
 
-def get_progress(progress_path: Path = DEFAULT_PROGRESS_PATH) -> Dict[str, Any]:
+def get_progress() -> Dict[str, Any]:
     """Get current batch progress (for API endpoint)."""
-    progress = BatchProgress.load(progress_path)
+    progress = BatchProgress()
     return progress.get_summary()
 
 
-def retry_failed(
-    excel_path: str,
-    progress_path: Path = DEFAULT_PROGRESS_PATH,
-) -> Dict[str, Any]:
+def retry_failed(excel_path: str) -> Dict[str, Any]:
     """Re-run all failed sources."""
-    progress = BatchProgress.load(progress_path)
-    failed_ids = set()
-    for sid, info in progress.sources.items():
-        phases = info.get("phases", {})
-        if any(v == "failed" for v in phases.values()) or info.get("status") == "failed":
-            failed_ids.add(sid)
+    with get_db_session() as session:
+        failed_rows = (
+            session.query(CatalogProgressRow)
+            .filter_by(status="failed")
+            .all()
+        )
+        if not failed_rows:
+            return {"message": "No failed sources to retry", "count": 0}
 
-    if not failed_ids:
-        return {"message": "No failed sources to retry", "count": 0}
+        failed_count = len(failed_rows)
+        for row in failed_rows:
+            row.status = "pending"
+            row.error = None
+            row.completed_at = None
 
-    # Reset failed phases to pending
-    for sid in failed_ids:
-        progress.sources[sid]["status"] = "pending"
-        progress.sources[sid].pop("error", None)
-        phases = progress.sources[sid].get("phases", {})
-        for p, status in list(phases.items()):
-            if status == "failed":
-                phases[p] = "pending"
-    progress.failed -= len(failed_ids)
-    progress.save(progress_path)
+    logger.info(f"Reset {failed_count} failed rows to pending for retry")
 
-    logger.info(f"Reset {len(failed_ids)} failed sources to pending for retry")
-
-    # Re-run the pipeline with resume=True (will pick up the reset entries)
     return run_batch_pipeline(
         excel_path=excel_path,
         phases=[0, 1, 2, 3],
         resume=True,
-        progress_path=progress_path,
     )

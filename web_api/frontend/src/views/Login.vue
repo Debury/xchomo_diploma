@@ -1,7 +1,7 @@
 <template>
   <div class="min-h-screen flex items-center justify-center bg-mendelu-gray-light">
     <div class="w-full max-w-md">
-      <div class="card">
+      <div class="card shadow-lg">
         <!-- Logo -->
         <div class="text-center mb-8">
           <div class="w-16 h-16 rounded-full bg-mendelu-green flex items-center justify-center mx-auto mb-4">
@@ -9,14 +9,14 @@
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3.055 11H5a2 2 0 012 2v1a2 2 0 002 2 2 2 0 012 2v2.945M8 3.935V5.5A2.5 2.5 0 0010.5 8h.5a2 2 0 012 2 2 2 0 104 0 2 2 0 012-2h1.064M15 20.488V18a2 2 0 012-2h3.064M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
             </svg>
           </div>
-          <h1 class="text-2xl font-bold text-mendelu-black">MENDELU Climate RAG</h1>
-          <p class="text-mendelu-gray-dark mt-1">Sign in to continue</p>
+          <h1 class="page-title">MENDELU Climate RAG</h1>
+          <p class="page-subtitle">Sign in to continue</p>
         </div>
 
         <!-- Form -->
         <form @submit.prevent="handleLogin" class="space-y-4">
           <div>
-            <label class="block text-sm font-medium text-mendelu-black mb-2">Username</label>
+            <label class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-2">Username</label>
             <input
               v-model="username"
               type="text"
@@ -28,7 +28,7 @@
           </div>
 
           <div>
-            <label class="block text-sm font-medium text-mendelu-black mb-2">Password</label>
+            <label class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-2">Password</label>
             <input
               v-model="password"
               type="password"
@@ -39,7 +39,7 @@
             >
           </div>
 
-          <div v-if="error" class="p-3 bg-red-50 border border-red-200 rounded-lg text-mendelu-alert text-sm">
+          <div v-if="error" class="p-3 border-l-2 border-mendelu-alert bg-mendelu-alert/5 rounded-lg text-mendelu-alert text-sm">
             {{ error }}
           </div>
 

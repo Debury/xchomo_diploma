@@ -101,6 +101,55 @@ class LoggerResource(ConfigurableResource):
         self._get_logger().exception(message, *args, **kwargs)
 
 
+class DatabaseResource(ConfigurableResource):
+    """Dagster resource for accessing the climate_app PostgreSQL database."""
+
+    database_url: str = Field(
+        default="",
+        description="PostgreSQL connection URL (reads APP_DATABASE_URL env var if empty)",
+    )
+
+    def get_session(self):
+        """Get a database session context manager."""
+        import os
+        if not self.database_url:
+            os.environ.setdefault(
+                "APP_DATABASE_URL",
+                "postgresql://dagster:dagster@dagster-postgres:5432/climate_app",
+            )
+        from src.database.connection import get_db_session
+        return get_db_session()
+
+    def get_store(self):
+        """Get a SourceStore instance."""
+        from src.database.source_store import SourceStore
+        return SourceStore()
+
+    def record_run(self, source_id: str, job_name: str = None,
+                   dagster_run_id: str = None, phase: int = None,
+                   trigger_type: str = "manual") -> int:
+        """Convenience: start a processing run record."""
+        store = self.get_store()
+        return store.record_processing_run(
+            source_id=source_id,
+            job_name=job_name,
+            dagster_run_id=dagster_run_id,
+            phase=phase,
+            trigger_type=trigger_type,
+        )
+
+    def complete_run(self, run_id: int, status: str = "completed",
+                     chunks_processed: int = None, error_message: str = None):
+        """Convenience: mark a processing run as done."""
+        store = self.get_store()
+        store.complete_processing_run(
+            run_id=run_id,
+            status=status,
+            chunks_processed=chunks_processed,
+            error_message=error_message,
+        )
+
+
 class DataPathResource(ConfigurableResource):
     """Dagster resource for managing data directory paths."""
     

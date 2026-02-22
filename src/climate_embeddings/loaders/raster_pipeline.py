@@ -1,6 +1,7 @@
 import gzip
 import logging
 import shutil
+import subprocess
 import tarfile
 import zipfile
 import tempfile
@@ -232,17 +233,36 @@ def _load_tar(path: Path, **kwargs) -> Iterator[RasterChunk]:
             logger.warning(f"No supported files found inside tar: {path.name}")
 
 
+def _extract_zip(path, tmpdir):
+    """Extract ZIP file, falling back to system unzip if Python can't handle the compression."""
+    try:
+        with zipfile.ZipFile(path, 'r') as zf:
+            zf.extractall(tmpdir)
+        return True
+    except NotImplementedError:
+        logger.info(f"Python zipfile can't handle compression in {path.name}, trying system unzip")
+        for cmd in [["unzip", "-o", "-q", str(path), "-d", tmpdir],
+                    ["7z", "x", str(path), f"-o{tmpdir}", "-y"]]:
+            try:
+                subprocess.run(cmd, check=True, capture_output=True, timeout=300)
+                return True
+            except (subprocess.CalledProcessError, FileNotFoundError):
+                continue
+        logger.error(f"No system tool could extract {path.name} (tried unzip, 7z)")
+        return False
+
+
 def _load_zip(path, **kwargs):
     with tempfile.TemporaryDirectory() as tmpdir:
         try:
-            with zipfile.ZipFile(path, 'r') as zf:
-                zf.extractall(tmpdir)
-            
+            if not _extract_zip(path, tmpdir):
+                return
+
             found = False
             for f in Path(tmpdir).rglob("*"):
-                if f.name.startswith("__MACOSX") or f.name.startswith("."): 
+                if f.name.startswith("__MACOSX") or f.name.startswith("."):
                     continue
-                    
+
                 if f.suffix.lower() in {'.nc', '.nc4', '.h5'}:
                     found = True
                     yield from _load_xarray_generic(f, engine="netcdf4", **kwargs)
@@ -255,10 +275,10 @@ def _load_zip(path, **kwargs):
                 elif f.suffix.lower() in {'.csv', '.tsv', '.txt'}:
                     found = True
                     yield from _load_csv(f, **kwargs)
-            
+
             if not found:
                 logger.warning(f"No supported files found inside zip: {path.name}")
-                
+
         except zipfile.BadZipFile:
             logger.error(f"Invalid ZIP file: {path}")
 
@@ -286,6 +306,16 @@ def _load_xarray_generic(path: Path, engine: Optional[str] = None, **kwargs) -> 
                     logger.info(f"Opened {path.name} with fallback engine '{eng}' (primary '{engine}' failed)")
                 break
             except Exception as e:
+                # Retry with decode_times=False for non-standard time units
+                if "decode time" in str(e).lower() or "calendar" in str(e).lower():
+                    try:
+                        ds = xr.open_dataset(path, chunks="auto", engine=eng, decode_times=False)
+                        logger.info(f"Opened {path.name} with engine '{eng}' + decode_times=False")
+                        break
+                    except Exception as e2:
+                        last_err = e2
+                        logger.debug(f"Engine '{eng}' + decode_times=False also failed: {e2}")
+                        continue
                 last_err = e
                 logger.debug(f"Engine '{eng}' failed for {path.name}: {e}")
                 continue
@@ -343,7 +373,7 @@ def _load_xarray_generic(path: Path, engine: Optional[str] = None, **kwargs) -> 
                 # Dynamic threshold: use at most 30% of *available* RAM,
                 # capped at 2 GB absolute, so future large datasets degrade
                 # gracefully instead of OOM-crashing.
-                max_preload = 2 * 1024**3  # 2 GB absolute cap
+                max_preload = 6 * 1024**3  # 6 GB absolute cap (RTX 5090 machine has plenty of RAM)
                 try:
                     import psutil
                     avail = psutil.virtual_memory().available
@@ -367,8 +397,15 @@ def _load_xarray_generic(path: Path, engine: Optional[str] = None, **kwargs) -> 
             except Exception as preload_err:
                 logger.warning(f"Pre-load failed for {var}: {preload_err}, falling back to per-chunk")
 
-            # Iterate over chunk slices
-            for slices in da.core.slices_from_chunks(da_chunked.chunks):
+            # --- Build metadata and yield chunks ---
+            # When var_data_np is None (variable too large for pre-load),
+            # batch-compute slices via dask.compute() to amortize I/O overhead.
+            DASK_BATCH_SIZE = 500  # slices per dask.compute() call
+
+            all_slices = list(da.core.slices_from_chunks(da_chunked.chunks))
+
+            def _build_meta(slices):
+                """Build metadata dict for a single chunk slice."""
                 meta = {
                     "variable": str(var),
                     "source": str(path.name),
@@ -377,12 +414,9 @@ def _load_xarray_generic(path: Path, engine: Optional[str] = None, **kwargs) -> 
 
                 # Store ALL variable attributes (no hardcoding - works for ANY dataset)
                 for attr_key, attr_val in var_attrs.items():
-                    # Skip internal/technical attributes
                     if attr_key.startswith('_') or attr_key in ['_FillValue', 'missing_value', 'fill_value']:
                         continue
-                    # Store everything else with original key name
                     try:
-                        # Convert to string if not primitive type
                         if isinstance(attr_val, (int, float, str, bool)):
                             meta[attr_key] = attr_val
                         else:
@@ -402,57 +436,86 @@ def _load_xarray_generic(path: Path, engine: Optional[str] = None, **kwargs) -> 
                     except:
                         meta[f"dataset_{attr_key}"] = str(attr_val)
 
-                # Extract ALL coordinate dimensions (no hardcoding - detect by value, not name)
+                # Extract ALL coordinate dimensions
                 for dim, sl in zip(da_var.dims, slices):
                     if dim in da_var.coords:
                         vals = da_var.coords[dim][sl].values
                         if len(vals) > 0:
-                            # Store dimension info
                             meta[f"{dim}_start"] = str(vals.min())
                             if len(vals) > 1:
                                 meta[f"{dim}_end"] = str(vals.max())
 
-                            # Try to detect time by attempting to parse as datetime
                             try:
                                 from datetime import datetime
                                 pd.to_datetime(str(vals.min()))
-                                # If successful, it's likely a time dimension
                                 meta["time_start"] = str(vals.min())
                                 if len(vals) > 1:
                                     meta["time_end"] = str(vals.max())
                             except:
-                                # Not a time dimension - check if numeric and in spatial ranges
                                 try:
                                     numeric_vals = vals[~np.isnan(vals)] if hasattr(vals, '__iter__') else [vals]
                                     if len(numeric_vals) > 0:
                                         min_val = float(np.min(numeric_vals))
                                         max_val = float(np.max(numeric_vals))
-                                        # Latitude range
                                         if -90 <= min_val <= 90 and -90 <= max_val <= 90:
                                             meta["lat_min"] = min_val
                                             meta["lat_max"] = max_val
-                                        # Longitude range
                                         elif -180 <= min_val <= 180 and -180 <= max_val <= 180:
                                             meta["lon_min"] = min_val
                                             meta["lon_max"] = max_val
                                 except:
                                     pass
+                return meta
 
-                try:
-                    if var_data_np is not None:
-                        # Fast path: pure numpy slicing (no dask overhead)
+            if var_data_np is not None:
+                # Fast path: pre-loaded numpy array — slice directly
+                for slices in all_slices:
+                    try:
                         data = var_data_np[slices]
-                    else:
-                        # Slow path: per-chunk dask compute
-                        data = da_chunked[slices].compute().values
-                    if np.isnan(data).all(): continue
-                    yield RasterChunk(data=data, metadata=meta)
-                except MemoryError:
-                    logger.error(f"MemoryError computing chunk for var={var} in {path.name} — skipping remaining chunks")
-                    return
-                except Exception as e:
-                    logger.warning(f"Failed to compute chunk for var={var} in {path.name}: {e}")
-                    continue
+                        if np.isnan(data).all():
+                            continue
+                        yield RasterChunk(data=data, metadata=_build_meta(slices))
+                    except MemoryError:
+                        logger.error(f"MemoryError computing chunk for var={var} in {path.name} — skipping remaining chunks")
+                        return
+                    except Exception as e:
+                        logger.warning(f"Failed to compute chunk for var={var} in {path.name}: {e}")
+                        continue
+            else:
+                # Batched dask compute: compute N slices in one call to amortize
+                # disk seek + decompress overhead across hundreds of chunks.
+                import dask
+                for batch_start in range(0, len(all_slices), DASK_BATCH_SIZE):
+                    batch_slices = all_slices[batch_start:batch_start + DASK_BATCH_SIZE]
+                    try:
+                        # Single dask.compute() for entire batch — one I/O pass
+                        delayed_arrays = [da_chunked[sl] for sl in batch_slices]
+                        computed = dask.compute(*delayed_arrays)
+                        for sl, arr in zip(batch_slices, computed):
+                            try:
+                                data = arr.values if hasattr(arr, 'values') else np.asarray(arr)
+                                if np.isnan(data).all():
+                                    continue
+                                yield RasterChunk(data=data, metadata=_build_meta(sl))
+                            except Exception as e:
+                                logger.warning(f"Failed processing chunk for var={var} in {path.name}: {e}")
+                                continue
+                        del computed  # free batch memory
+                    except MemoryError:
+                        logger.error(f"MemoryError in batch dask compute for var={var} in {path.name} — skipping remaining")
+                        return
+                    except Exception as e:
+                        logger.warning(f"Batch dask compute failed for var={var} in {path.name}: {e}, falling back to per-chunk")
+                        # Fallback: compute individually for this batch
+                        for sl in batch_slices:
+                            try:
+                                data = da_chunked[sl].compute().values
+                                if np.isnan(data).all():
+                                    continue
+                                yield RasterChunk(data=data, metadata=_build_meta(sl))
+                            except Exception as inner_e:
+                                logger.warning(f"Per-chunk fallback failed for var={var}: {inner_e}")
+                                continue
 
             # Free pre-loaded data after processing all chunks for this variable
             del var_data_np
@@ -500,6 +563,7 @@ def _load_csv(path: Path, **kwargs) -> Iterator[RasterChunk]:
             read_kwargs['comment'] = comment_char
         if delimiter == r'\s+':
             read_kwargs.pop('delimiter')
+            read_kwargs.pop('low_memory', None)  # python engine doesn't support low_memory
             read_kwargs['sep'] = r'\s+'
             read_kwargs['engine'] = 'python'
         try:
@@ -507,6 +571,7 @@ def _load_csv(path: Path, **kwargs) -> Iterator[RasterChunk]:
         except pd.errors.ParserError:
             # Fallback: try with python engine and error_bad_lines handling
             read_kwargs['engine'] = 'python'
+            read_kwargs.pop('low_memory', None)  # python engine doesn't support low_memory
             read_kwargs['on_bad_lines'] = 'skip'
             if 'delimiter' in read_kwargs:
                 read_kwargs['sep'] = read_kwargs.pop('delimiter')
@@ -581,12 +646,14 @@ def _load_csv(path: Path, **kwargs) -> Iterator[RasterChunk]:
                 full_kwargs['comment'] = comment_char
             if delimiter == r'\s+':
                 full_kwargs.pop('delimiter')
+                full_kwargs.pop('low_memory', None)  # python engine doesn't support low_memory
                 full_kwargs['sep'] = r'\s+'
                 full_kwargs['engine'] = 'python'
             try:
                 df_full = pd.read_csv(path, **full_kwargs)
             except pd.errors.ParserError:
                 full_kwargs['engine'] = 'python'
+                full_kwargs.pop('low_memory', None)  # python engine doesn't support low_memory
                 full_kwargs['on_bad_lines'] = 'skip'
                 if 'delimiter' in full_kwargs:
                     full_kwargs['sep'] = full_kwargs.pop('delimiter')
@@ -774,6 +841,7 @@ def _load_csv(path: Path, **kwargs) -> Iterator[RasterChunk]:
                 iter_kwargs['comment'] = comment_char
             if delimiter == r'\s+':
                 iter_kwargs.pop('delimiter')
+                iter_kwargs.pop('low_memory', None)  # python engine doesn't support low_memory
                 iter_kwargs['sep'] = r'\s+'
                 iter_kwargs['engine'] = 'python'
             chunk_iter = pd.read_csv(path, **iter_kwargs)

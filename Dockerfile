@@ -1,4 +1,4 @@
-FROM python:3.11-slim
+FROM nvidia/cuda:12.4.1-runtime-ubuntu22.04
 
 LABEL maintainer="Climate Research Team"
 LABEL description="Climate Data ETL Pipeline"
@@ -6,8 +6,16 @@ LABEL description="Climate Data ETL Pipeline"
 # Set working directory
 WORKDIR /app
 
-# Install system dependencies including Node.js for frontend build
+# Install Python 3.11, system dependencies, and Node.js for frontend build
+ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y \
+    software-properties-common \
+    && add-apt-repository ppa:deadsnakes/ppa \
+    && apt-get update && apt-get install -y \
+    python3.11 \
+    python3.11-venv \
+    python3.11-dev \
+    python3-pip \
     gcc \
     g++ \
     libgdal-dev \
@@ -15,14 +23,24 @@ RUN apt-get update && apt-get install -y \
     libgeos-dev \
     libeccodes-dev \
     libeccodes0 \
+    ca-certificates \
     curl \
+    unzip \
     && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && apt-get install -y nodejs \
+    && update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1 \
+    && update-alternatives --install /usr/bin/python python /usr/bin/python3.11 1 \
     && rm -rf /var/lib/apt/lists/*
+
+# Ensure pip is available for python3.11
+RUN python3.11 -m ensurepip --upgrade && python3.11 -m pip install --upgrade pip
 
 # Copy requirements first for better caching
 COPY requirements.txt requirements-dev.txt ./
-RUN pip install --no-cache-dir -r requirements.txt
+RUN python3.11 -m pip install --no-cache-dir -r requirements.txt
+
+# Install ONNX Runtime + Optimum separately to avoid dependency resolution conflicts with dagster
+RUN python3.11 -m pip install --no-cache-dir "onnxruntime>=1.17.0" "optimum[onnxruntime]>=1.17.0"
 
 # Copy and build Vue frontend
 COPY web_api/frontend/package*.json ./web_api/frontend/
@@ -50,7 +68,7 @@ COPY dagster_project/ ./dagster_project/
 RUN cp -r /tmp/frontend-dist ./web_api/frontend/dist
 
 # Install package
-RUN pip install -e .
+RUN python3.11 -m pip install -e .
 
 # Create directories
 RUN mkdir -p data/raw data/processed logs

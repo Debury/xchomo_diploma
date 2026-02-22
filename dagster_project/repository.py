@@ -4,44 +4,33 @@ import sys
 from pathlib import Path
 
 # When Dagster loads this module inside the container, ensure /app is on sys.path
-# so that the top-level `src` package can be imported.
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if PROJECT_ROOT.exists() and str(PROJECT_ROOT) not in sys.path:
     sys.path.append(str(PROJECT_ROOT))
 
-# Some interactive environments only mount /app/src, so fall back to that if needed.
 SRC_PATH = PROJECT_ROOT / "src"
 if SRC_PATH.exists() and str(SRC_PATH) not in sys.path:
     sys.path.append(str(SRC_PATH))
 
 from dagster import Definitions
 
-# Legacy jobs commented out - they depend on non-existent ops
-# from dagster_project.jobs import (
-#     daily_etl_job,
-#     embedding_job,
-#     complete_pipeline_job,
-#     validation_job
-# )
-from dagster_project.dynamic_jobs import (
-    dynamic_source_etl_job
-)
+from dagster_project.dynamic_jobs import dynamic_source_etl_job
 from dagster_project.catalog_jobs import (
     batch_catalog_etl_job,
     catalog_metadata_only_job,
+    catalog_full_etl_job,
 )
+from dagster_project.source_jobs import single_source_etl_job
 from dagster_project.schedules import (
-    daily_etl_schedule,
-    daily_embedding_schedule,
-    weekly_complete_schedule,
-    new_processed_data_sensor,
-    data_quality_sensor,
-    config_change_sensor
+    source_schedule_sensor,
+    data_freshness_sensor,
+    weekly_catalog_refresh,
 )
 from dagster_project.resources import (
     ConfigLoaderResource,
     LoggerResource,
-    DataPathResource
+    DataPathResource,
+    DatabaseResource,
 )
 
 
@@ -51,19 +40,18 @@ from dagster_project.resources import (
 
 climate_etl_repository = Definitions(
     jobs=[
-        dynamic_source_etl_job,  # Phase 5: Dynamic source-driven ETL
-        batch_catalog_etl_job,  # Batch catalog processing (Phase 0 + Phase 1)
-        catalog_metadata_only_job,  # Quick metadata-only (Phase 0)
+        dynamic_source_etl_job,       # Legacy: process all active sources
+        batch_catalog_etl_job,        # Catalog: Phase 0 + Phase 1
+        catalog_metadata_only_job,    # Catalog: Phase 0 only
+        catalog_full_etl_job,         # Catalog: Phase 0 → 1 → 2 → 3
+        single_source_etl_job,        # Single source ETL (used by sensors)
     ],
     schedules=[
-        daily_etl_schedule,
-        daily_embedding_schedule,
-        weekly_complete_schedule
+        weekly_catalog_refresh,
     ],
     sensors=[
-        new_processed_data_sensor,
-        data_quality_sensor,
-        config_change_sensor
+        source_schedule_sensor,
+        data_freshness_sensor,
     ],
     resources={
         "config_loader": ConfigLoaderResource(config_path="config/pipeline_config.yaml"),
@@ -71,11 +59,11 @@ climate_etl_repository = Definitions(
         "data_paths": DataPathResource(
             raw_data_dir="data/raw",
             processed_data_dir="data/processed",
-            embeddings_dir="chroma_db"
-        )
-    }
+            embeddings_dir="chroma_db",
+        ),
+        "database": DatabaseResource(),
+    },
 )
 
 
-# Export for easy import
 __all__ = ["climate_etl_repository"]

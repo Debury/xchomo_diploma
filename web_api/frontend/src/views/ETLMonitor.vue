@@ -1,60 +1,39 @@
 <template>
   <div class="space-y-6">
-    <!-- Header -->
-    <div class="flex items-center justify-between">
-      <div>
-        <h1 class="text-xl font-semibold text-mendelu-black">ETL Monitor</h1>
-        <p class="text-sm text-mendelu-gray-dark">Live view of running ETL jobs and batch processing</p>
-      </div>
-      <div class="flex gap-3">
-        <button
-          @click="retryFailed"
-          :disabled="!progress || progress.failed === 0"
-          class="btn-secondary disabled:opacity-50"
-        >
+    <PageHeader title="ETL Monitor" subtitle="Live view of running ETL jobs and batch processing">
+      <template #actions>
+        <button @click="retryFailed" :disabled="!progress || progress.failed === 0" class="btn-ghost disabled:opacity-50">
           Retry Failed
         </button>
         <button @click="refreshAll" :disabled="loading" class="btn-secondary disabled:opacity-50">
           Refresh
         </button>
-      </div>
-    </div>
+      </template>
+    </PageHeader>
 
     <!-- Status Cards -->
-    <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
-      <div class="card !p-4">
-        <h3 class="text-mendelu-gray-dark text-xs mb-1">Total Sources</h3>
-        <p class="text-xl font-semibold text-mendelu-black">{{ progress?.total || 0 }}</p>
-      </div>
-      <div class="card !p-4">
-        <h3 class="text-mendelu-gray-dark text-xs mb-1">Processed</h3>
-        <p class="text-xl font-semibold text-mendelu-success">{{ progress?.processed || 0 }}</p>
-      </div>
-      <div class="card !p-4">
-        <h3 class="text-mendelu-gray-dark text-xs mb-1">Metadata Only</h3>
-        <p class="text-xl font-semibold text-amber-500">{{ progress?.metadata_only || 0 }}</p>
-      </div>
-      <div class="card !p-4">
-        <h3 class="text-mendelu-gray-dark text-xs mb-1">Failed</h3>
-        <p class="text-xl font-semibold text-mendelu-alert">{{ progress?.failed || 0 }}</p>
-      </div>
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+      <StatCard label="Total Sources" :value="String(progress?.total || 0)" :loading="loading" />
+      <StatCard label="Processed" :value="String(progress?.processed || 0)" :loading="loading" />
+      <StatCard label="Metadata Only" :value="String(progress?.metadata_only || 0)" :loading="loading" />
+      <StatCard label="Failed" :value="String(progress?.failed || 0)" :loading="loading" />
     </div>
 
     <!-- Progress Bar -->
-    <div v-if="progress && progress.total > 0" class="card !p-4">
+    <div v-if="progress && progress.total > 0" class="card">
       <div class="flex items-center justify-between mb-2">
         <span class="text-xs text-mendelu-gray-dark">
-          Phase {{ progress.current_phase ?? '—' }}
+          Phase {{ progress.current_phase ?? '---' }}
           <span v-if="progress.current_source" class="text-mendelu-green ml-2 font-medium">{{ progress.current_source }}</span>
         </span>
-        <span class="text-xs text-mendelu-black font-mono">
+        <span class="text-xs text-mendelu-black font-mono tabular-nums">
           {{ pctOf(progress.processed + (progress.metadata_only || 0)) }}%
         </span>
       </div>
       <div class="w-full bg-mendelu-gray-semi rounded-full h-2">
         <div class="flex h-2 rounded-full overflow-hidden">
           <div class="bg-mendelu-success transition-all duration-500" :style="{ width: `${pctOf(progress.processed)}%` }"></div>
-          <div v-if="progress.metadata_only" class="bg-amber-400 transition-all duration-500" :style="{ width: `${pctOf(progress.metadata_only)}%` }"></div>
+          <div v-if="progress.metadata_only" class="bg-mendelu-green/40 transition-all duration-500" :style="{ width: `${pctOf(progress.metadata_only)}%` }"></div>
           <div class="bg-mendelu-alert transition-all duration-500" :style="{ width: `${pctOf(progress.failed)}%` }"></div>
         </div>
       </div>
@@ -65,42 +44,41 @@
     </div>
 
     <!-- Log Output -->
-    <div class="card !p-4">
+    <div class="card">
       <div class="flex items-center justify-between mb-3">
-        <h3 class="text-sm font-semibold text-mendelu-black">ETL Logs</h3>
+        <h3 class="text-sm font-medium text-mendelu-black">ETL Logs</h3>
         <div class="flex gap-2">
           <select v-model="logLines" class="input-field !w-auto !py-1.5 text-xs">
             <option :value="50">50 lines</option>
             <option :value="100">100 lines</option>
             <option :value="500">500 lines</option>
           </select>
-          <button @click="fetchLogs" class="btn-secondary !py-1.5 !text-xs">
-            Refresh Logs
-          </button>
+          <button @click="copyLogs" class="btn-ghost text-xs">Copy</button>
+          <button @click="fetchLogs" class="btn-ghost text-xs">Refresh</button>
         </div>
       </div>
-      <div class="bg-mendelu-black rounded-lg p-4 max-h-96 overflow-y-auto font-mono text-xs">
+      <div ref="logContainer" class="bg-mendelu-black rounded-lg p-4 max-h-96 overflow-y-auto font-mono text-xs">
         <pre class="text-mendelu-green whitespace-pre-wrap">{{ logs || 'No logs available. Start a processing job to see output.' }}</pre>
       </div>
     </div>
 
     <!-- Per-Phase Breakdown -->
-    <div v-if="progress && progress.phases" class="card !p-4">
-      <h3 class="text-sm font-semibold text-mendelu-black mb-3">Per-Phase Breakdown</h3>
+    <div v-if="progress && progress.phases" class="card">
+      <h3 class="text-sm font-medium text-mendelu-black mb-3">Per-Phase Breakdown</h3>
       <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
         <div v-for="(info, phase) in progress.phases" :key="phase" class="bg-mendelu-gray-light rounded-lg p-4">
           <div class="flex items-center justify-between mb-2">
             <span class="text-mendelu-black font-medium text-sm">Phase {{ phase }}</span>
             <span class="text-xs text-mendelu-gray-dark">{{ phaseLabel(phase) }}</span>
           </div>
-          <div class="flex gap-3 text-sm">
+          <div class="flex gap-3 text-xs">
             <span class="text-mendelu-success">{{ info.completed }} done</span>
             <span class="text-mendelu-alert">{{ info.failed }} failed</span>
             <span class="text-mendelu-gray-dark">{{ info.total }} total</span>
           </div>
-          <div class="w-full bg-mendelu-gray-semi rounded-full h-2 mt-2">
+          <div class="w-full bg-mendelu-gray-semi rounded-full h-1.5 mt-2">
             <div
-              class="bg-mendelu-green h-2 rounded-full transition-all"
+              class="bg-mendelu-green h-1.5 rounded-full transition-all duration-300"
               :style="{ width: info.total > 0 ? `${(info.completed / info.total) * 100}%` : '0%' }"
             ></div>
           </div>
@@ -111,12 +89,15 @@
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, onMounted, onUnmounted, nextTick } from 'vue'
+import PageHeader from '../components/PageHeader.vue'
+import StatCard from '../components/StatCard.vue'
 
 const progress = ref(null)
 const logs = ref('')
 const loading = ref(false)
 const logLines = ref(100)
+const logContainer = ref(null)
 let pollTimer = null
 
 function pctOf(value) {
@@ -125,7 +106,7 @@ function pctOf(value) {
 }
 
 function formatTime(ts) {
-  if (!ts) return '—'
+  if (!ts) return '---'
   try { return new Date(ts).toLocaleString() } catch { return ts }
 }
 
@@ -147,8 +128,16 @@ async function fetchLogs() {
     if (resp.ok) {
       const data = await resp.json()
       logs.value = data.content || 'No logs available'
+      await nextTick()
+      if (logContainer.value) logContainer.value.scrollTop = logContainer.value.scrollHeight
     }
   } catch (e) { console.error('Failed to fetch logs:', e) }
+}
+
+function copyLogs() {
+  if (logs.value) {
+    navigator.clipboard.writeText(logs.value).catch(() => {})
+  }
 }
 
 async function retryFailed() {

@@ -216,6 +216,8 @@ def process_metadata_batch(
     processed = 0
     failed = 0
     total = len(entries)
+    succeeded_ids: List[str] = []
+    failed_entries: List[tuple] = []  # (source_id, error_message)
 
     for i in range(0, total, batch_size):
         batch = entries[i : i + batch_size]
@@ -223,15 +225,18 @@ def process_metadata_batch(
         texts = []
         ids = []
         payloads = []
+        batch_entries = []
 
         for entry in batch:
             try:
                 texts.append(_build_metadata_text(entry))
                 ids.append(entry.source_id)
                 payloads.append(_build_payload(entry))
+                batch_entries.append(entry)
             except Exception as e:
                 logger.error(f"Failed to prepare entry {entry.dataset_name}: {e}")
                 failed += 1
+                failed_entries.append((entry.source_id, str(e)))
 
         if not texts:
             continue
@@ -248,12 +253,21 @@ def process_metadata_batch(
             )
 
             processed += len(texts)
+            succeeded_ids.extend(ids)
             logger.info(f"Batch {i // batch_size + 1}: stored {len(texts)} entries ({processed}/{total})")
 
         except Exception as e:
             logger.error(f"Batch {i // batch_size + 1} failed: {e}")
             failed += len(texts)
+            for entry in batch_entries:
+                failed_entries.append((entry.source_id, str(e)))
 
-    result = {"processed": processed, "failed": failed, "total": total}
-    logger.info(f"Phase 0 complete: {result}")
+    result = {
+        "processed": processed,
+        "failed": failed,
+        "total": total,
+        "succeeded_ids": succeeded_ids,
+        "failed_entries": failed_entries,
+    }
+    logger.info(f"Phase 0 complete: processed={processed}, failed={failed}, total={total}")
     return result

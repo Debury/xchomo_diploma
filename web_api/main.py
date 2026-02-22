@@ -121,6 +121,7 @@ class SourceCreate(BaseModel):
     auth_method: Optional[str] = None  # none, api_key, bearer_token, basic
     auth_credentials: Optional[Dict[str, str]] = None
     portal: Optional[str] = None  # CDS, NASA, MARINE, ESGF, NOAA
+    schedule_cron: Optional[str] = None  # Optional cron for auto-scheduling
 
 class SourceUpdate(BaseModel):
     url: Optional[str] = None
@@ -564,8 +565,9 @@ async def clear_embeddings(confirm: bool = False, delete_sources: bool = False):
         host = os.getenv("QDRANT_HOST", "localhost")
         port = int(os.getenv("QDRANT_REST_PORT", 6333))
         from qdrant_client import QdrantClient
-        client = QdrantClient(host=host, port=port, prefer_grpc=False, timeout=10)
-        
+        grpc_port = int(os.getenv("QDRANT_GRPC_PORT", 6334))
+        client = QdrantClient(host=host, port=port, grpc_port=grpc_port, prefer_grpc=True, timeout=10)
+
         logger.info(f"Attempting to delete collection: {collection_name}")
         
         # Check if collection exists
@@ -678,6 +680,15 @@ async def create_source(source: SourceCreate):
             persisted["source_credentials"] = source_creds
             _save_settings(persisted)
 
+        # Set up schedule if requested
+        if source.schedule_cron:
+            try:
+                from src.database.source_store import SourceStore as PgStore
+                pg_store = PgStore()
+                pg_store.set_schedule(source.source_id, source.schedule_cron)
+            except Exception as sched_err:
+                logger.warning(f"Could not set schedule: {sched_err}")
+
         # Include auth_method and portal in response
         source_dict["auth_method"] = auth_method
         source_dict["portal"] = portal
@@ -690,12 +701,28 @@ async def list_sources(active_only: bool = True):
     from src.sources import get_source_store
     persisted = _load_settings()
     source_creds = persisted.get("source_credentials", {})
+
+    # Try to load schedule/freshness data from PostgreSQL
+    schedules_map = {}
+    try:
+        from src.database.connection import get_db_session
+        from src.database.models import SourceSchedule, Source as SourceModel
+        with get_db_session() as session:
+            for sched in session.query(SourceSchedule).all():
+                schedules_map[sched.source_id] = sched.to_dict()
+    except Exception:
+        pass
+
     results = []
     for s in get_source_store().get_all_sources(active_only):
         d = s.to_dict()
         cred_info = source_creds.get(d.get("source_id", ""), {})
         d["auth_method"] = d.get("auth_method") or cred_info.get("auth_method")
         d["portal"] = d.get("portal") or cred_info.get("portal")
+        # Attach schedule info if available
+        sched = schedules_map.get(d.get("source_id", ""))
+        if sched:
+            d["schedule"] = sched
         results.append(d)
     return results
 
@@ -813,16 +840,17 @@ async def delete_all_sources(confirm: bool = False, delete_embeddings: bool = Fa
             host = os.getenv("QDRANT_HOST", "localhost")
             port = int(os.getenv("QDRANT_REST_PORT", 6333))
             from qdrant_client import QdrantClient
-            client = QdrantClient(host=host, port=port, prefer_grpc=False, timeout=10)
-            
+            grpc_port = int(os.getenv("QDRANT_GRPC_PORT", 6334))
+            client = QdrantClient(host=host, port=port, grpc_port=grpc_port, prefer_grpc=True, timeout=10)
+
             # Get collection name from config
             qdrant_config = pipeline_config.get("vector_db", {}).get("qdrant", {})
             collection_name = qdrant_config.get("collection_name", "climate_data")
-            
+
             # Check if collection exists
             collections = client.get_collections().collections
             exists = any(c.name == collection_name for c in collections)
-            
+
             if exists and source_ids:
                 # Delete points by source_id filter for each source
                 for source_id in source_ids:
@@ -879,6 +907,159 @@ async def delete_all_sources(confirm: bool = False, delete_embeddings: bool = Fa
         "message": f"Deleted {deleted_count} source(s)" + (f" and {embeddings_deleted_count} embedding(s)" if delete_embeddings else "")
     }
 
+# --- SOURCE LIFECYCLE ---
+
+@app.post("/sources/{source_id}/test-connection")
+async def test_source_connection(source_id: str):
+    """Test connectivity to a source's URL."""
+    from src.sources import get_source_store
+    store = get_source_store()
+    source = store.get_source(source_id)
+    if not source:
+        raise HTTPException(404, "Source not found")
+
+    from src.sources.connection_tester import test_connection
+    result = test_connection(source.url)
+    result["source_id"] = source_id
+    return result
+
+
+@app.post("/sources/analyze-url")
+async def analyze_source_url(data: dict):
+    """Auto-detect format, portal, and auth requirements from a URL."""
+    url = data.get("url", "")
+    if not url:
+        raise HTTPException(400, "URL is required")
+
+    from src.sources.connection_tester import analyze_url
+    return analyze_url(url)
+
+
+@app.get("/sources/{source_id}/history")
+async def get_source_history(source_id: str, limit: int = 20):
+    """Get processing history for a source."""
+    try:
+        from src.database.source_store import SourceStore
+        store = SourceStore()
+        history = store.get_source_history(source_id, limit=limit)
+        return {"source_id": source_id, "runs": history}
+    except ImportError:
+        return {"source_id": source_id, "runs": [], "message": "PostgreSQL store not available"}
+
+
+@app.get("/sources/{source_id}/freshness")
+async def get_source_freshness(source_id: str):
+    """Get freshness info for a source."""
+    from src.sources import get_source_store
+    store = get_source_store()
+    source = store.get_source(source_id)
+    if not source:
+        raise HTTPException(404, "Source not found")
+
+    result = {
+        "source_id": source_id,
+        "processing_status": source.processing_status,
+        "last_processed": None,
+        "is_stale": False,
+        "schedule": None,
+    }
+
+    try:
+        from src.database.connection import get_db_session
+        from src.database.models import Source as SourceModel, SourceSchedule
+        from datetime import datetime, timedelta
+
+        with get_db_session() as session:
+            row = session.query(SourceModel).filter(SourceModel.source_id == source_id).first()
+            if row and row.last_processed_at:
+                result["last_processed"] = row.last_processed_at.isoformat()
+                result["is_stale"] = row.last_processed_at < datetime.utcnow() - timedelta(days=30)
+
+            sched = session.query(SourceSchedule).filter(SourceSchedule.source_id == source_id).first()
+            if sched:
+                result["schedule"] = sched.to_dict()
+    except ImportError:
+        pass
+
+    return result
+
+
+# --- SOURCE SCHEDULE CRUD ---
+
+class SourceScheduleRequest(BaseModel):
+    cron_expression: str
+    is_enabled: bool = True
+
+
+@app.get("/sources/{source_id}/schedule")
+async def get_source_schedule(source_id: str):
+    """Get the schedule for a source."""
+    try:
+        from src.database.source_store import SourceStore
+        store = SourceStore()
+        schedule = store.get_schedule(source_id)
+        if not schedule:
+            return {"source_id": source_id, "schedule": None}
+        return {"source_id": source_id, "schedule": schedule}
+    except ImportError:
+        raise HTTPException(503, "PostgreSQL store not available")
+
+
+@app.put("/sources/{source_id}/schedule")
+async def set_source_schedule(source_id: str, request: SourceScheduleRequest):
+    """Create or update a schedule for a source."""
+    try:
+        from croniter import croniter
+    except ImportError:
+        raise HTTPException(503, "croniter not installed")
+
+    # Validate cron expression
+    try:
+        croniter(request.cron_expression)
+    except (ValueError, KeyError) as e:
+        raise HTTPException(400, f"Invalid cron expression: {e}")
+
+    try:
+        from src.database.source_store import SourceStore
+        store = SourceStore()
+
+        # Verify source exists
+        source = store.get_source(source_id)
+        if not source:
+            raise HTTPException(404, "Source not found")
+
+        schedule = store.set_schedule(
+            source_id=source_id,
+            cron_expression=request.cron_expression,
+            is_enabled=request.is_enabled,
+        )
+        return {"source_id": source_id, "schedule": schedule}
+    except ImportError:
+        raise HTTPException(503, "PostgreSQL store not available")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
+@app.delete("/sources/{source_id}/schedule")
+async def delete_source_schedule(source_id: str):
+    """Delete the schedule for a source."""
+    try:
+        from src.database.source_store import SourceStore
+        store = SourceStore()
+        deleted = store.delete_schedule(source_id)
+        if not deleted:
+            raise HTTPException(404, "Schedule not found")
+        return {"source_id": source_id, "deleted": True}
+    except ImportError:
+        raise HTTPException(503, "PostgreSQL store not available")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
 @app.delete("/sources/{source_id}/embeddings", status_code=200)
 async def delete_source_embeddings(source_id: str, confirm: bool = False):
     """
@@ -912,8 +1093,9 @@ async def delete_source_embeddings(source_id: str, confirm: bool = False):
         # Initialize client directly
         host = os.getenv("QDRANT_HOST", "localhost")
         port = int(os.getenv("QDRANT_REST_PORT", 6333))
-        client = QdrantClient(host=host, port=port, prefer_grpc=False, timeout=10)
-        
+        grpc_port = int(os.getenv("QDRANT_GRPC_PORT", 6334))
+        client = QdrantClient(host=host, port=port, grpc_port=grpc_port, prefer_grpc=True, timeout=10)
+
         # Delete points by source_id filter
         client.delete(
             collection_name=collection_name,
@@ -1571,7 +1753,7 @@ async def list_catalog():
         from src.catalog.batch_orchestrator import BatchProgress
 
         entries = read_catalog(CATALOG_EXCEL_PATH)
-        progress = BatchProgress.load()
+        progress = BatchProgress()
 
         result = []
         for entry in entries:
@@ -1605,7 +1787,7 @@ async def list_catalog():
 
 @app.post("/catalog/process")
 async def trigger_catalog_processing(request: CatalogProcessRequest):
-    """Trigger batch processing of catalog entries."""
+    """Trigger batch processing of catalog entries via Dagster."""
     global _batch_thread, _batch_thread_error, _batch_thread_phases
 
     try:
@@ -1619,46 +1801,71 @@ async def trigger_catalog_processing(request: CatalogProcessRequest):
             )
             return result
 
-        # Prevent duplicate batch starts
-        if _batch_thread is not None and _batch_thread.is_alive():
-            raise HTTPException(
-                409,
-                "Batch processing is already running. "
-                "Check /catalog/progress for status.",
+        # Try to launch via Dagster first
+        try:
+            # Choose job based on requested phases
+            phases = sorted(request.phases or [0])
+            if phases == [0]:
+                job_name = "catalog_metadata_only_job"
+            elif phases == [0, 1] or phases == [1]:
+                job_name = "batch_catalog_etl_job"
+            else:
+                job_name = "catalog_full_etl_job"
+
+            run = await launch_dagster_run(
+                job_name,
+                run_config={},
+                tags={
+                    "phases": str(phases),
+                    "trigger_type": "api",
+                },
             )
+            return {
+                "status": "started",
+                "phases": request.phases,
+                "dagster_run_id": run.get("runId"),
+                "job_name": job_name,
+                "message": f"Catalog processing started via Dagster ({job_name})",
+            }
+        except Exception as dagster_err:
+            logger.warning(f"Dagster launch failed ({dagster_err}), falling back to thread")
 
-        # Reset crash state
-        _batch_thread_error = None
-        _batch_thread_phases = request.phases
-
-        def _run_in_background():
-            global _batch_thread_error
-            try:
-                run_batch_pipeline(
-                    excel_path=CATALOG_EXCEL_PATH,
-                    phases=request.phases,
-                    dry_run=request.dry_run,
-                    resume=True,
+            # Fallback: run in background thread (e.g., Dagster unavailable)
+            if _batch_thread is not None and _batch_thread.is_alive():
+                raise HTTPException(
+                    409,
+                    "Batch processing is already running. "
+                    "Check /catalog/progress for status.",
                 )
-            except Exception as e:
-                import traceback
-                tb = traceback.format_exc()
-                _batch_thread_error = f"{e}\n{tb}"
-                logger.error(f"Background catalog processing failed: {e}\n{tb}")
-                from src.utils.logger import setup_logger
-                cl = setup_logger("catalog_pipeline", "logs/catalog_pipeline.log", "INFO")
-                cl.error(f"BACKGROUND THREAD CRASHED: {e}\n{tb}")
 
-        _batch_thread = _threading.Thread(
-            target=_run_in_background, daemon=True, name="catalog-batch"
-        )
-        _batch_thread.start()
+            _batch_thread_error = None
+            _batch_thread_phases = request.phases
 
-        return {
-            "status": "started",
-            "phases": request.phases,
-            "message": f"Catalog processing started for phases {request.phases}",
-        }
+            def _run_in_background():
+                global _batch_thread_error
+                try:
+                    run_batch_pipeline(
+                        excel_path=CATALOG_EXCEL_PATH,
+                        phases=request.phases,
+                        dry_run=request.dry_run,
+                        resume=True,
+                    )
+                except Exception as e:
+                    import traceback
+                    tb = traceback.format_exc()
+                    _batch_thread_error = f"{e}\n{tb}"
+                    logger.error(f"Background catalog processing failed: {e}\n{tb}")
+
+            _batch_thread = _threading.Thread(
+                target=_run_in_background, daemon=True, name="catalog-batch"
+            )
+            _batch_thread.start()
+
+            return {
+                "status": "started",
+                "phases": request.phases,
+                "message": f"Catalog processing started (thread fallback) for phases {request.phases}",
+            }
     except HTTPException:
         raise
     except Exception as e:
@@ -1667,7 +1874,7 @@ async def trigger_catalog_processing(request: CatalogProcessRequest):
 
 @app.get("/catalog/progress", response_model=CatalogProgressResponse)
 async def get_catalog_progress():
-    """Get current batch processing progress, including thread health."""
+    """Get current batch processing progress, including thread and Dagster health."""
     try:
         from src.catalog.batch_orchestrator import get_progress
         data = get_progress()
@@ -1682,6 +1889,25 @@ async def get_catalog_progress():
         data["thread_alive"] = thread_alive
         data["thread_crashed"] = thread_crashed
         data["thread_error"] = _batch_thread_error if thread_crashed else None
+
+        # Also check for active Dagster catalog runs
+        try:
+            runs_query = """
+            query {
+                runsOrError(filter: {
+                    pipelineName: "catalog_full_etl_job"
+                    statuses: [STARTED, QUEUED]
+                }, limit: 1) {
+                    ... on Runs { results { runId status } }
+                }
+            }
+            """
+            runs_data = await execute_graphql_query(runs_query)
+            active_runs = runs_data.get("runsOrError", {}).get("results", [])
+            if active_runs:
+                data["thread_alive"] = True  # Treat Dagster run as "alive"
+        except Exception:
+            pass  # Dagster unavailable is fine
 
         return data
     except Exception as e:
@@ -1716,22 +1942,37 @@ async def classify_catalog():
 
 @app.post("/catalog/retry-failed")
 async def retry_failed_catalog():
-    """Re-run all failed catalog sources."""
-    import threading
-
+    """Re-run all failed catalog sources via Dagster."""
     try:
-        from src.catalog.batch_orchestrator import retry_failed
+        # Try Dagster first
+        try:
+            run = await launch_dagster_run(
+                "catalog_full_etl_job",
+                run_config={},
+                tags={"trigger_type": "retry", "retry": "true"},
+            )
+            return {
+                "status": "started",
+                "dagster_run_id": run.get("runId"),
+                "message": "Retrying failed sources via Dagster",
+            }
+        except Exception as dagster_err:
+            logger.warning(f"Dagster launch failed ({dagster_err}), falling back to thread")
 
-        def _retry():
-            try:
-                retry_failed(excel_path=CATALOG_EXCEL_PATH)
-            except Exception as e:
-                logger.error(f"Retry failed: {e}")
+            # Fallback: thread
+            import threading
+            from src.catalog.batch_orchestrator import retry_failed
 
-        thread = threading.Thread(target=_retry, daemon=True)
-        thread.start()
+            def _retry():
+                try:
+                    retry_failed(excel_path=CATALOG_EXCEL_PATH)
+                except Exception as e:
+                    logger.error(f"Retry failed: {e}")
 
-        return {"status": "started", "message": "Retrying failed sources in background"}
+            thread = threading.Thread(target=_retry, daemon=True)
+            thread.start()
+
+            return {"status": "started", "message": "Retrying failed sources in background (thread fallback)"}
     except Exception as e:
         raise HTTPException(500, str(e))
 
@@ -1754,9 +1995,8 @@ async def auto_restart_catalog():
     try:
         from src.catalog.batch_orchestrator import BatchProgress, run_batch_pipeline
 
-        progress = BatchProgress.load()
+        progress = BatchProgress()
         reset_count = progress.mark_interrupted()
-        progress.save()
 
         # Determine which phases to restart
         phases = _batch_thread_phases or [0, 1]
@@ -1806,12 +2046,12 @@ async def get_catalog_entry(row_index: int):
         from src.catalog.batch_orchestrator import BatchProgress
 
         entries = read_catalog(CATALOG_EXCEL_PATH)
-        progress = BatchProgress.load()
+        progress = BatchProgress()
 
         for entry in entries:
             if entry.row_index == row_index:
                 phase = classify_source(entry)
-                status_info = progress.sources.get(entry.source_id, {})
+                status_info = progress.get_source_info(entry.source_id)
                 return {
                     **entry.to_dict(),
                     "phase": phase,
@@ -1972,7 +2212,7 @@ async def get_system_settings():
             "batch_size": _runtime_settings.get("batch_size", 100),
         },
         "embedding_model": {
-            "name": os.getenv("EMBEDDING_MODEL", "BAAI/bge-m3"),
+            "name": os.getenv("EMBEDDING_MODEL", "BAAI/bge-large-en-v1.5"),
             "dimensions": 1024,
             "distance": "COSINE",
         },
@@ -2064,7 +2304,8 @@ async def qdrant_health():
         from qdrant_client import QdrantClient
         host = os.getenv("QDRANT_HOST", "localhost")
         port = int(os.getenv("QDRANT_REST_PORT", 6333))
-        client = QdrantClient(host=host, port=port, timeout=10)
+        grpc_port = int(os.getenv("QDRANT_GRPC_PORT", 6334))
+        client = QdrantClient(host=host, port=port, grpc_port=grpc_port, prefer_grpc=True, timeout=10)
         collection_name = os.getenv("QDRANT_COLLECTION", "climate_data")
 
         try:
