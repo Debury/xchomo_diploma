@@ -276,7 +276,8 @@ class VectorDatabase:
                         "collection_name": self.collection,
                         "query_vector": query_vector,
                         "limit": limit,
-                        "with_payload": True
+                        "with_payload": True,
+                        "score_threshold": 0.25,
                     }
                     # Use pre-built filter if provided, else build from dict
                     if query_filter is not None:

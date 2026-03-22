@@ -16,7 +16,9 @@ from urllib.parse import urlparse
 
 from src.catalog.excel_reader import CatalogEntry
 
-logger = logging.getLogger(__name__)
+from src.utils.logger import setup_logger
+
+logger = setup_logger("catalog_pipeline", "logs/catalog_pipeline.log", "INFO")
 
 
 def _process_file(file_path: str, entry: CatalogEntry, adapter_name: str = "portal") -> bool:
@@ -116,20 +118,17 @@ _CDS_DATASET_CONFIGS: Dict[str, Dict[str, Any]] = {
     "reanalysis-cerra-single-levels": {
         "product_type": ["reanalysis"],
         "variable": ["2m_temperature"],
-        "level_type": ["surface_or_atmosphere"],
         "year": ["2020"],
         "month": ["01"],
         "day": ["15"],
         "time": ["12:00"],
         "data_format": "netcdf",
     },
-    "cams-global-reanalysis-eac4": {
+    "cams-global-reanalysis-eac4-monthly": {
         "variable": ["total_column_ozone"],
+        "product_type": ["monthly_mean"],
         "year": ["2020"],
         "month": ["01"],
-        "day": ["15"],
-        "time": ["12:00"],
-        "area": [50, 10, 45, 20],
         "data_format": "netcdf",
     },
     "satellite-fire-radiative-power": {
@@ -163,7 +162,7 @@ _DATASET_NAME_TO_CDS_ID: Dict[str, str] = {
     "ERA5": "reanalysis-era5-single-levels",
     "ERA5 Land": "reanalysis-era5-land",
     "CERRA": "reanalysis-cerra-single-levels",
-    "CAMS": "cams-global-reanalysis-eac4",
+    "CAMS": "cams-global-reanalysis-eac4-monthly",
     "Fire radiative power (Copernicus)": "satellite-fire-radiative-power",
     "ERA5-HEAT": "derived-utci-historical",
 }
@@ -675,6 +674,73 @@ class MarineCopernicusAdapter(PortalAdapter):
 
 
 # ---------------------------------------------------------------------------
+# EIDC Adapter — Environmental Information Data Centre (Hydro-JULES/CHESS)
+# ---------------------------------------------------------------------------
+
+# Direct download URLs for EIDC datasets (require HTTP basic auth).
+_EIDC_URLS: Dict[str, str] = {
+    "Hydro-JULES": "https://catalogue.ceh.ac.uk/datastore/eidchub/2ab15bf0-ad08-415c-ba64-831168be7293/chess_precip_200101.nc",
+}
+
+
+class EIDCAdapter(PortalAdapter):
+    """
+    Adapter for EIDC/CEH datasets (e.g. CHESS-met for Hydro-JULES).
+    Requires EIDC_USERNAME and EIDC_PASSWORD env vars (register at catalogue.ceh.ac.uk).
+    """
+
+    def download_and_process(self, entry: CatalogEntry) -> bool:
+        tmp_path = None
+        try:
+            import requests as http_requests
+
+            username = os.getenv("EIDC_USERNAME", "")
+            password = os.getenv("EIDC_PASSWORD", "")
+            if not username or not password:
+                logger.warning("EIDC: EIDC_USERNAME/EIDC_PASSWORD not set")
+                return False
+
+            url = _EIDC_URLS.get(entry.dataset_name or "")
+            if not url:
+                logger.warning(f"EIDC: no download URL for {entry.dataset_name}")
+                return False
+
+            logger.info(f"EIDC: downloading {entry.dataset_name} from {url}")
+            resp = http_requests.get(
+                url,
+                auth=(username, password),
+                timeout=(30, 600),
+                stream=True,
+                headers={"User-Agent": "ClimateRAG/1.0"},
+            )
+            resp.raise_for_status()
+
+            content_type = resp.headers.get("Content-Type", "").lower()
+            if "text/html" in content_type:
+                raise ValueError("Got HTML instead of data — credentials may be wrong")
+
+            with tempfile.NamedTemporaryFile(suffix=".nc", delete=False) as tmp:
+                max_bytes = 500 * 1024 * 1024
+                written = 0
+                for chunk in resp.iter_content(chunk_size=8192):
+                    written += len(chunk)
+                    if written > max_bytes:
+                        raise ValueError(f"EIDC file too large ({written / 1e6:.0f} MB)")
+                    tmp.write(chunk)
+                tmp_path = tmp.name
+
+            ok = _process_file(tmp_path, entry, adapter_name="EIDC")
+            return ok
+
+        except Exception as e:
+            logger.error(f"EIDC adapter failed for {entry.dataset_name}: {e}\n{traceback.format_exc()}")
+            return False
+        finally:
+            if tmp_path:
+                Path(tmp_path).unlink(missing_ok=True)
+
+
+# ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------
 
@@ -684,6 +750,7 @@ _ADAPTERS: Dict[str, type] = {
     "NOAA": NOAAAdapter,
     "NASA": NASAAdapter,
     "MARINE": MarineCopernicusAdapter,
+    "EIDC": EIDCAdapter,
 }
 
 
@@ -691,7 +758,15 @@ def get_adapter(entry: CatalogEntry) -> Optional[PortalAdapter]:
     """Get the appropriate portal adapter for a catalog entry."""
     from src.catalog.phase_classifier import _get_portal
 
+    name = entry.dataset_name or ""
     link = entry.link or ""
+
+    # Name-based overrides (DOI links don't match portal domains)
+    if name in _DATASET_NAME_TO_CDS_ID:
+        return CDSAdapter()
+    if name in _EIDC_URLS:
+        return EIDCAdapter()
+
     portal = _get_portal(link)
 
     # Special case: marine Copernicus

@@ -173,16 +173,128 @@ def _boost_metadata_scores(results, query_text: str):
     for hit in results:
         payload = hit.payload if hasattr(hit, "payload") else (hit.get("payload", {}) if isinstance(hit, dict) else {})
         boost = 0.0
-        for field in ("variable", "dataset_name", "long_name"):
+        for field in ("variable", "dataset_name", "long_name", "hazard_type", "data_type"):
             val = (payload.get(field) or "").lower()
             if any(kw in val for kw in keywords):
                 boost += 0.05
-        boost = min(boost, 0.15)
+        boost = min(boost, 0.20)
         if boost > 0:
             if hasattr(hit, "score"):
                 hit.score = float(hit.score) + boost
             elif isinstance(hit, dict):
                 hit["score"] = float(hit.get("score", 0.0)) + boost
+
+
+def _query_decomposition_search(question: str, query_vec, db, results: list, embedder, llm_client=None):
+    """For multi-topic queries, use LLM to decompose into sub-queries and search each.
+
+    Fully dynamic — no hardcoded dataset or hazard patterns.
+    Uses the LLM to identify distinct topics in the question.
+    """
+    # Fast-path: skip decomposition for short single-topic queries
+    question_lower = question.lower()
+    has_conjunction = any(w in question_lower for w in [" and ", " alongside ", " with ", " correlate ", " combined "])
+    if len(question.split()) < 12 and not has_conjunction:
+        return
+
+    # Use LLM to decompose the query into sub-topics
+    if llm_client is None:
+        return
+
+    decomposition_prompt = f"""The user asked a climate data question. Identify the distinct climate topics, datasets, or hazards mentioned.
+Return each as a SHORT search query (5-10 words) optimized for semantic similarity search against a climate dataset catalog.
+Return one query per line. Maximum 6 queries. If the question has only one topic, return SINGLE_TOPIC.
+
+QUESTION: {question}
+
+SEARCH QUERIES:"""
+
+    try:
+        import asyncio
+        response = llm_client.generate(
+            prompt=decomposition_prompt,
+            temperature=0.1,
+            max_tokens=150,
+            timeout_s=8,
+        )
+
+        sub_queries = []
+        for line in response.strip().split('\n'):
+            line = line.strip().lstrip('- ').lstrip('0123456789.)')
+            line = line.strip()
+            if line and line.upper() != "SINGLE_TOPIC" and len(line) > 5:
+                sub_queries.append(line)
+
+        if len(sub_queries) < 2:
+            return
+
+        logger.info(f"LLM query decomposition: {len(sub_queries)} sub-topics: {sub_queries}")
+
+    except Exception as e:
+        logger.warning(f"LLM query decomposition failed: {e}")
+        return
+
+    existing_ids = set()
+    for r in results:
+        rid = getattr(r, 'id', None) if hasattr(r, 'id') else (r.get('id') if isinstance(r, dict) else None)
+        if rid:
+            existing_ids.add(rid)
+
+    total_added = 0
+    for sub_query in sub_queries[:6]:
+        try:
+            sub_vec = embedder.embed_queries([sub_query])[0]
+            from qdrant_client.models import Filter, FieldCondition, MatchValue
+            metadata_filter = Filter(must=[
+                FieldCondition(key="is_metadata_only", match=MatchValue(value=True))
+            ])
+            sub_results = db.search(
+                query_vector=sub_vec.tolist(),
+                limit=5,
+                query_filter=metadata_filter,
+            )
+            for sr in sub_results:
+                sid = getattr(sr, 'id', None) if hasattr(sr, 'id') else (sr.get('id') if isinstance(sr, dict) else None)
+                if sid and sid not in existing_ids:
+                    results.append(sr)
+                    existing_ids.add(sid)
+                    total_added += 1
+        except Exception as e:
+            logger.warning(f"Sub-query search failed for '{sub_query[:30]}': {e}")
+
+    if total_added > 0:
+        logger.info(f"Query decomposition added {total_added} results from {len(sub_queries)} sub-topics")
+
+
+def _enforce_diversity(results: list, max_per_source: int = 4) -> list:
+    """Limit results per source_id to ensure diverse dataset coverage.
+
+    Prevents a single source from dominating all result slots.
+    Keeps the top max_per_source results per source, sorted by score.
+    """
+    source_counts = {}
+    diverse_results = []
+
+    # Results should already be sorted by score (descending)
+    sorted_results = sorted(
+        results,
+        key=lambda x: getattr(x, 'score', 0.0) if hasattr(x, 'score') else (x.get('score', 0.0) if isinstance(x, dict) else 0.0),
+        reverse=True
+    )
+
+    for hit in sorted_results:
+        payload = hit.payload if hasattr(hit, "payload") else (hit.get("payload", {}) if isinstance(hit, dict) else {})
+        source_id = payload.get("source_id", "unknown")
+
+        count = source_counts.get(source_id, 0)
+        if count < max_per_source:
+            diverse_results.append(hit)
+            source_counts[source_id] = count + 1
+
+    if len(diverse_results) < len(results):
+        logger.info(f"Diversity filter: {len(results)} → {len(diverse_results)} results ({len(source_counts)} unique sources)")
+
+    return diverse_results
 
 
 _VARIABLE_LIST_RE = re.compile(
@@ -232,15 +344,14 @@ def _format_hit_summary(meta: Dict[str, Any], score: float) -> str:
 
 
 def _default_max_tokens(question: str) -> int:
-    # Keep answers SHORT on slow CPU servers
     q = (question or "").strip()
     if _is_variable_list_question(q):
-        return 60
-    if len(q) <= 50:
         return 80
+    if len(q) <= 50:
+        return 200
     if len(q) <= 100:
-        return 100
-    return 120
+        return 300
+    return 400
 
 # ====================================================================================
 # MODELS
@@ -637,8 +748,42 @@ async def rag_query(request: RAGRequest) -> RAGResponse:
         # Metadata keyword boosting — nudge results where metadata matches query terms
         _boost_metadata_scores(results, question_text)
 
+        # Always search metadata-only points for catalog-level context
+        try:
+            from qdrant_client.models import Filter, FieldCondition, MatchValue
+            metadata_filter = Filter(must=[
+                FieldCondition(key="is_metadata_only", match=MatchValue(value=True))
+            ])
+            metadata_results = db.search(
+                query_vector=query_vec.tolist(),
+                limit=20,
+                query_filter=metadata_filter,
+            )
+            existing_ids = set()
+            for r in results:
+                rid = getattr(r, 'id', None) if hasattr(r, 'id') else (r.get('id') if isinstance(r, dict) else None)
+                if rid:
+                    existing_ids.add(rid)
+            meta_added = 0
+            for mr in metadata_results:
+                mid = getattr(mr, 'id', None) if hasattr(mr, 'id') else (mr.get('id') if isinstance(mr, dict) else None)
+                if mid and mid not in existing_ids:
+                    results.append(mr)
+                    existing_ids.add(mid)
+                    meta_added += 1
+            if meta_added > 0:
+                logger.info(f"Metadata search added {meta_added} catalog entries to results")
+        except Exception as e:
+            logger.warning(f"Metadata search failed: {e}")
+
+        # Query decomposition: for multi-topic queries, search each topic separately
+        _query_decomposition_search(question_text, query_vec, db, results, embedder, llm_client=llm_client)
+
+        # Diversity enforcement: limit results per source to avoid single-source dominance
+        results = _enforce_diversity(results, max_per_source=4)
+
         # Re-sort results by score and limit
-        results = sorted(results, key=lambda x: getattr(x, 'score', 0.0) if hasattr(x, 'score') else (x.get('score', 0.0) if isinstance(x, dict) else 0.0), reverse=True)[:effective_top_k * 3]  # Allow more results after targeted searches
+        results = sorted(results, key=lambda x: getattr(x, 'score', 0.0) if hasattr(x, 'score') else (x.get('score', 0.0) if isinstance(x, dict) else 0.0), reverse=True)[:effective_top_k * 3]
         
         search_time = (time.time() - search_start) * 1000  # Convert to ms
         logger.info(f"Total search (embed+qdrant+targeted) took {search_time:.0f}ms, found {len(results)} results")

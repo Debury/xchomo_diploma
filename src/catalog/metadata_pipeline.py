@@ -3,6 +3,9 @@ Phase 0: Metadata-only pipeline.
 
 Embeds Excel catalog metadata as Qdrant points — no data download required.
 This gives RAG immediate awareness of all 234 climate data sources.
+
+Context enrichment is FULLY DYNAMIC — uses LLM to generate dataset descriptions
+and synonym expansions. No hardcoded dataset dictionaries.
 """
 
 import logging
@@ -15,15 +18,99 @@ from src.catalog.location_enricher import enrich_location
 
 logger = logging.getLogger(__name__)
 
+# Module-level cache: LLM-generated contexts keyed by "dataset::hazard"
+_CONTEXT_CACHE: Dict[str, str] = {}
 
-def _build_metadata_text(entry: CatalogEntry) -> str:
+
+def _get_llm_client():
+    """Get LLM client for context generation. Returns None if unavailable."""
+    import os
+    api_key = os.getenv("OPENROUTER_API_KEY")
+    if not api_key:
+        return None
+    try:
+        from src.llm.openrouter_client import OpenRouterClient
+        return OpenRouterClient()
+    except Exception:
+        return None
+
+
+def _generate_dynamic_context(entry: CatalogEntry, llm_client=None) -> str:
+    """
+    Use LLM to generate a rich, searchable description from catalog fields.
+    Cached per unique (dataset_name, hazard) pair.
+    Returns empty string if LLM is unavailable or fails.
+    """
+    cache_key = f"{entry.dataset_name or ''}::{entry.hazard or ''}"
+    if cache_key in _CONTEXT_CACHE:
+        return _CONTEXT_CACHE[cache_key]
+
+    if llm_client is None:
+        return ""
+
+    # Build a compact summary of all available fields for the LLM
+    fields = []
+    if entry.dataset_name:
+        fields.append(f"Dataset name: {entry.dataset_name}")
+    if entry.hazard:
+        fields.append(f"Hazard/variable type: {entry.hazard}")
+    if entry.data_type:
+        fields.append(f"Data type: {entry.data_type}")
+    if entry.spatial_coverage:
+        fields.append(f"Spatial coverage: {entry.spatial_coverage}")
+    if entry.spatial_resolution:
+        fields.append(f"Resolution: {entry.spatial_resolution}")
+    if entry.temporal_coverage:
+        fields.append(f"Time coverage: {entry.temporal_coverage}")
+    if entry.temporal_resolution:
+        fields.append(f"Temporal resolution: {entry.temporal_resolution}")
+    if entry.impact_sector:
+        fields.append(f"Sectors: {entry.impact_sector}")
+    if entry.region_country:
+        fields.append(f"Region: {entry.region_country}")
+    if entry.link:
+        fields.append(f"URL: {entry.link}")
+    if entry.notes:
+        fields.append(f"Notes: {entry.notes}")
+
+    metadata_summary = "\n".join(fields)
+
+    prompt = f"""Given this climate dataset metadata, write a 3-4 sentence description for semantic search indexing.
+
+METADATA:
+{metadata_summary}
+
+REQUIREMENTS:
+1. Explain what the dataset measures and what it is used for
+2. Include related scientific terms, synonyms, and common search phrases
+3. Mention typical scientific applications and use cases
+4. Do NOT invent specific data values or statistics
+5. Write in plain English, suitable for embedding-based retrieval
+
+DESCRIPTION:"""
+
+    try:
+        result = llm_client.generate(
+            prompt=prompt,
+            temperature=0.3,
+            max_tokens=200,
+            timeout_s=15,
+        )
+        context = result.strip()
+        _CONTEXT_CACHE[cache_key] = context
+        logger.debug(f"LLM context generated for {cache_key}: {context[:80]}...")
+        return context
+    except Exception as e:
+        logger.warning(f"LLM context generation failed for {cache_key}: {e}")
+        _CONTEXT_CACHE[cache_key] = ""
+        return ""
+
+
+def _build_metadata_text(entry: CatalogEntry, llm_client=None) -> str:
     """
     Build a rich text description from catalog metadata for embedding.
-
-    Example output:
-        "Climate dataset: ERA5. Hazard: Temperature. Type: Reanalysis data.
-         Coverage: Global at 0.25°. Period: 1940-Present, hourly.
-         Sectors: Agriculture, Energy. Region: Global."
+    Fully dynamic — uses LLM to expand context when available,
+    falls back to structured text from Excel fields.
     """
     parts = []
 
@@ -67,6 +154,11 @@ def _build_metadata_text(entry: CatalogEntry) -> str:
 
     if entry.notes:
         parts.append(f"Notes: {entry.notes}")
+
+    # LLM-generated context enrichment (fully dynamic, cached)
+    context = _generate_dynamic_context(entry, llm_client)
+    if context:
+        parts.append(context)
 
     return ". ".join(parts) + "."
 
@@ -119,6 +211,7 @@ def process_metadata_only(
     entry: CatalogEntry,
     text_embedder,
     vector_db,
+    llm_client=None,
 ) -> bool:
     """
     Process a single catalog entry as metadata-only (Phase 0).
@@ -129,13 +222,14 @@ def process_metadata_only(
         entry: CatalogEntry from Excel
         text_embedder: TextEmbedder instance (BAAI/bge-large-en-v1.5)
         vector_db: VectorDatabase instance (Qdrant)
+        llm_client: Optional LLM client for context enrichment
 
     Returns:
         True if successful, False otherwise.
     """
     try:
         # Build text and embed
-        text = _build_metadata_text(entry)
+        text = _build_metadata_text(entry, llm_client=llm_client)
         embedding = text_embedder.embed_documents([text])[0]
 
         # Build payload
@@ -200,6 +294,7 @@ def process_metadata_batch(
     text_embedder,
     vector_db,
     batch_size: int = 32,
+    llm_client=None,
 ) -> Dict[str, int]:
     """
     Process multiple catalog entries as metadata-only (Phase 0) in batches.
@@ -209,10 +304,19 @@ def process_metadata_batch(
         text_embedder: TextEmbedder instance
         vector_db: VectorDatabase instance
         batch_size: Number of entries to embed at once
+        llm_client: Optional LLM client for context enrichment
 
     Returns:
         Dict with counts: {"processed": N, "failed": M, "total": T}
     """
+    # Try to get LLM client if not provided
+    if llm_client is None:
+        llm_client = _get_llm_client()
+        if llm_client:
+            logger.info("LLM client available — will generate dynamic context for metadata")
+        else:
+            logger.warning("No LLM client available — metadata will use basic text only")
+
     processed = 0
     failed = 0
     total = len(entries)
@@ -229,7 +333,7 @@ def process_metadata_batch(
 
         for entry in batch:
             try:
-                texts.append(_build_metadata_text(entry))
+                texts.append(_build_metadata_text(entry, llm_client=llm_client))
                 ids.append(entry.source_id)
                 payloads.append(_build_payload(entry))
                 batch_entries.append(entry)
@@ -261,6 +365,8 @@ def process_metadata_batch(
             failed += len(texts)
             for entry in batch_entries:
                 failed_entries.append((entry.source_id, str(e)))
+
+    logger.info(f"LLM context cache: {len(_CONTEXT_CACHE)} unique contexts generated")
 
     result = {
         "processed": processed,

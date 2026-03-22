@@ -59,16 +59,25 @@ services:
     restart: unless-stopped
 
   qdrant:
-    image: qdrant/qdrant:v1.17.0
+    image: qdrant/qdrant:latest
     container_name: climate-qdrant
     ports:
       - "6333:6333"
       - "6334:6334"
     volumes:
       - qdrant-data:/qdrant/storage
+    environment:
+      - QDRANT__GPU__INDEXING=true
     networks:
       - climate-net
     restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
 
   # Dagit Web UI
   dagit:
@@ -139,6 +148,8 @@ services:
       - NASA_EARTHDATA_TOKEN=${NASA_EARTHDATA_TOKEN:-}
       - CMEMS_USERNAME=${CMEMS_USERNAME:-}
       - CMEMS_PASSWORD=${CMEMS_PASSWORD:-}
+      - EIDC_USERNAME=${EIDC_USERNAME:-}
+      - EIDC_PASSWORD=${EIDC_PASSWORD:-}
     depends_on:
       dagit:
         condition: service_started

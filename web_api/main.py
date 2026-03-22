@@ -1719,6 +1719,7 @@ class CatalogProcessRequest(BaseModel):
     phases: Optional[List[int]] = [0]
     source_ids: Optional[List[str]] = None
     dry_run: bool = False
+    force_reprocess: bool = False
 
 
 class CatalogProgressResponse(BaseModel):
@@ -1801,34 +1802,37 @@ async def trigger_catalog_processing(request: CatalogProcessRequest):
             )
             return result
 
-        # Try to launch via Dagster first
-        try:
-            # Choose job based on requested phases
-            phases = sorted(request.phases or [0])
-            if phases == [0]:
-                job_name = "catalog_metadata_only_job"
-            elif phases == [0, 1] or phases == [1]:
-                job_name = "batch_catalog_etl_job"
-            else:
-                job_name = "catalog_full_etl_job"
+        # Try to launch via Dagster first (skip if force_reprocess - Dagster doesn't support resume=False)
+        if not request.force_reprocess:
+            try:
+                # Choose job based on requested phases
+                phases = sorted(request.phases or [0])
+                if phases == [0]:
+                    job_name = "catalog_metadata_only_job"
+                elif phases == [0, 1] or phases == [1]:
+                    job_name = "batch_catalog_etl_job"
+                else:
+                    job_name = "catalog_full_etl_job"
 
-            run = await launch_dagster_run(
-                job_name,
-                run_config={},
-                tags={
-                    "phases": str(phases),
-                    "trigger_type": "api",
-                },
-            )
-            return {
-                "status": "started",
-                "phases": request.phases,
-                "dagster_run_id": run.get("runId"),
-                "job_name": job_name,
-                "message": f"Catalog processing started via Dagster ({job_name})",
-            }
-        except Exception as dagster_err:
-            logger.warning(f"Dagster launch failed ({dagster_err}), falling back to thread")
+                run = await launch_dagster_run(
+                    job_name,
+                    run_config={},
+                    tags={
+                        "phases": str(phases),
+                        "trigger_type": "api",
+                    },
+                )
+                return {
+                    "status": "started",
+                    "phases": request.phases,
+                    "dagster_run_id": run.get("runId"),
+                    "job_name": job_name,
+                    "message": f"Catalog processing started via Dagster ({job_name})",
+                }
+            except Exception as dagster_err:
+                logger.warning(f"Dagster launch failed ({dagster_err}), falling back to thread")
+        else:
+            logger.info("force_reprocess=True, skipping Dagster and using thread")
 
             # Fallback: run in background thread (e.g., Dagster unavailable)
             if _batch_thread is not None and _batch_thread.is_alive():
@@ -1848,7 +1852,7 @@ async def trigger_catalog_processing(request: CatalogProcessRequest):
                         excel_path=CATALOG_EXCEL_PATH,
                         phases=request.phases,
                         dry_run=request.dry_run,
-                        resume=True,
+                        resume=not request.force_reprocess,
                     )
                 except Exception as e:
                     import traceback

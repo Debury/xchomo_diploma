@@ -17,6 +17,45 @@ from src.catalog.excel_reader import CatalogEntry
 
 logger = logging.getLogger(__name__)
 
+# Override classification for specific datasets by name.
+# Used when the Excel URL doesn't match the actual download method.
+_FORCE_PHASE: Dict[str, int] = {
+    # CDS datasets with DOI or dead ADS URLs — CDS adapter handles them
+    "ERA5-HEAT": 3,
+    "CAMS": 3,
+    # Figshare: AWS WAF blocks automated downloads
+    "Aridity Index and Potential Evapotranspiration": 4,
+    # Google Drive only (manual approval required from GloH2O)
+    "MSWEP": 4,
+    "MSWX-Past": 4,
+    # EIDC/CEDA auth download — handled by EIDC adapter
+    "Hydro-JULES": 3,
+    # No public API or data portal
+    "ArCIS": 4,
+    "TUDES": 4,
+    # Requires Mistral portal registration + custom API
+    "Mistral": 4,
+    "Mistral (CINECA)": 4,
+    # Japanese Meteorological Agency — no public API
+    "JRA55": 4,
+    "JRA-55": 4,
+    # Greek portals — registration closed / portal only
+    "NOA-GR": 4,
+    "HWE-DB": 4,
+    # Météo-France — requires specific registration
+    "SAFRAN": 4,
+    "SYNOP": 4,
+    "RADOME": 4,
+    # Italian tide gauge portals — no API
+    "Rete Mareografica Italiana": 4,
+    "RMI-ISPRA": 4,
+    # Specialized portals without download API
+    "COST-g": 4,
+    "G3P": 4,
+    # CEDA auth required, no adapter
+    "CMIP6-BCCAQ": 4,
+}
+
 # File extensions we can download and process directly
 _DIRECT_EXTENSIONS = {
     ".nc", ".nc4", ".netcdf",
@@ -71,6 +110,10 @@ _PORTAL_DOMAINS = {
     # CEDA archive
     "catalogue.ceda.ac.uk": "CEDA",
     "dap.ceda.ac.uk": "CEDA",
+    # EIDC (Environmental Information Data Centre) — Hydro-JULES/CHESS
+    "catalogue.ceh.ac.uk": "EIDC",
+    # ADS (migrated to CDS) — old CAMS URLs still reference this domain
+    "ads.atmosphere.copernicus.eu": "CDS",
 }
 
 
@@ -109,6 +152,10 @@ def classify_source(entry: CatalogEntry) -> int:
         3 = API-based portal
         4 = manual / contact-required
     """
+    # Force-phase override by dataset name (takes priority over everything)
+    if entry.dataset_name and entry.dataset_name in _FORCE_PHASE:
+        return _FORCE_PHASE[entry.dataset_name]
+
     # Check if this dataset has a direct download override URL
     from src.catalog.batch_orchestrator import DIRECT_DOWNLOAD_URLS
     if entry.dataset_name and entry.dataset_name in DIRECT_DOWNLOAD_URLS:
