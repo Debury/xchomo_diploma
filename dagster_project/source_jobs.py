@@ -5,6 +5,7 @@ Reads source_id from run tags, loads from PostgreSQL, runs the ETL pipeline,
 and records processing history.
 """
 
+import os
 import sys
 import time
 import traceback
@@ -85,11 +86,39 @@ def process_single_source_op(context: OpExecutionContext) -> Dict[str, Any]:
         from src.utils.config_loader import ConfigLoader
         import numpy as np
         import requests
+        from requests.adapters import HTTPAdapter
+        from urllib3.util.retry import Retry as Urllib3Retry
         import tempfile
 
         config = context.resources.config_loader.load()
         embedder = TextEmbedder()
         db = VectorDatabase(config=config)
+
+        # Load per-source credentials from app_settings.json
+        _settings_path = PROJECT_ROOT / "data" / "app_settings.json"
+        source_creds = {}
+        portal = getattr(source, "portal", None)
+        if _settings_path.exists():
+            import json as _json
+            try:
+                _app_settings = _json.loads(_settings_path.read_text())
+                source_creds = _app_settings.get("source_credentials", {}).get(source_id, {})
+                # Also inject global portal credentials into env
+                for key, env_var in {
+                    "cds_api_key": "CDS_API_KEY",
+                    "nasa_earthdata_user": "NASA_EARTHDATA_USER",
+                    "nasa_earthdata_password": "NASA_EARTHDATA_PASSWORD",
+                    "cmems_username": "CMEMS_USERNAME",
+                    "cmems_password": "CMEMS_PASSWORD",
+                }.items():
+                    val = _app_settings.get("credentials", {}).get(key) or _app_settings.get(key)
+                    if val and not os.environ.get(env_var):
+                        os.environ[env_var] = val
+            except Exception:
+                pass
+
+        if not portal:
+            portal = source_creds.get("portal")
 
         # Download
         format_hint = source.format or detect_format_from_url(source.url)
@@ -97,25 +126,75 @@ def process_single_source_op(context: OpExecutionContext) -> Dict[str, Any]:
         ext = ext_map.get(format_hint, '.dat')
 
         tmp_path = None
+        is_downloaded = False
         try:
-            if source.url.startswith(('http://', 'https://')):
-                logger.info(f"Downloading {source.url}")
-                resp = requests.get(source.url, stream=True, timeout=(10, 600),
-                                    headers={"User-Agent": "ClimateRAG/1.0"})
-                resp.raise_for_status()
+            if not source.url.startswith(('http://', 'https://', 'file://')):
+                # Local file
+                local_path = Path(source.url)
+                if not local_path.exists():
+                    local_path = PROJECT_ROOT / source.url.lstrip('/')
+                tmp_path = str(local_path)
+            elif portal and portal.upper() in ("CDS", "NASA", "MARINE", "ESGF"):
+                # Use portal adapter — it handles download + embed + upsert
+                _process_via_portal(
+                    portal=portal.upper(),
+                    source=source,
+                    logger=logger,
+                )
+                # Portal adapters handle their own embedding — skip raster pipeline
+                duration = time.time() - start_time
+                store.update_processing_status(source_id, "completed")
+                if run_record_id:
+                    try:
+                        pg_store.complete_processing_run(
+                            run_id=run_record_id, status="completed", chunks_processed=0,
+                        )
+                    except Exception:
+                        pass
+                logger.info(f"Completed {source_id} via {portal} adapter in {duration:.1f}s")
+                return {
+                    "status": "completed",
+                    "source_id": source_id,
+                    "portal": portal,
+                    "duration": round(duration, 1),
+                }
+            else:
+                # Direct HTTP download with auth support
+                http_session = requests.Session()
+                _retry = Urllib3Retry(
+                    total=3, backoff_factor=2,
+                    status_forcelist=[502, 503, 504],
+                    allowed_methods=["GET"], raise_on_status=False,
+                )
+                http_session.mount("https://", HTTPAdapter(max_retries=_retry))
+                http_session.mount("http://", HTTPAdapter(max_retries=_retry))
+                http_session.headers["User-Agent"] = "ClimateRAG/1.0"
+
+                # Apply auth credentials
+                auth_method = source_creds.get("auth_method") or getattr(source, "auth_method", None)
+                creds = source_creds.get("credentials", {})
+                if auth_method == "api_key" and creds.get("api_key"):
+                    http_session.headers["X-API-Key"] = creds["api_key"]
+                elif auth_method == "bearer_token" and creds.get("token"):
+                    http_session.headers["Authorization"] = f"Bearer {creds['token']}"
+                elif auth_method == "basic" and creds.get("username"):
+                    http_session.auth = (creds["username"], creds.get("password", ""))
+
+                logger.info(f"Downloading {source.url}" + (f" (auth: {auth_method})" if auth_method else ""))
+                try:
+                    resp = http_session.get(source.url, stream=True, timeout=(30, 600))
+                    resp.raise_for_status()
+                except requests.exceptions.SSLError:
+                    resp = http_session.get(source.url, stream=True, timeout=(30, 600), verify=False)
+                    resp.raise_for_status()
 
                 with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
-                    for chunk in resp.iter_content(chunk_size=8192):
+                    for chunk in resp.iter_content(chunk_size=65536):
                         tmp.write(chunk)
                     tmp_path = tmp.name
+                is_downloaded = True
 
                 logger.info(f"Downloaded to {tmp_path}")
-            else:
-                # Local file
-                local_path = Path(source.url.replace('file://', ''))
-                if not local_path.exists():
-                    local_path = PROJECT_ROOT / source.url.replace('file://', '').lstrip('/')
-                tmp_path = str(local_path)
 
             # Load raster
             logger.info("Loading raster data...")
@@ -167,6 +246,17 @@ def process_single_source_op(context: OpExecutionContext) -> Dict[str, Any]:
                     dataset_name=source_id,
                 )
                 meta_dict = meta.to_dict()
+
+                # Inject user-provided keywords and custom metadata
+                src_keywords = getattr(source, "keywords", None)
+                src_custom = getattr(source, "custom_metadata", None)
+                if src_keywords:
+                    meta_dict["keywords"] = src_keywords
+                if src_custom:
+                    for k, v in src_custom.items():
+                        if k not in meta_dict:
+                            meta_dict[k] = v
+
                 text = generate_human_readable_text(meta_dict)
 
                 batch_ids.append(f"{source_id}_{timestamp}_{total_chunks}")
@@ -217,7 +307,7 @@ def process_single_source_op(context: OpExecutionContext) -> Dict[str, Any]:
 
         finally:
             # Clean up temp file if we downloaded it
-            if tmp_path and source.url.startswith(('http://', 'https://')):
+            if tmp_path and is_downloaded:
                 Path(tmp_path).unlink(missing_ok=True)
 
     except Exception as e:
@@ -243,6 +333,79 @@ def process_single_source_op(context: OpExecutionContext) -> Dict[str, Any]:
             "error": error_msg,
             "duration": round(duration, 1),
         }
+
+
+def _process_via_portal(portal: str, source, logger) -> int:
+    """Download + embed via portal adapter. Returns chunk count."""
+    from src.catalog.portal_adapters import (
+        CDSAdapter, NASAAdapter, MarineCopernicusAdapter, ESGFAdapter,
+    )
+
+    adapter_map = {
+        "CDS": CDSAdapter,
+        "NASA": NASAAdapter,
+        "MARINE": MarineCopernicusAdapter,
+        "ESGF": ESGFAdapter,
+    }
+
+    adapter_cls = adapter_map.get(portal)
+    if not adapter_cls:
+        raise ValueError(f"Unknown portal: {portal}")
+
+    adapter = adapter_cls()
+    entry = _source_to_catalog_entry(source)
+    logger.info(f"Using {portal} adapter for {source.source_id}")
+    success = adapter.download_and_process(entry)
+    if not success:
+        raise RuntimeError(f"{portal} adapter failed for {source.source_id}")
+    # Adapters log chunk counts but don't return them — return 1 as minimum
+    return 1
+
+
+def _source_to_catalog_entry(source):
+    """Convert a Source object to a CatalogEntry-like object for portal adapters."""
+    from dataclasses import dataclass, field
+    from typing import Optional, List, Dict
+
+    @dataclass
+    class SourceEntry:
+        row_index: int = 0
+        hazard: str = ""
+        dataset_name: str = ""
+        data_type: str = ""
+        spatial_coverage: str = ""
+        spatial_resolution: str = ""
+        region_country: str = ""
+        temporal_coverage: str = ""
+        temporal_resolution: str = ""
+        bias_corrected: str = ""
+        access: str = ""
+        link: str = ""
+        impact_sector: str = ""
+        notes: str = ""
+        keywords: Optional[List[str]] = None
+        custom_metadata: Optional[Dict[str, str]] = None
+
+        @property
+        def source_id(self):
+            return self.dataset_name.lower().replace(" ", "_") if self.dataset_name else "user_source"
+
+    variables = getattr(source, "variables", None) or []
+    time_range = getattr(source, "time_range", None) or {}
+
+    return SourceEntry(
+        dataset_name=getattr(source, "source_id", "") or "",
+        hazard=getattr(source, "hazard_type", "") or "",
+        link=getattr(source, "url", "") or "",
+        region_country=getattr(source, "region_country", "") or "",
+        spatial_coverage=getattr(source, "spatial_coverage", "") or "",
+        impact_sector=getattr(source, "impact_sector", "") or "",
+        data_type=getattr(source, "format", "") or "",
+        temporal_coverage=f"{time_range.get('start', '')}/{time_range.get('end', '')}" if time_range else "",
+        notes=", ".join(variables) if variables else "",
+        keywords=getattr(source, "keywords", None),
+        custom_metadata=getattr(source, "custom_metadata", None),
+    )
 
 
 @job(

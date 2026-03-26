@@ -1,3 +1,4 @@
+import math
 import os
 import logging
 import requests
@@ -207,7 +208,11 @@ class VectorDatabase:
         points = []
         for i, (uid, vec, meta) in enumerate(zip(ids, embeddings, metadatas)):
             # Use metadata directly (already normalized and structured)
-            payload = meta.copy()
+            # Sanitize NaN/Infinity values that break Qdrant JSON serialization
+            payload = {
+                k: v for k, v in meta.items()
+                if not (isinstance(v, float) and (math.isnan(v) or math.isinf(v)))
+            }
             
             # DO NOT store text_content - it's generated dynamically from metadata
             # This keeps the DB clean and filterable
@@ -249,6 +254,7 @@ class VectorDatabase:
         limit: int = 5,
         filter_dict: Optional[Dict[str, Any]] = None,
         query_filter=None,
+        exact: bool = False,
     ) -> List[Any]:
         """
         Search using Client, falling back to direct REST API if client methods are missing.
@@ -272,12 +278,16 @@ class VectorDatabase:
             # Try v1.11.x API first (search method)
             if hasattr(self.client, 'search'):
                 try:
+                    from qdrant_client.models import SearchParams
                     search_kwargs = {
                         "collection_name": self.collection,
                         "query_vector": query_vector,
                         "limit": limit,
                         "with_payload": True,
-                        "score_threshold": 0.25,
+                        "search_params": SearchParams(
+                            hnsw_ef=256,
+                            exact=exact,
+                        ),
                     }
                     # Use pre-built filter if provided, else build from dict
                     if query_filter is not None:
@@ -300,15 +310,17 @@ class VectorDatabase:
             # Try newer API (query_points) if search doesn't exist
             elif hasattr(self.client, 'query_points'):
                 try:
-                    from qdrant_client.models import Query, Filter, FieldCondition, MatchValue
+                    from qdrant_client.models import Filter, FieldCondition, MatchValue
                     query_kwargs = {
                         "collection_name": self.collection,
-                        "query": Query(vector=query_vector),
+                        "query": query_vector,
                         "limit": limit,
                         "with_payload": True
                     }
-                    # Add filter if provided
-                    if filter_dict:
+                    # Use pre-built filter if provided, else build from dict
+                    if query_filter is not None:
+                        query_kwargs["query_filter"] = query_filter
+                    elif filter_dict:
                         conditions = []
                         for key, value in filter_dict.items():
                             conditions.append(
@@ -316,7 +328,7 @@ class VectorDatabase:
                             )
                         if conditions:
                             query_kwargs["query_filter"] = Filter(must=conditions)
-                    
+
                     results = self.client.query_points(**query_kwargs)
                     if results and hasattr(results, 'points'):
                         return results.points
@@ -390,6 +402,95 @@ class VectorDatabase:
             reranked_results.append(hit)
 
         return reranked_results
+
+    def search_grouped(
+        self,
+        query_vector: List[float],
+        group_by: str = "dataset_name",
+        group_limit: int = 10,
+        group_size: int = 3,
+        filter_dict: Optional[Dict[str, Any]] = None,
+        query_filter=None,
+    ) -> List[Any]:
+        """Search with client-side grouping by a payload field.
+
+        Over-retrieves then groups results to guarantee diversity:
+        at most ``group_size`` results per unique value of ``group_by``,
+        across up to ``group_limit`` groups.
+
+        Returns a flat list of ScoredPoint-like objects.
+        """
+        # Use exact search via REST to guarantee we find all relevant groups
+        # (HNSW approximate search misses small clusters in large collections)
+        over_retrieve = max(group_limit * group_size * 30, 500)
+        raw = self._search_exact_rest(query_vector, over_retrieve, filter_dict)
+
+        if not raw:
+            return []
+
+        # Client-side grouping: pick top group_size hits per group_by value
+        groups: Dict[str, List[Any]] = {}
+        for hit in raw:
+            payload = hit.payload if hasattr(hit, "payload") else (
+                hit.get("payload", {}) if isinstance(hit, dict) else {}
+            )
+            key = payload.get(group_by, "unknown")
+            if key not in groups:
+                groups[key] = []
+            if len(groups[key]) < group_size:
+                groups[key].append(hit)
+
+        # Sort groups by best score, take top group_limit
+        sorted_groups = sorted(
+            groups.items(),
+            key=lambda g: max(
+                (getattr(h, "score", 0) if hasattr(h, "score") else h.get("score", 0))
+                for h in g[1]
+            ),
+            reverse=True,
+        )[:group_limit]
+
+        flat: List[Any] = []
+        for _, hits in sorted_groups:
+            flat.extend(hits)
+
+        return flat
+
+    def _search_exact_rest(
+        self,
+        query_vector: List[float],
+        limit: int,
+        filter_dict: Optional[Dict[str, Any]] = None,
+    ) -> List[Any]:
+        """Exact (brute-force) search via REST API. Slower but guarantees
+        finding all nearest neighbors, including small clusters that HNSW misses."""
+        url = f"{self.base_url}/collections/{self.collection}/points/search"
+        payload = {
+            "vector": query_vector,
+            "limit": limit,
+            "with_payload": True,
+            "params": {"exact": True},
+        }
+        if filter_dict:
+            must_conditions = [
+                {"key": k, "match": {"value": v}} for k, v in filter_dict.items()
+            ]
+            if must_conditions:
+                payload["filter"] = {"must": must_conditions}
+        try:
+            response = requests.post(url, json=payload, timeout=60)
+            response.raise_for_status()
+            result = response.json().get("result", [])
+            class ScoredResult:
+                def __init__(self, item):
+                    self.id = item.get("id")
+                    self.score = float(item.get("score", 0.0))
+                    self.payload = item.get("payload", {}) if isinstance(item.get("payload"), dict) else {}
+                    self.metadata = self.payload
+            return [ScoredResult(item) for item in result]
+        except Exception as e:
+            logger.warning(f"Exact REST search failed ({e}), falling back to HNSW search")
+            return self.search(query_vector, limit=limit, filter_dict=filter_dict)
 
     def _search_via_rest(
         self, 

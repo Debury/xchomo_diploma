@@ -38,10 +38,10 @@ def _get_llm_client():
 def _generate_dynamic_context(entry: CatalogEntry, llm_client=None) -> str:
     """
     Use LLM to generate a rich, searchable description from catalog fields.
-    Cached per unique (dataset_name, hazard) pair.
+    Cached per unique dataset_name to avoid redundant LLM calls.
     Returns empty string if LLM is unavailable or fails.
     """
-    cache_key = f"{entry.dataset_name or ''}::{entry.hazard or ''}"
+    cache_key = entry.dataset_name or ''
     if cache_key in _CONTEXT_CACHE:
         return _CONTEXT_CACHE[cache_key]
 

@@ -48,8 +48,40 @@ DIRECT_DOWNLOAD_URLS = {
     "Combined Drought Indicator": "https://jeodpp.jrc.ec.europa.eu/ftp/jrc-opendata/DROUGHTOBS/Drought_Observatories_datasets/EDO_Combined_Drought_Indicator/ver1-4-0/cdinx_m_euu_20190101_20191221_t.nc",
     "SPI-MARSMet": "https://jeodpp.jrc.ec.europa.eu/ftp/jrc-opendata/DROUGHTOBS/Drought_Observatories_datasets/EDO_MARSMet_Standardized_Precipitation_Index_SPI3/ver1-0-0/spm03_m_euu_20040101_20041221_t.nc",
     "ISI-MIP": "https://files.isimip.org/ISIMIP3b/InputData/climate/atmosphere_composition/co2/historical/co2_historical_annual_1850_2014.txt",
-    # --- Phase 1 audit overrides ---
+    # E-OBS: dataset_name key needed for Phase 1 classification (per-source_id overrides below)
     "E-OBS": "https://knmi-ecad-assets-prd.s3.amazonaws.com/ensembles/data/Grid_0.25deg_reg_ensemble/tg_ens_mean_0.25deg_reg_2011-2025_v32.0e.nc",
+    # --- Per-variable overrides (source_id keys) ---
+    # E-OBS: portal page has no direct links, S3 bucket has per-variable files
+    "catalog_E-OBS_3": "https://knmi-ecad-assets-prd.s3.amazonaws.com/ensembles/data/Grid_0.25deg_reg_ensemble/tg_ens_mean_0.25deg_reg_2011-2025_v32.0e.nc",
+    "catalog_E-OBS_21": "https://knmi-ecad-assets-prd.s3.amazonaws.com/ensembles/data/Grid_0.25deg_reg_ensemble/tx_ens_mean_0.25deg_reg_2011-2025_v32.0e.nc",
+    "catalog_E-OBS_66": "https://knmi-ecad-assets-prd.s3.amazonaws.com/ensembles/data/Grid_0.25deg_reg_ensemble/rr_ens_mean_0.25deg_reg_2011-2025_v32.0e.nc",
+    "catalog_E-OBS_112": "https://knmi-ecad-assets-prd.s3.amazonaws.com/ensembles/data/Grid_0.25deg_reg_ensemble/pp_ens_mean_0.25deg_reg_2011-2025_v32.0e.nc",
+    "catalog_E-OBS_149": "https://knmi-ecad-assets-prd.s3.amazonaws.com/ensembles/data/Grid_0.25deg_reg_ensemble/fg_ens_mean_0.25deg_reg_2011-2025_v32.0e.nc",
+    "catalog_E-OBS_168": "https://knmi-ecad-assets-prd.s3.amazonaws.com/ensembles/data/Grid_0.25deg_reg_ensemble/fg_ens_mean_0.25deg_reg_2011-2025_v32.0e.nc",
+    "catalog_E-OBS_225": "https://knmi-ecad-assets-prd.s3.amazonaws.com/ensembles/data/Grid_0.25deg_reg_ensemble/hu_ens_mean_0.25deg_reg_2011-2025_v32.0e.nc",
+    # CRU: per-variable files (row 2=tmp is the dataset_name default, row 63=pre needs override)
+    "catalog_CRU_63": "https://crudata.uea.ac.uk/cru/data/hrg/cru_ts_4.09/cruts.2503051245.v4.09/pre/cru_ts4.09.2021.2024.pre.dat.nc.gz",
+    # SLOCLIM: per-variable files on Zenodo (row 87=pcp is default, others need overrides)
+    "catalog_SLOCLIM_31": "https://zenodo.org/api/records/4108543/files/sloclim_tmax_h.nc/content",
+    "catalog_SLOCLIM_44": "https://zenodo.org/api/records/4108543/files/sloclim_tmin_h.nc/content",
+    "catalog_SLOCLIM_56": "https://zenodo.org/api/records/4108543/files/sloclim_tmin_h.nc/content",
+    "catalog_SLOCLIM_130": "https://zenodo.org/api/records/4108543/files/sloclim_pcp.nc/content",
+    # CMIP6: per-variable files on CEDA DAP (row 1=tas is default, others need overrides)
+    "catalog_CMIP6_19": "https://dap.ceda.ac.uk/badc/cmip6/data/CMIP6/CMIP/MOHC/HadGEM3-GC31-LL/historical/r1i1p1f3/Amon/tasmax/gn/latest/tasmax_Amon_HadGEM3-GC31-LL_historical_r1i1p1f3_gn_195001-201412.nc",
+    "catalog_CMIP6_34": "https://dap.ceda.ac.uk/badc/cmip6/data/CMIP6/CMIP/MOHC/HadGEM3-GC31-LL/historical/r1i1p1f3/Amon/tasmin/gn/latest/tasmin_Amon_HadGEM3-GC31-LL_historical_r1i1p1f3_gn_195001-201412.nc",
+    "catalog_CMIP6_47": "https://dap.ceda.ac.uk/badc/cmip6/data/CMIP6/CMIP/MOHC/HadGEM3-GC31-LL/historical/r1i1p1f3/Amon/tasmin/gn/latest/tasmin_Amon_HadGEM3-GC31-LL_historical_r1i1p1f3_gn_195001-201412.nc",
+    "catalog_CMIP6_61": "https://dap.ceda.ac.uk/badc/cmip6/data/CMIP6/CMIP/MOHC/HadGEM3-GC31-LL/historical/r1i1p1f3/Amon/pr/gn/latest/pr_Amon_HadGEM3-GC31-LL_historical_r1i1p1f3_gn_195001-201412.nc",
+    "catalog_CMIP6_108": "https://dap.ceda.ac.uk/badc/cmip6/data/CMIP6/CMIP/MOHC/HadGEM3-GC31-LL/historical/r1i1p1f3/Amon/pr/gn/latest/pr_Amon_HadGEM3-GC31-LL_historical_r1i1p1f3_gn_195001-201412.nc",
+    "catalog_CMIP6_134": "https://dap.ceda.ac.uk/badc/cmip6/data/CMIP6/CMIP/MOHC/HadGEM3-GC31-LL/historical/r1i1p1f3/Amon/pr/gn/latest/pr_Amon_HadGEM3-GC31-LL_historical_r1i1p1f3_gn_195001-201412.nc",
+    "catalog_CMIP6_146": "https://dap.ceda.ac.uk/badc/cmip6/data/CMIP6/CMIP/MOHC/HadGEM3-GC31-LL/historical/r1i1p1f3/Amon/sfcWind/gn/latest/sfcWind_Amon_HadGEM3-GC31-LL_historical_r1i1p1f3_gn_195001-201412.nc",
+    "catalog_CMIP6_165": "https://dap.ceda.ac.uk/badc/cmip6/data/CMIP6/CMIP/MOHC/HadGEM3-GC31-LL/historical/r1i1p1f3/Amon/sfcWind/gn/latest/sfcWind_Amon_HadGEM3-GC31-LL_historical_r1i1p1f3_gn_195001-201412.nc",
+    "catalog_CMIP6_183": "https://dap.ceda.ac.uk/badc/cmip6/data/CMIP6/CMIP/MOHC/HadGEM3-GC31-LL/historical/r1i1p1f3/Amon/psl/gn/latest/psl_Amon_HadGEM3-GC31-LL_historical_r1i1p1f3_gn_195001-201412.nc",
+    "catalog_CMIP6_194": "https://dap.ceda.ac.uk/badc/cmip6/data/CMIP6/CMIP/MOHC/HadGEM3-GC31-LL/historical/r1i1p1f3/Amon/psl/gn/latest/psl_Amon_HadGEM3-GC31-LL_historical_r1i1p1f3_gn_195001-201412.nc",
+    "catalog_CMIP6_196": "https://dap.ceda.ac.uk/badc/cmip6/data/CMIP6/CMIP/MOHC/HadGEM3-GC31-LL/historical/r1i1p1f3/Amon/ts/gn/latest/ts_Amon_HadGEM3-GC31-LL_historical_r1i1p1f3_gn_195001-201412.nc",
+    "catalog_CMIP6_201": "https://dap.ceda.ac.uk/badc/cmip6/data/CMIP6/CMIP/MOHC/HadGEM3-GC31-LL/historical/r1i1p1f3/Amon/psl/gn/latest/psl_Amon_HadGEM3-GC31-LL_historical_r1i1p1f3_gn_195001-201412.nc",
+    "catalog_CMIP6_218": "https://dap.ceda.ac.uk/badc/cmip6/data/CMIP6/CMIP/MOHC/HadGEM3-GC31-LL/historical/r1i1p1f3/Amon/clt/gn/latest/clt_Amon_HadGEM3-GC31-LL_historical_r1i1p1f3_gn_195001-201412.nc",
+    # CMIP6 row 221 (CO2): only some models include atmospheric chemistry, use ISI-MIP CO2 as proxy
+    "catalog_CMIP6_221": "https://files.isimip.org/ISIMIP3b/InputData/climate/atmosphere_composition/co2/historical/co2_historical_annual_1850_2014.txt",
     "NOAAN": "https://www.ncei.noaa.gov/access/monitoring/climate-at-a-glance/global/time-series/globe/land_ocean/ytd/12/1880-2023.csv",
     "GSFC-NASA": "https://earth.gsfc.nasa.gov/sites/default/files/geo/gsfc.glb_.200204_202505_rl06v2.0_obp-ice6gd_halfdegree.nc",
     "ROCIO_IBEB": "https://www.aemet.es/documentos/es/serviciosclimaticos/cambio_climat/datos_diarios/dato_observacional/rejilla_5km/v2/Serie_AEMET_v2_pcp_2020_netcdf.tar.gz",
@@ -76,7 +108,7 @@ DIRECT_DOWNLOAD_URLS = {
     # NOA-GR: auth required (meteosearch.meteo.gr), registration closed
 }
 
-# Datasets that should NOT be processed in Phase 1 (auth required, no direct downloads, portals).
+# Datasets that should NOT be processed in Phase 1 (auth required, no direct downloads only).
 # These will be skipped during _run_phase_download() with a log message.
 SKIP_PHASE1 = {
     "NOA-GR",           # auth required, portal down
@@ -89,8 +121,8 @@ SKIP_PHASE1 = {
     "MED-CORDEX",       # ESGF auth required
     "EURO-CORDEX",      # ESGF auth required
     "RMI-ISPRA",        # ISPRA portal, no direct downloads
-    "STEAD",            # 2GB file, server drops connection at ~1GB consistently (Phase 0 metadata available)
-    "SPEI-GD",          # 21GB file, too large for current pipeline (Phase 0 metadata available)
+    "SPEI-GD",          # 21GB file, too large for current pipeline
+    "STEAD",            # 2GB file, connection breaks at ~1GB consistently (revisit later)
 }
 
 
@@ -429,9 +461,10 @@ def run_batch_pipeline(
 
     # Create progress tracker (state lives in PostgreSQL)
     if not resume:
-        # Clear existing progress when not resuming
+        # Clear existing progress only for requested phases
         with get_db_session() as session:
-            session.query(CatalogProgressRow).delete()
+            for phase in phases:
+                session.query(CatalogProgressRow).filter_by(phase=phase).delete()
 
     progress = BatchProgress(total=len(entries))
     progress.started_at = datetime.utcnow().isoformat()
@@ -526,13 +559,13 @@ def _run_phase_0(
 
 
 # --- Retry & resource guard settings ---
-MAX_RETRIES = 3
-RETRY_BACKOFF = [5, 10, 20]  # seconds between attempts
+MAX_RETRIES = 4
+RETRY_BACKOFF = [10, 30, 60, 120]  # seconds between attempts (exponential)
 
 MEMORY_WARN_PCT = 85   # trigger GC + wait
 MEMORY_ABORT_PCT = 90  # stop batch if still above after GC
 
-RASTER_TIMEOUT_SEC = 30 * 60  # 30 minutes for load + embed
+RASTER_TIMEOUT_SEC = 15 * 60  # 15 minutes for load + embed (handles large files)
 
 
 def _check_memory_pressure() -> bool:
@@ -569,6 +602,14 @@ def _check_memory_pressure() -> bool:
     return True
 
 
+def _get_download_url(entry: "CatalogEntry") -> str:
+    """Get download URL: check source_id override first, then dataset_name, then link."""
+    return DIRECT_DOWNLOAD_URLS.get(
+        entry.source_id,
+        DIRECT_DOWNLOAD_URLS.get(entry.dataset_name, entry.link or "")
+    ).strip()
+
+
 FORMAT_TO_EXT = {
     "netcdf": ".nc", "grib": ".grib", "hdf5": ".h5",
     "geotiff": ".tif", "csv": ".csv", "zip": ".zip", "gz": ".gz",
@@ -591,7 +632,7 @@ def _prefetch_sizes(entries: List[CatalogEntry], phase: int) -> List[CatalogEntr
     url_map: Dict[str, str] = {}  # dedup_key -> url
     entry_keys: Dict[str, str] = {}  # source_id -> dedup_key
     for entry in entries:
-        url = DIRECT_DOWNLOAD_URLS.get(entry.dataset_name, entry.link or "").strip()
+        url = _get_download_url(entry)
         if not url:
             continue
         dedup_key = f"{entry.dataset_name}||{url}"
@@ -639,6 +680,16 @@ def _prefetch_sizes(entries: List[CatalogEntry], phase: int) -> List[CatalogEntr
         dk = entry_keys.get(entry.source_id)
         return size_cache.get(dk, _UNKNOWN_SIZE) if dk else _UNKNOWN_SIZE
 
+    # Log large files but process them all
+    for entry in entries:
+        dk = entry_keys.get(entry.source_id)
+        size = size_cache.get(dk, _UNKNOWN_SIZE) if dk else _UNKNOWN_SIZE
+        if size != _UNKNOWN_SIZE and size > 500 * 1024 * 1024:
+            catalog_logger.info(
+                f"Phase {phase}: large file {entry.dataset_name} — "
+                f"{size / 1024**2:.0f} MB (will process)"
+            )
+
     sorted_entries = sorted(entries, key=_sort_key)
     return sorted_entries
 
@@ -656,11 +707,26 @@ def _run_phase_download(
     from src.utils.config_loader import ConfigLoader
 
     import requests as http_requests
+    from requests.adapters import HTTPAdapter
+    from urllib3.util.retry import Retry as Urllib3Retry
     import tempfile
 
     config = ConfigLoader("config/pipeline_config.yaml").load()
     embedder = TextEmbedder()
     db = VectorDatabase(config=config)
+
+    # Requests session with HTTP-level retry for 5xx / connection errors
+    http_session = http_requests.Session()
+    _http_retry = Urllib3Retry(
+        total=3,
+        backoff_factor=2,         # 0s, 2s, 4s between urllib3 retries
+        status_forcelist=[502, 503, 504],
+        allowed_methods=["GET", "HEAD"],
+        raise_on_status=False,    # let us check resp.status_code ourselves
+    )
+    http_session.mount("https://", HTTPAdapter(max_retries=_http_retry))
+    http_session.mount("http://", HTTPAdapter(max_retries=_http_retry))
+    http_session.headers["User-Agent"] = "ClimateRAG/1.0"
 
     processed = 0
     failed = 0
@@ -703,8 +769,10 @@ def _run_phase_download(
       for entry in download_candidates:
         # Deduplicate: same dataset_name + same download URL = same data.
         # Mark all duplicate rows as completed (they share embeddings via Phase 0).
-        download_url = DIRECT_DOWNLOAD_URLS.get(entry.dataset_name, entry.link).strip()
-        dedup_key = f"{entry.dataset_name}||{download_url}"
+        download_url = _get_download_url(entry)
+        # Include hazard in dedup key — same dataset downloads different variables per hazard
+        hazard = (entry.hazard or "").strip()
+        dedup_key = f"{entry.dataset_name}||{hazard}||{download_url}"
         if dedup_key in datasets_done_this_run:
             catalog_logger.info(
                 f"Phase {phase}: skipping duplicate {entry.dataset_name} "
@@ -742,8 +810,8 @@ def _run_phase_download(
                     )
 
                 # Use direct download URL override if available, otherwise use catalog link
-                url = DIRECT_DOWNLOAD_URLS.get(entry.dataset_name, entry.link).strip()
-                if url != entry.link.strip():
+                url = _get_download_url(entry)
+                if url != (entry.link or "").strip():
                     catalog_logger.info(f"Phase {phase}: using override URL for {entry.dataset_name}")
 
                 # --- Disk space guard ---
@@ -762,16 +830,14 @@ def _run_phase_download(
                 logger.info(f"Phase {phase}: downloading {entry.dataset_name} from {url}")
 
                 try:
-                    resp = http_requests.get(url, timeout=(30, 600), stream=True,
-                                             headers={"User-Agent": "ClimateRAG/1.0"})
+                    resp = http_session.get(url, timeout=(30, 600), stream=True)
                     resp.raise_for_status()
                 except http_requests.exceptions.SSLError:
                     catalog_logger.warning(
                         f"Phase {phase}: SSL verification failed for {entry.dataset_name}, "
                         "retrying without verification"
                     )
-                    resp = http_requests.get(url, timeout=(30, 600), stream=True, verify=False,
-                                             headers={"User-Agent": "ClimateRAG/1.0"})
+                    resp = http_session.get(url, timeout=(30, 600), stream=True, verify=False)
                     resp.raise_for_status()
 
                 # Check Content-Type before downloading body
@@ -787,10 +853,25 @@ def _run_phase_download(
                 fmt = detect_format_from_url(url)
                 ext = FORMAT_TO_EXT.get(fmt, ".nc")
 
-                with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
-                    for chunk in resp.iter_content(chunk_size=8192):
-                        tmp.write(chunk)
-                    tmp_path = tmp.name
+                DOWNLOAD_TIMEOUT_SEC = 1800  # 30 min total download time
+
+                def _download_to_file(response, suffix):
+                    """Download response body to temp file. Runs in thread for hard timeout."""
+                    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+                        for chunk in response.iter_content(chunk_size=65536):
+                            tmp.write(chunk)
+                        return tmp.name
+
+                with ThreadPoolExecutor(max_workers=1) as dl_executor:
+                    dl_future = dl_executor.submit(_download_to_file, resp, ext)
+                    try:
+                        tmp_path = dl_future.result(timeout=DOWNLOAD_TIMEOUT_SEC)
+                    except FuturesTimeoutError:
+                        resp.close()
+                        dl_future.cancel()
+                        raise TimeoutError(
+                            f"Download exceeded {DOWNLOAD_TIMEOUT_SEC}s total time"
+                        )
 
                 # --- Post-download content validation: detect HTML login pages ---
                 with open(tmp_path, "rb") as f:
@@ -823,6 +904,7 @@ def _run_phase_download(
                 batch_ids: list = []
                 batch_texts: list = []
                 batch_metadatas: list = []
+                all_chunk_metas: list = []  # Collect all metas for summary chunk
                 total_chunks = 0
                 upsert_executor = ThreadPoolExecutor(max_workers=1)
                 pending_upsert_future = None
@@ -914,6 +996,7 @@ def _run_phase_download(
                     batch_ids.append(f"{entry.source_id}_chunk_{total_chunks}")
                     batch_texts.append(text)
                     batch_metadatas.append(meta_dict)
+                    all_chunk_metas.append(meta_dict)
                     total_chunks += 1
 
                     if len(batch_ids) >= UPSERT_BATCH_SIZE:
@@ -928,6 +1011,38 @@ def _run_phase_download(
                     raise ValueError(
                         f"Loader produced 0 data chunks from {url} — file may be corrupt, "
                         f"unsupported format, or xarray engine failed (check logs for details)"
+                    )
+
+                # --- Upsert dataset summary chunk ---
+                try:
+                    from src.climate_embeddings.schema import build_dataset_summary
+                    entry_meta = {}
+                    if entry.hazard:
+                        entry_meta["hazard_type"] = entry.hazard
+                    if entry.impact_sector:
+                        entry_meta["impact_sector"] = entry.impact_sector
+                    if entry.region_country:
+                        entry_meta["location_name"] = entry.region_country
+                    entry_meta["catalog_source"] = "D1.1.xlsx"
+
+                    # Collect all metadatas we upserted (rebuild from last batch)
+                    # We already have batch_metadatas cleared, so use a simpler approach:
+                    # build summary from the chunks we've been tracking
+                    summary_meta = build_dataset_summary(all_chunk_metas, entry_meta)
+                    if summary_meta:
+                        summary_text = generate_human_readable_text(summary_meta)
+                        summary_emb = embedder.embed_documents([summary_text])[0]
+                        db.add_embeddings(
+                            ids=[f"{entry.source_id}_summary"],
+                            embeddings=[summary_emb.tolist()],
+                            metadatas=[summary_meta],
+                        )
+                        catalog_logger.info(
+                            f"Phase {phase}: upserted summary chunk for {entry.dataset_name}"
+                        )
+                except Exception as sum_err:
+                    catalog_logger.warning(
+                        f"Phase {phase}: summary chunk failed for {entry.dataset_name}: {sum_err}"
                     )
 
                 progress.mark_completed(entry.source_id, phase=phase)
@@ -977,12 +1092,28 @@ def _run_phase_download(
     return {"processed": processed, "failed": failed, "skipped": skipped}
 
 
+def _metadata_fallback(entry: CatalogEntry) -> bool:
+    """Fallback: embed metadata-only when Phase 3 adapter fails."""
+    from src.climate_embeddings.embeddings.text_models import TextEmbedder
+    from src.embeddings.database import VectorDatabase
+    from src.utils.config_loader import ConfigLoader
+
+    config = ConfigLoader("config/pipeline_config.yaml").load()
+    embedder = TextEmbedder()
+    db = VectorDatabase(config=config)
+    return process_metadata_only(entry, embedder, db)
+
+
 def _run_phase_portal(
     entries: List[CatalogEntry],
     progress: BatchProgress,
     resume: bool,
 ) -> Dict[str, int]:
-    """Run Phase 3: API portal downloads (CDS, ESGF, etc.)."""
+    """Run Phase 3: API portal downloads (CDS, ESGF, etc.).
+
+    When an adapter fails, falls back to metadata-only embedding so the
+    entry is still searchable in the RAG system.
+    """
     from src.catalog.portal_adapters import get_adapter
 
     processed = 0
@@ -1002,9 +1133,16 @@ def _run_phase_portal(
         try:
             adapter = get_adapter(entry)
             if adapter is None:
-                logger.warning(f"No adapter for {entry.dataset_name} ({entry.link})")
-                progress.mark_failed(entry.source_id, "No portal adapter available", phase=3)
-                failed += 1
+                catalog_logger.warning(
+                    f"Phase 3: no adapter for {entry.dataset_name}, "
+                    f"falling back to metadata-only"
+                )
+                if _metadata_fallback(entry):
+                    progress.mark_completed(entry.source_id, phase=3)
+                    processed += 1
+                else:
+                    progress.mark_failed(entry.source_id, "No adapter + metadata fallback failed", phase=3)
+                    failed += 1
                 continue
 
             ok = adapter.download_and_process(entry)
@@ -1012,14 +1150,31 @@ def _run_phase_portal(
                 progress.mark_completed(entry.source_id, phase=3)
                 processed += 1
             else:
-                progress.mark_failed(entry.source_id, "Adapter returned False", phase=3)
-                failed += 1
+                catalog_logger.warning(
+                    f"Phase 3: adapter failed for {entry.dataset_name}, "
+                    f"falling back to metadata-only"
+                )
+                if _metadata_fallback(entry):
+                    progress.mark_completed(entry.source_id, phase=3)
+                    processed += 1
+                else:
+                    progress.mark_failed(entry.source_id, "Adapter + metadata fallback failed", phase=3)
+                    failed += 1
 
         except Exception as e:
             tb = traceback.format_exc()
-            progress.mark_failed(entry.source_id, str(e), phase=3)
-            failed += 1
             catalog_logger.error(f"Phase 3: FAILED {entry.dataset_name}: {e}\n{tb}")
+            # Metadata fallback on exception
+            try:
+                if _metadata_fallback(entry):
+                    progress.mark_completed(entry.source_id, phase=3)
+                    processed += 1
+                else:
+                    progress.mark_failed(entry.source_id, str(e), phase=3)
+                    failed += 1
+            except Exception:
+                progress.mark_failed(entry.source_id, str(e), phase=3)
+                failed += 1
 
     return {"processed": processed, "failed": failed, "skipped": skipped}
 
@@ -1042,15 +1197,16 @@ def retry_failed(excel_path: str) -> Dict[str, Any]:
             return {"message": "No failed sources to retry", "count": 0}
 
         failed_count = len(failed_rows)
+        failed_phases = sorted(set(r.phase for r in failed_rows))
         for row in failed_rows:
             row.status = "pending"
             row.error = None
             row.completed_at = None
 
-    logger.info(f"Reset {failed_count} failed rows to pending for retry")
+    logger.info(f"Reset {failed_count} failed rows to pending for retry (phases={failed_phases})")
 
     return run_batch_pipeline(
         excel_path=excel_path,
-        phases=[0, 1, 2, 3],
+        phases=failed_phases,
         resume=True,
     )

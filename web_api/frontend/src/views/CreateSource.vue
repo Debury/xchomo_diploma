@@ -87,42 +87,62 @@
               <option value="ESGF">ESGF (CMIP6/CORDEX)</option>
               <option value="NOAA">NOAA PSL</option>
             </select>
-            <p v-if="form.portal" class="mt-1 text-xs text-mendelu-green">Uses global credentials from Settings page</p>
           </div>
 
-          <div>
-            <label class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-1">Authentication Method</label>
-            <select v-model="form.auth_method" class="input-field">
-              <option value="none">None (Open Access)</option>
-              <option value="api_key">API Key</option>
-              <option value="bearer_token">Bearer Token</option>
-              <option value="basic">Username &amp; Password</option>
-            </select>
+          <!-- Global credentials detected -->
+          <div v-if="form.portal && portalHasGlobalCreds" class="bg-mendelu-success/10 border border-mendelu-success/30 p-3 rounded-lg text-xs space-y-1">
+            <div class="flex items-center gap-2">
+              <span class="w-2 h-2 rounded-full bg-mendelu-success"></span>
+              <span class="font-medium text-mendelu-success">Global {{ form.portal }} credentials configured</span>
+            </div>
+            <p class="text-mendelu-gray-dark">Will use credentials from Settings page. No extra setup needed.</p>
           </div>
 
-          <div v-if="form.auth_method === 'api_key'">
-            <label class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-1">API Key</label>
-            <input type="password" v-model="form.auth_api_key" class="input-field" placeholder="Enter API key" />
-          </div>
-          <div v-if="form.auth_method === 'bearer_token'">
-            <label class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-1">Bearer Token</label>
-            <input type="password" v-model="form.auth_token" class="input-field" placeholder="Enter bearer token" />
-          </div>
-          <div v-if="form.auth_method === 'basic'" class="space-y-3">
-            <div>
-              <label class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-1">Username</label>
-              <input type="text" v-model="form.auth_username" class="input-field" />
+          <!-- No global credentials for this portal -->
+          <div v-if="form.portal && !portalHasGlobalCreds && PORTAL_CREDENTIAL_KEYS[form.portal]?.length" class="bg-mendelu-alert/10 border border-mendelu-alert/30 p-3 rounded-lg text-xs space-y-1">
+            <div class="flex items-center gap-2">
+              <span class="w-2 h-2 rounded-full bg-mendelu-alert"></span>
+              <span class="font-medium text-mendelu-alert">{{ form.portal }} credentials not configured</span>
             </div>
-            <div>
-              <label class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-1">Password</label>
-              <input type="password" v-model="form.auth_password" class="input-field" />
-            </div>
+            <p class="text-mendelu-gray-dark">Set up global credentials in <router-link to="/settings" class="underline text-mendelu-green">Settings</router-link>, or enter per-source credentials below.</p>
           </div>
+
+          <!-- Manual auth (show when no portal or portal creds missing) -->
+          <template v-if="!form.portal || !portalHasGlobalCreds">
+            <div>
+              <label class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-1">Authentication Method</label>
+              <select v-model="form.auth_method" class="input-field">
+                <option value="none">None (Open Access)</option>
+                <option value="api_key">API Key</option>
+                <option value="bearer_token">Bearer Token</option>
+                <option value="basic">Username &amp; Password</option>
+              </select>
+            </div>
+
+            <div v-if="form.auth_method === 'api_key'">
+              <label class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-1">API Key</label>
+              <input type="password" v-model="form.auth_api_key" class="input-field" placeholder="Enter API key" />
+            </div>
+            <div v-if="form.auth_method === 'bearer_token'">
+              <label class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-1">Bearer Token</label>
+              <input type="password" v-model="form.auth_token" class="input-field" placeholder="Enter bearer token" />
+            </div>
+            <div v-if="form.auth_method === 'basic'" class="space-y-3">
+              <div>
+                <label class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-1">Username</label>
+                <input type="text" v-model="form.auth_username" class="input-field" />
+              </div>
+              <div>
+                <label class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-1">Password</label>
+                <input type="password" v-model="form.auth_password" class="input-field" />
+              </div>
+            </div>
+          </template>
         </div>
 
-        <!-- Step 3: Variables & Config -->
+        <!-- Step 3: Variables & Metadata -->
         <div v-show="step === 3" class="space-y-5">
-          <p class="page-subtitle">Configure data variables and time range</p>
+          <p class="page-subtitle">Configure data variables and metadata for RAG</p>
 
           <div>
             <label class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-1">Variables (comma separated)</label>
@@ -142,8 +162,50 @@
           </div>
 
           <div>
+            <label class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-1">Hazard Type</label>
+            <select v-model="form.hazard_type" class="input-field">
+              <option value="">Not specified</option>
+              <option value="Drought">Drought</option>
+              <option value="Flood">Flood</option>
+              <option value="Heat">Heat</option>
+              <option value="Wildfire">Wildfire</option>
+              <option value="Storm">Storm</option>
+              <option value="Cold">Cold</option>
+              <option value="Multi-hazard">Multi-hazard</option>
+              <option value="other">Other</option>
+            </select>
+          </div>
+
+          <div>
+            <label class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-1">Region / Country</label>
+            <input v-model="form.region_country" type="text" class="input-field" placeholder="e.g., Europe, Mediterranean, Global" />
+          </div>
+
+          <div>
+            <label class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-1">Spatial Coverage</label>
+            <input v-model="form.spatial_coverage" type="text" class="input-field" placeholder="e.g., Global, 50N-35N 10W-40E" />
+          </div>
+
+          <div>
+            <label class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-1">Impact Sector</label>
+            <input v-model="form.impact_sector" type="text" class="input-field" placeholder="e.g., agriculture, water resources, health" />
+          </div>
+
+          <div>
             <label class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-1">Description</label>
             <textarea v-model="form.description" rows="3" class="input-field resize-none" placeholder="Brief description..."></textarea>
+          </div>
+
+          <div>
+            <label class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-1">Keywords (comma separated)</label>
+            <input v-model="form.keywords" type="text" class="input-field" placeholder="e.g., temperature, reanalysis, global warming, ERA5" />
+            <p class="mt-1 text-xs text-mendelu-gray-dark">Keywords improve RAG retrieval quality for this source</p>
+          </div>
+
+          <div>
+            <label class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-1">Custom Metadata</label>
+            <textarea v-model="form.custom_metadata_raw" rows="2" class="input-field resize-none" placeholder='e.g., institution=ECMWF, project=Copernicus'></textarea>
+            <p class="mt-1 text-xs text-mendelu-gray-dark">Key=value pairs (one per line or comma-separated) added to every chunk</p>
           </div>
         </div>
 
@@ -181,6 +243,12 @@
             <div v-if="form.portal" class="flex justify-between"><span class="text-mendelu-gray-dark">Portal</span><span class="text-mendelu-black">{{ form.portal }}</span></div>
             <div v-if="form.auth_method !== 'none'" class="flex justify-between"><span class="text-mendelu-gray-dark">Auth</span><span class="text-mendelu-black">{{ form.auth_method }}</span></div>
             <div v-if="form.variables" class="flex justify-between"><span class="text-mendelu-gray-dark">Variables</span><span class="text-mendelu-black">{{ form.variables }}</span></div>
+            <div v-if="form.hazard_type" class="flex justify-between"><span class="text-mendelu-gray-dark">Hazard</span><span class="text-mendelu-black">{{ form.hazard_type }}</span></div>
+            <div v-if="form.region_country" class="flex justify-between"><span class="text-mendelu-gray-dark">Region</span><span class="text-mendelu-black">{{ form.region_country }}</span></div>
+            <div v-if="form.spatial_coverage" class="flex justify-between"><span class="text-mendelu-gray-dark">Spatial</span><span class="text-mendelu-black">{{ form.spatial_coverage }}</span></div>
+            <div v-if="form.impact_sector" class="flex justify-between"><span class="text-mendelu-gray-dark">Sector</span><span class="text-mendelu-black">{{ form.impact_sector }}</span></div>
+            <div v-if="form.keywords" class="flex justify-between"><span class="text-mendelu-gray-dark">Keywords</span><span class="text-mendelu-black">{{ form.keywords }}</span></div>
+            <div v-if="form.custom_metadata_raw" class="flex justify-between"><span class="text-mendelu-gray-dark">Custom Metadata</span><span class="text-mendelu-black text-xs">{{ form.custom_metadata_raw }}</span></div>
             <div v-if="form.enableSchedule" class="flex justify-between"><span class="text-mendelu-gray-dark">Schedule</span><code class="text-mendelu-black font-mono text-xs">{{ form.schedule_cron }}</code></div>
           </div>
 
@@ -214,7 +282,7 @@
 </template>
 
 <script setup>
-import { ref } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import CronPicker from '../components/CronPicker.vue'
 
@@ -229,7 +297,9 @@ const form = ref({
   startYear: null, endYear: null, description: '',
   autoEmbed: true, enableSchedule: false, schedule_cron: '0 2 * * 0',
   auth_method: 'none', auth_api_key: '', auth_token: '',
-  auth_username: '', auth_password: '', portal: ''
+  auth_username: '', auth_password: '', portal: '',
+  hazard_type: '', region_country: '', spatial_coverage: '', impact_sector: '',
+  keywords: '', custom_metadata_raw: ''
 })
 
 const submitting = ref(false)
@@ -238,9 +308,36 @@ const urlAnalysis = ref(null)
 const testingConnection = ref(false)
 const reviewConnectionResult = ref(null)
 
+// Global credential status — fetched from Settings API
+const globalCredentials = ref({})
+
 const PORTAL_AUTH_MAP = {
-  CDS: 'api_key', NASA: 'bearer_token', MARINE: 'basic', ESGF: 'api_key', NOAA: 'none'
+  CDS: 'api_key', NASA: 'basic', MARINE: 'basic', ESGF: 'none', NOAA: 'none'
 }
+
+// Which global credential keys each portal needs
+const PORTAL_CREDENTIAL_KEYS = {
+  CDS: ['cds_api_key'],
+  NASA: ['nasa_earthdata_user', 'nasa_earthdata_password'],
+  MARINE: ['cmems_username', 'cmems_password'],
+  ESGF: [],
+  NOAA: [],
+}
+
+// Check if global credentials are configured for the selected portal
+const portalHasGlobalCreds = computed(() => {
+  if (!form.value.portal) return false
+  const keys = PORTAL_CREDENTIAL_KEYS[form.value.portal] || []
+  if (keys.length === 0) return true  // No creds needed (ESGF, NOAA)
+  return keys.every(k => globalCredentials.value[k]?.configured)
+})
+
+onMounted(async () => {
+  try {
+    const resp = await fetch('/settings/credentials')
+    if (resp.ok) globalCredentials.value = await resp.json()
+  } catch (e) { /* ignore */ }
+})
 
 function onPortalChange() {
   if (form.value.portal && PORTAL_AUTH_MAP[form.value.portal]) {
@@ -321,6 +418,21 @@ async function handleSubmit() {
       auth_credentials: authCredentials,
       portal: form.value.portal || null,
       schedule_cron: form.value.enableSchedule ? form.value.schedule_cron : null,
+      auto_embed: form.value.autoEmbed,
+      hazard_type: form.value.hazard_type || null,
+      region_country: form.value.region_country || null,
+      spatial_coverage: form.value.spatial_coverage || null,
+      impact_sector: form.value.impact_sector || null,
+      keywords: form.value.keywords
+        ? form.value.keywords.split(',').map(k => k.trim()).filter(Boolean)
+        : null,
+      custom_metadata: form.value.custom_metadata_raw
+        ? Object.fromEntries(
+            form.value.custom_metadata_raw.split(/[,\n]/)
+              .map(p => p.split('=').map(s => s.trim()))
+              .filter(p => p.length === 2 && p[0] && p[1])
+          )
+        : null,
     }
     Object.keys(sourceConfig).forEach(key => {
       if (sourceConfig[key] === null || sourceConfig[key] === undefined ||

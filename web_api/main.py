@@ -36,7 +36,8 @@ CREDENTIAL_KEYS = {
     "openrouter_api_key": "OPENROUTER_API_KEY",
     "groq_api_key": "GROQ_API_KEY",
     "cds_api_key": "CDS_API_KEY",
-    "nasa_earthdata_token": "NASA_EARTHDATA_TOKEN",
+    "nasa_earthdata_user": "NASA_EARTHDATA_USER",
+    "nasa_earthdata_password": "NASA_EARTHDATA_PASSWORD",
     "cmems_username": "CMEMS_USERNAME",
     "cmems_password": "CMEMS_PASSWORD",
 }
@@ -122,6 +123,14 @@ class SourceCreate(BaseModel):
     auth_credentials: Optional[Dict[str, str]] = None
     portal: Optional[str] = None  # CDS, NASA, MARINE, ESGF, NOAA
     schedule_cron: Optional[str] = None  # Optional cron for auto-scheduling
+    auto_embed: bool = True  # Trigger ETL job immediately after creation
+    # Metadata fields for RAG embedding quality — users can add any key-value pairs
+    hazard_type: Optional[str] = None  # drought, flood, heat, wildfire, etc.
+    region_country: Optional[str] = None  # e.g., "Europe", "Mediterranean"
+    spatial_coverage: Optional[str] = None  # e.g., "Global", "50N-35N, 10W-40E"
+    impact_sector: Optional[str] = None  # e.g., "agriculture", "water resources"
+    keywords: Optional[List[str]] = None  # e.g., ["temperature", "reanalysis", "global warming"]
+    custom_metadata: Optional[Dict[str, str]] = None  # any extra key-value pairs for RAG context
 
 class SourceUpdate(BaseModel):
     url: Optional[str] = None
@@ -185,6 +194,12 @@ class SourceResponse(BaseModel):
     tags: Optional[List[str]] = None
     auth_method: Optional[str] = None
     portal: Optional[str] = None
+    hazard_type: Optional[str] = None
+    region_country: Optional[str] = None
+    spatial_coverage: Optional[str] = None
+    impact_sector: Optional[str] = None
+    keywords: Optional[List[str]] = None
+    custom_metadata: Optional[Dict[str, str]] = None
     # Optional fields for compatibility
     id: Optional[int] = None
     collection_name: Optional[str] = None
@@ -692,6 +707,21 @@ async def create_source(source: SourceCreate):
         # Include auth_method and portal in response
         source_dict["auth_method"] = auth_method
         source_dict["portal"] = portal
+
+        # Auto-trigger ETL job if requested
+        if source.auto_embed:
+            try:
+                run = await launch_dagster_run(
+                    "single_source_etl_job", {},
+                    tags={"source_id": source.source_id, "trigger_type": "auto_embed"},
+                )
+                store.update_processing_status(source.source_id, "processing")
+                source_dict["etl_run_id"] = run.get("runId")
+                logger.info(f"Auto-embed triggered for {source.source_id}: {run.get('runId')}")
+            except Exception as etl_err:
+                logger.warning(f"Auto-embed trigger failed for {source.source_id}: {etl_err}")
+                source_dict["etl_error"] = str(etl_err)
+
         return source_dict
     except Exception as e:
         raise HTTPException(500, str(e))
@@ -759,7 +789,9 @@ async def update_source(source_id: str, updates: dict):
     auth_credentials = updates.pop("auth_credentials", None)
     portal = updates.pop("portal", None)
 
-    allowed_fields = {"url", "format", "description", "is_active", "variables", "tags"}
+    allowed_fields = {"url", "format", "description", "is_active", "variables", "tags",
+                       "keywords", "custom_metadata", "hazard_type", "region_country",
+                       "spatial_coverage", "impact_sector"}
     filtered = {k: v for k, v in updates.items() if k in allowed_fields}
 
     # Store/update auth credentials in app_settings.json
@@ -1162,446 +1194,43 @@ async def rag_info():
     """
     return await get_collection_info()
 
-# --- RAG (LEGACY - for backwards compatibility) ---
+# --- RAG (LEGACY - delegates to optimized rag_query) ---
 
 @app.post("/rag/chat", response_model=RAGChatResponse)
 async def rag_chat_legacy(request: RAGChatRequest):
+    """Legacy chat endpoint — delegates to optimized rag_query()."""
     try:
-        from src.climate_embeddings.embeddings.text_models import TextEmbedder
-        from src.embeddings.database import VectorDatabase
-        from src.utils.config_loader import ConfigLoader
-        
-        # Load config for VectorDatabase initialization
-        config_loader = ConfigLoader(config_path="config/pipeline_config.yaml")
-        pipeline_config = config_loader.load()
-        
-        db = VectorDatabase(config=pipeline_config)
-        embedder = TextEmbedder()
-        
-        # 1. Detect query type and extract mentioned variables for intelligent retrieval
-        question_lower = request.question.lower()
-        
-        # IMPORTANT: Check if this is a variable list question FIRST
-        # Import the detection function from rag_endpoint
-        from web_api.rag_endpoint import _is_variable_list_question, _get_variable_list, get_collection_info
-        
-        # Fast path: variable listing questions - ALWAYS get ALL variables from database
-        if _is_variable_list_question(request.question):
-            # Get ALL variables from database, not just from search results
-            all_variables = _get_variable_list(db, force_refresh=False)
-            if not all_variables:
-                # Fallback: try to get from collection info
-                try:
-                    collection_info = await get_collection_info()
-                    all_variables = collection_info.get("variables", [])
-                except Exception as e:
-                    logger.warning(f"Failed to get collection info: {e}")
-                    all_variables = []
-            
-            # Get sources info
-            sources_text = ""
-            try:
-                collection_info = await get_collection_info()
-                sources = collection_info.get("sources", [])
-                if sources:
-                    sources_text = f" from {len(sources)} source(s): {', '.join(sources)}"
-            except Exception as e:
-                logger.warning(f"Failed to get sources info: {e}")
-            
-            # Build answer with ALL variables
-            answer = f"Available climate variables{sources_text}:\n" + ", ".join(all_variables)
-            
-            # Still do a search to get some context chunks for the response
-            # Build filter dict if filters provided
-            filter_dict = {}
-            if request.source_id:
-                filter_dict["source_id"] = request.source_id
-            if request.variable:
-                filter_dict["variable"] = request.variable
-            
-            query_vec = embedder.embed_queries([request.question])[0]
-            search_result = db.search(
-                query_vector=query_vec.tolist(),
-                limit=10,
-                filter_dict=filter_dict if filter_dict else None
-            )
-            
-            # Build chunks for response
-            chunks_model = []
-            refs = set()
-            for hit in search_result[:10]:
-                if hasattr(hit, 'payload'):
-                    meta = hit.payload if isinstance(hit.payload, dict) else {}
-                else:
-                    meta = getattr(hit, 'payload', {}) if hasattr(hit, 'payload') else (hit if isinstance(hit, dict) else {})
-                
-                score = getattr(hit, 'score', 0.0) if hasattr(hit, 'score') else (hit.get('score', 0.0) if isinstance(hit, dict) else 0.0)
-                text = meta.get('text_content', '') if isinstance(meta, dict) else str(meta)
-                
-                s_id = meta.get('source_id', 'unknown')
-                var = meta.get('variable', 'unknown')
-                ref = f"{s_id}:{var}"
-                refs.add(ref)
-                
-                chunks_model.append(RAGChunk(
-                    source_id=s_id,
-                    variable=var,
-                    similarity=score,
-                    text=text[:200] + "..." if len(text) > 200 else text,
-                    metadata=meta
-                ))
-            
-            logger.info(f"Fast path: Returning {len(all_variables)} variables for variable list question")
-            return RAGChatResponse(
-                question=request.question,
-                answer=answer,
-                references=sorted(list(refs)),
-                chunks=chunks_model,
-                llm_used=False  # Don't use LLM for variable list questions
-            )
-        
-        # Detect temperature range queries
-        is_temp_range_query = any(phrase in question_lower for phrase in [
-            "temperature range", "temp range", "range of temperature",
-            "min and max temperature", "maximum and minimum temperature",
-            "temperature min max", "temp min max"
-        ])
-        
-        # Detect multi-variable queries (mentions multiple climate variables)
-        # Common variable keywords to detect
-        variable_keywords = {
-            "temperature": ["temperature", "temp", "tmax", "tmin", "thermal"],
-            "precipitation": ["precipitation", "rain", "rainfall", "prcp", "snow"],
-            "wind": ["wind", "speed", "velocity", "awnd", "wdf", "wsf"],
-            "pressure": ["pressure", "barometric", "msl"],
-            "humidity": ["humidity", "moisture", "dewpoint"],
-        }
-        
-        mentioned_variables = []
-        for var_type, keywords in variable_keywords.items():
-            if any(kw in question_lower for kw in keywords):
-                mentioned_variables.append(var_type)
-        
-        is_multi_variable_query = len(mentioned_variables) > 1 or any(word in question_lower for word in [
-            "compare", "difference", "versus", "vs", "both", "and", "also", "additionally"
-        ])
-        
-        # Dynamic top_k based on query complexity
-        if request.top_k is None:
-            if is_temp_range_query:
-                top_k = 25  # Higher for temperature range (need TMAX + TMIN)
-            elif is_multi_variable_query:
-                top_k = 30  # Higher for multi-variable queries (need all variables)
-            elif any(word in question_lower for word in ["compare", "difference", "versus", "vs"]):
-                top_k = 20  # Medium for comparison queries
-            else:
-                top_k = 15  # Default (increased from 10 for better coverage)
-        else:
-            top_k = request.top_k
-        
-        # 2. Build filter dict and spatial filter
-        filter_dict = {}
-        if request.source_id:
-            filter_dict["source_id"] = request.source_id
-        if request.variable:
-            filter_dict["variable"] = request.variable
+        rag_req = RAGRequest(
+            question=request.question,
+            top_k=request.top_k or 10,
+            use_llm=request.use_llm if request.use_llm is not None else True,
+            use_reranker=True,
+            temperature=request.temperature or 0.3,
+            source_id=getattr(request, "source_id", None),
+            variable=getattr(request, "variable", None),
+        )
+        result = await rag_query(rag_req)
 
-        # Spatial-aware filtering (Spatial-RAG, arXiv:2502.18470)
-        # Extract geographic constraints from the query and apply as Qdrant
-        # payload Range filters to ensure spatially correct retrieval.
-        from web_api.spatial_filter import extract_spatial_intent, build_qdrant_filter
-        spatial_intent = extract_spatial_intent(request.question)
-        spatial_qdrant_filter = build_qdrant_filter(spatial_intent, filter_dict if filter_dict else None)
-        if spatial_intent.region_name:
-            logger.info(f"Spatial filter active: region='{spatial_intent.region_name}'")
-
-        # 3. MULTI-QUERY RETRIEVAL STRATEGY
-        # Best practice: Use query expansion + multiple targeted searches for complex queries
-        search_result = []
-        
-        if is_temp_range_query and not request.variable:
-            # Strategy: Do 3 separate searches and merge results
-            # 1. General semantic search (broader context)
-            # 2. Targeted search for TMAX
-            # 3. Targeted search for TMIN
-            
-            # Search 1: General semantic search (get broader context)
-            general_query_vec = embedder.embed_queries([request.question])[0]
-            general_results = db.search(
-                query_vector=general_query_vec.tolist(),
-                limit=top_k,
-                query_filter=spatial_qdrant_filter,
-            )
-            search_result.extend(general_results)
-
-            # Search 2: Targeted search for TMAX (query expansion)
-            tmax_query = f"{request.question} maximum temperature TMAX"
-            tmax_query_vec = embedder.embed_queries([tmax_query])[0]
-            tmax_extra = filter_dict.copy()
-            tmax_extra["variable"] = "TMAX"
-            tmax_filter = build_qdrant_filter(spatial_intent, tmax_extra)
-            tmax_results = db.search(
-                query_vector=tmax_query_vec.tolist(),
-                limit=min(8, top_k),
-                query_filter=tmax_filter,
-            )
-            search_result.extend(tmax_results)
-
-            # Search 3: Targeted search for TMIN (query expansion)
-            tmin_query = f"{request.question} minimum temperature TMIN"
-            tmin_query_vec = embedder.embed_queries([tmin_query])[0]
-            tmin_extra = filter_dict.copy()
-            tmin_extra["variable"] = "TMIN"
-            tmin_filter = build_qdrant_filter(spatial_intent, tmin_extra)
-            tmin_results = db.search(
-                query_vector=tmin_query_vec.tolist(),
-                limit=min(8, top_k),
-                query_filter=tmin_filter,
-            )
-            search_result.extend(tmin_results)
-            
-            # Deduplicate by variable + time + location (same chunk shouldn't appear twice)
-            seen_chunks = set()
-            deduplicated_results = []
-            for hit in search_result:
-                meta = hit.payload if hasattr(hit, 'payload') else (hit if isinstance(hit, dict) else {})
-                var = meta.get('variable', '') if isinstance(meta, dict) else ''
-                time = meta.get('time_start', '') if isinstance(meta, dict) else ''
-                source = meta.get('source_id', '') if isinstance(meta, dict) else ''
-                chunk_key = f"{source}:{var}:{time}"
-                
-                if chunk_key not in seen_chunks:
-                    seen_chunks.add(chunk_key)
-                    deduplicated_results.append(hit)
-            
-            # Re-sort by score (best matches first)
-            search_result = sorted(
-                deduplicated_results,
-                key=lambda x: getattr(x, 'score', 0.0) if hasattr(x, 'score') else (x.get('score', 0.0) if isinstance(x, dict) else 0.0),
-                reverse=True
-            )[:top_k]
-            
-        elif is_multi_variable_query and not request.variable:
-            # Multi-variable query strategy: Perform multiple targeted searches
-            # 1. General semantic search (broader context)
-            # 2. Targeted searches for each mentioned variable type
-            
-            # Search 1: General semantic search
-            general_query_vec = embedder.embed_queries([request.question])[0]
-            general_results = db.search(
-                query_vector=general_query_vec.tolist(),
-                limit=top_k,
-                query_filter=spatial_qdrant_filter,
-            )
-            search_result.extend(general_results)
-
-            # Search 2-N: Targeted searches for each mentioned variable type
-            # Use query expansion to improve retrieval for each variable
-            for var_type in mentioned_variables:
-                expanded_query = f"{request.question} {var_type}"
-                expanded_query_vec = embedder.embed_queries([expanded_query])[0]
-
-                var_results = db.search(
-                    query_vector=expanded_query_vec.tolist(),
-                    limit=min(10, top_k),
-                    query_filter=spatial_qdrant_filter,
-                )
-                search_result.extend(var_results)
-            
-            # Deduplicate by variable + time + location
-            seen_chunks = set()
-            deduplicated_results = []
-            for hit in search_result:
-                meta = hit.payload if hasattr(hit, 'payload') else (hit if isinstance(hit, dict) else {})
-                var = meta.get('variable', '') if isinstance(meta, dict) else ''
-                time = meta.get('time_start', '') if isinstance(meta, dict) else ''
-                source = meta.get('source_id', '') if isinstance(meta, dict) else ''
-                chunk_key = f"{source}:{var}:{time}"
-                
-                if chunk_key not in seen_chunks:
-                    seen_chunks.add(chunk_key)
-                    deduplicated_results.append(hit)
-            
-            # Re-sort by score (best matches first)
-            search_result = sorted(
-                deduplicated_results,
-                key=lambda x: getattr(x, 'score', 0.0) if hasattr(x, 'score') else (x.get('score', 0.0) if isinstance(x, dict) else 0.0),
-                reverse=True
-            )[:top_k]
-            
-        else:
-            # Standard semantic search for simple single-variable queries
-            query_vec = embedder.embed_queries([request.question])[0]
-            search_result = db.search(
-                query_vector=query_vec.tolist(),
-                limit=top_k,
-                query_filter=spatial_qdrant_filter,
-            )
-        
-        # Fallback: if spatial filter returned too few results, retry without it
-        if len(search_result) < 2 and spatial_qdrant_filter is not None:
-            logger.warning(
-                f"Spatial filter returned only {len(search_result)} results, "
-                "retrying without spatial constraints"
-            )
-            query_vec = embedder.embed_queries([request.question])[0]
-            search_result = db.search(
-                query_vector=query_vec.tolist(),
-                limit=top_k,
-                filter_dict=filter_dict if filter_dict else None,
-            )
-
-        # 3. Build Context
-        context_chunks = []
+        # Convert RAGResponse → RAGChatResponse
         chunks_model = []
-        refs = set()
-        
-        for hit in search_result:
-            # Handle both ScoredPoint (client) and ScoredResult (REST fallback)
-            # Both should have .payload and .score attributes
-            if hasattr(hit, 'payload'):
-                meta = hit.payload if isinstance(hit.payload, dict) else {}
-            else:
-                # Fallback: try to get from dict or default
-                meta = getattr(hit, 'payload', {}) if hasattr(hit, 'payload') else (hit if isinstance(hit, dict) else {})
-            
-            score = getattr(hit, 'score', 0.0) if hasattr(hit, 'score') else (hit.get('score', 0.0) if isinstance(hit, dict) else 0.0)
-            text = meta.get('text_content', '') if isinstance(meta, dict) else str(meta)
-            
-            context_chunks.append({"metadata": meta, "score": score})
-            
-            # Safely get variables
-            s_id = meta.get('source_id', 'unknown')
-            var = meta.get('variable', 'unknown')
-            
-            ref = f"{s_id}:{var}"
-            refs.add(ref)
-            
+        for c in result.chunks:
+            meta = c.get("metadata", {})
             chunks_model.append(RAGChunk(
-                source_id=s_id,
-                variable=var,
-                similarity=score,
-                text=text[:200] + "...",
-                metadata=meta
+                source_id=c.get("source_id", "unknown"),
+                variable=c.get("variable", "unknown"),
+                similarity=c.get("score", 0.0),
+                text=c.get("text", "")[:200],
+                metadata=meta,
             ))
 
-        # 4. LLM Answer
-        llm_used = False
-        answer = ""
-        
-        if request.use_llm:
-            try:
-                # Use OpenRouter instead of Ollama
-                import os
-                from src.llm.openrouter_client import OpenRouterClient
-                from web_api.prompt_builder import build_rag_prompt, detect_question_type
-                from web_api.rag_endpoint import _get_variable_list, get_collection_info
-                
-                if not os.getenv("OPENROUTER_API_KEY"):
-                    raise ValueError("OPENROUTER_API_KEY not set")
-                
-                client = OpenRouterClient()
-                
-                # Detect question type
-                question_type = detect_question_type(request.question)
-                
-                # CRITICAL: Always get ALL variables from database for context
-                # This ensures LLM knows about ALL available variables, not just those in search results
-                all_variables = _get_variable_list(db, force_refresh=False)
-                if not all_variables:
-                    try:
-                        collection_info = await get_collection_info()
-                        all_variables = collection_info.get("variables", [])
-                    except Exception as e:
-                        logger.warning(f"Failed to get collection info: {e}")
-                        # Fallback: use variables from chunks
-                        all_variables = sorted({c.get("variable") for c in context_chunks if c.get("variable")})
-                
-                # Get sources info (useful for all question types)
-                sources = None
-                try:
-                    collection_info = await get_collection_info()
-                    sources = collection_info.get("sources", [])
-                except Exception as e:
-                    logger.warning(f"Failed to get collection info: {e}")
-                
-                # MULTI-PROMPTING: First, select relevant variables (if we have multiple variables)
-                selected_variables = None
-                if all_variables and len(all_variables) > 3:
-                    try:
-                        from web_api.prompt_builder import build_variable_selection_prompt
-                        import os
-                        from src.llm.openrouter_client import OpenRouterClient
-                        
-                        # Extract variable meanings from chunks
-                        var_meanings = {}
-                        for chunk in context_chunks:
-                            meta = chunk.get("metadata", {})
-                            var = meta.get("variable", "")
-                            if var:
-                                long_name = meta.get("long_name") or meta.get("standard_name")
-                                if long_name:
-                                    var_meanings[var] = long_name
-                        
-                        # First prompt: Select relevant variables
-                        var_selection_prompt = build_variable_selection_prompt(
-                            question=request.question,
-                            all_variables=all_variables,
-                            var_meanings=var_meanings
-                        )
-                        
-                        # Get variable selection from LLM
-                        var_selection_client = OpenRouterClient()
-                        var_selection_response = var_selection_client.generate(
-                            prompt=var_selection_prompt,
-                            temperature=0.1,
-                            max_tokens=50,
-                        )
-                        
-                        # Parse selected variables
-                        selected_vars_text = var_selection_response.strip()
-                        selected_variables = [v.strip() for v in selected_vars_text.split(",") if v.strip() in all_variables]
-                        logger.info(f"Selected variables from first prompt: {selected_variables}")
-                    except Exception as e:
-                        logger.warning(f"Variable selection prompt failed: {e}, continuing without it")
-                        selected_variables = None
-                
-                # Build dynamic prompt based on question type
-                prompt, max_tokens = build_rag_prompt(
-                    question=request.question,
-                    context_chunks=context_chunks,
-                    all_variables=all_variables,
-                    sources=sources,
-                    question_type=question_type,
-                    selected_variables=selected_variables
-                )
-                
-                logger.info(f"Question type: {question_type}, Max tokens: {max_tokens}")
-                
-                answer = client.generate(
-                    prompt=prompt, 
-                    temperature=request.temperature, 
-                    max_tokens=max_tokens
-                )
-                llm_used = True
-            except Exception as e:
-                logger.error(f"LLM Error: {e}")
-                answer = f"LLM Error: {e}"
-        
-        if not answer:
-            if not context_chunks:
-                answer = "No relevant climate data found."
-            else:
-                answer = f"Found {len(context_chunks)} relevant records. (LLM disabled or unavailable)"
-            
         return RAGChatResponse(
-            question=request.question,
-            answer=answer,
-            references=list(refs),
+            question=result.question,
+            answer=result.answer,
+            references=result.references,
             chunks=chunks_model,
-            llm_used=llm_used
+            llm_used=result.llm_used,
         )
-        
+
     except Exception as e:
         import traceback
         traceback.print_exc()
@@ -1788,7 +1417,7 @@ async def list_catalog():
 
 @app.post("/catalog/process")
 async def trigger_catalog_processing(request: CatalogProcessRequest):
-    """Trigger batch processing of catalog entries via Dagster."""
+    """Trigger batch processing of catalog entries in a background thread."""
     global _batch_thread, _batch_thread_error, _batch_thread_phases
 
     try:
@@ -1802,74 +1431,41 @@ async def trigger_catalog_processing(request: CatalogProcessRequest):
             )
             return result
 
-        # Try to launch via Dagster first (skip if force_reprocess - Dagster doesn't support resume=False)
-        if not request.force_reprocess:
-            try:
-                # Choose job based on requested phases
-                phases = sorted(request.phases or [0])
-                if phases == [0]:
-                    job_name = "catalog_metadata_only_job"
-                elif phases == [0, 1] or phases == [1]:
-                    job_name = "batch_catalog_etl_job"
-                else:
-                    job_name = "catalog_full_etl_job"
-
-                run = await launch_dagster_run(
-                    job_name,
-                    run_config={},
-                    tags={
-                        "phases": str(phases),
-                        "trigger_type": "api",
-                    },
-                )
-                return {
-                    "status": "started",
-                    "phases": request.phases,
-                    "dagster_run_id": run.get("runId"),
-                    "job_name": job_name,
-                    "message": f"Catalog processing started via Dagster ({job_name})",
-                }
-            except Exception as dagster_err:
-                logger.warning(f"Dagster launch failed ({dagster_err}), falling back to thread")
-        else:
-            logger.info("force_reprocess=True, skipping Dagster and using thread")
-
-            # Fallback: run in background thread (e.g., Dagster unavailable)
-            if _batch_thread is not None and _batch_thread.is_alive():
-                raise HTTPException(
-                    409,
-                    "Batch processing is already running. "
-                    "Check /catalog/progress for status.",
-                )
-
-            _batch_thread_error = None
-            _batch_thread_phases = request.phases
-
-            def _run_in_background():
-                global _batch_thread_error
-                try:
-                    run_batch_pipeline(
-                        excel_path=CATALOG_EXCEL_PATH,
-                        phases=request.phases,
-                        dry_run=request.dry_run,
-                        resume=not request.force_reprocess,
-                    )
-                except Exception as e:
-                    import traceback
-                    tb = traceback.format_exc()
-                    _batch_thread_error = f"{e}\n{tb}"
-                    logger.error(f"Background catalog processing failed: {e}\n{tb}")
-
-            _batch_thread = _threading.Thread(
-                target=_run_in_background, daemon=True, name="catalog-batch"
+        if _batch_thread is not None and _batch_thread.is_alive():
+            raise HTTPException(
+                409,
+                "Batch processing is already running. "
+                "Check /catalog/progress for status.",
             )
-            _batch_thread.start()
 
-            return {
-                "status": "started",
-                "phases": request.phases,
-                "message": f"Catalog processing started (thread fallback) for phases {request.phases}",
-            }
+        _batch_thread_error = None
+        _batch_thread_phases = request.phases
+
+        def _run_in_background():
+            global _batch_thread_error
+            try:
+                run_batch_pipeline(
+                    excel_path=CATALOG_EXCEL_PATH,
+                    phases=request.phases,
+                    dry_run=False,
+                    resume=not request.force_reprocess,
+                )
+            except Exception as e:
+                import traceback
+                tb = traceback.format_exc()
+                _batch_thread_error = f"{e}\n{tb}"
+                logger.error(f"Background catalog processing failed: {e}\n{tb}")
+
+        _batch_thread = _threading.Thread(
+            target=_run_in_background, daemon=True, name="catalog-batch"
+        )
+        _batch_thread.start()
+
+        return {
+            "status": "started",
+            "phases": request.phases,
+            "message": f"Catalog processing started for phases {request.phases}",
+        }
     except HTTPException:
         raise
     except Exception as e:
@@ -1878,7 +1474,7 @@ async def trigger_catalog_processing(request: CatalogProcessRequest):
 
 @app.get("/catalog/progress", response_model=CatalogProgressResponse)
 async def get_catalog_progress():
-    """Get current batch processing progress, including thread and Dagster health."""
+    """Get current batch processing progress."""
     try:
         from src.catalog.batch_orchestrator import get_progress
         data = get_progress()
@@ -1893,25 +1489,6 @@ async def get_catalog_progress():
         data["thread_alive"] = thread_alive
         data["thread_crashed"] = thread_crashed
         data["thread_error"] = _batch_thread_error if thread_crashed else None
-
-        # Also check for active Dagster catalog runs
-        try:
-            runs_query = """
-            query {
-                runsOrError(filter: {
-                    pipelineName: "catalog_full_etl_job"
-                    statuses: [STARTED, QUEUED]
-                }, limit: 1) {
-                    ... on Runs { results { runId status } }
-                }
-            }
-            """
-            runs_data = await execute_graphql_query(runs_query)
-            active_runs = runs_data.get("runsOrError", {}).get("results", [])
-            if active_runs:
-                data["thread_alive"] = True  # Treat Dagster run as "alive"
-        except Exception:
-            pass  # Dagster unavailable is fine
 
         return data
     except Exception as e:
@@ -1946,39 +1523,31 @@ async def classify_catalog():
 
 @app.post("/catalog/retry-failed")
 async def retry_failed_catalog():
-    """Re-run all failed catalog sources via Dagster."""
-    try:
-        # Try Dagster first
+    """Re-run all failed catalog sources directly (bypasses Dagster for speed)."""
+    global _batch_thread, _batch_thread_error, _batch_thread_phases
+
+    if _batch_thread is not None and _batch_thread.is_alive():
+        raise HTTPException(409, "Batch processing is already running")
+
+    import threading
+    from src.catalog.batch_orchestrator import retry_failed
+
+    _batch_thread_error = None
+    _batch_thread_phases = [3]  # Most failures are Phase 3
+
+    def _retry():
+        global _batch_thread_error
         try:
-            run = await launch_dagster_run(
-                "catalog_full_etl_job",
-                run_config={},
-                tags={"trigger_type": "retry", "retry": "true"},
-            )
-            return {
-                "status": "started",
-                "dagster_run_id": run.get("runId"),
-                "message": "Retrying failed sources via Dagster",
-            }
-        except Exception as dagster_err:
-            logger.warning(f"Dagster launch failed ({dagster_err}), falling back to thread")
+            retry_failed(excel_path=CATALOG_EXCEL_PATH)
+        except Exception as e:
+            import traceback
+            _batch_thread_error = f"{e}\n{traceback.format_exc()}"
+            logger.error(f"Retry failed: {e}")
 
-            # Fallback: thread
-            import threading
-            from src.catalog.batch_orchestrator import retry_failed
+    _batch_thread = threading.Thread(target=_retry, daemon=True)
+    _batch_thread.start()
 
-            def _retry():
-                try:
-                    retry_failed(excel_path=CATALOG_EXCEL_PATH)
-                except Exception as e:
-                    logger.error(f"Retry failed: {e}")
-
-            thread = threading.Thread(target=_retry, daemon=True)
-            thread.start()
-
-            return {"status": "started", "message": "Retrying failed sources in background (thread fallback)"}
-    except Exception as e:
-        raise HTTPException(500, str(e))
+    return {"status": "started", "message": "Retrying failed sources in background thread"}
 
 
 @app.post("/catalog/auto-restart")

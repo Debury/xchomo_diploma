@@ -40,6 +40,8 @@ class Source(Base):
     chunk_size = Column(Integer, default=512)
     description = Column(Text, nullable=True)
     tags = Column(JSON, nullable=True)
+    keywords = Column(JSON, nullable=True)
+    custom_metadata = Column(JSON, nullable=True)
 
     # Processing state
     processing_status = Column(String(50), default="pending", nullable=False)

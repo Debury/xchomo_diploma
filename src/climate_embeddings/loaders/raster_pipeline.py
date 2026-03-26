@@ -81,7 +81,10 @@ def load_raster_auto(path: Union[str, Path], **kwargs) -> RasterLoadResult:
         iterator = _load_csv(path, **kwargs)
     elif suffix in {'.tif', '.tiff'}:
         iterator = _load_geotiff(path, **kwargs)
-    elif suffix in {'.nc', '.nc4', '.hdf', '.h5'}:
+    elif suffix in {'.h5', '.he5', '.hdf5'}:
+        # HDF5 files: use h5netcdf (handles groups better than netcdf4)
+        iterator = _load_xarray_generic(path, engine="h5netcdf", **kwargs)
+    elif suffix in {'.nc', '.nc4', '.hdf'}:
         iterator = _load_xarray_generic(path, engine="netcdf4", **kwargs)
     elif suffix in {'.grib', '.grib2', '.grb'}:
         # Requires 'cfgrib' installed
@@ -322,10 +325,28 @@ def _load_xarray_generic(path: Path, engine: Optional[str] = None, **kwargs) -> 
 
         if ds is None:
             raise last_err or RuntimeError(f"All xarray engines failed for {path.name}")
-        
+
+        logger.info(f"Opened {path.name}: dims={dict(ds.dims)}, vars={list(ds.data_vars)}")
+
+        # HDF5 files may have data in groups (e.g. IMERG uses /Grid)
+        # If we got 0 data vars, try opening with common group names
+        if not list(ds.data_vars) and path.suffix.lower() in {'.h5', '.hdf', '.hdf5', '.he5'}:
+            ds.close()
+            for group in ["Grid", "HDFEOS/GRIDS", "data", "Data"]:
+                try:
+                    ds = xr.open_dataset(path, chunks="auto", engine="h5netcdf", group=group)
+                    if list(ds.data_vars):
+                        logger.info(f"Opened {path.name} with group='{group}': vars={list(ds.data_vars)}")
+                        break
+                    ds.close()
+                except Exception:
+                    continue
+
         # Filter for numeric vars only
         numeric_vars = [v for v in ds.data_vars if np.issubdtype(ds[v].dtype, np.number)]
-        
+        if not numeric_vars:
+            logger.warning(f"No numeric variables found in {path.name}. All vars: {list(ds.data_vars)}, dtypes: {[(v, ds[v].dtype) for v in ds.data_vars]}")
+
         for var in numeric_vars:
             da_var = ds[var]
             
@@ -334,14 +355,11 @@ def _load_xarray_generic(path: Path, engine: Optional[str] = None, **kwargs) -> 
             for dim in da_var.dims:
                 d = str(dim).lower()
                 if "time" in d or "date" in d or "step" in d:
-                    # ~Monthly aggregation: 30 timesteps per chunk
-                    # For daily data: 1 chunk ≈ 1 month
-                    # For 6-hourly: 1 chunk ≈ 1 week
-                    # Stats (mean/std/min/max) computed across all timesteps in chunk
-                    chunking[dim] = 30
+                    # ~Seasonal aggregation: 90 timesteps per chunk
+                    chunking[dim] = 90
                 elif "lat" in d or "y" in d or "lon" in d or "x" in d:
-                    # ~2.5° per chunk at 0.25° resolution (regional accuracy)
-                    chunking[dim] = 10
+                    # ~10° per chunk at 0.25° resolution (reduces chunk count significantly)
+                    chunking[dim] = 40
                 else:
                     chunking[dim] = -1
 
@@ -373,7 +391,7 @@ def _load_xarray_generic(path: Path, engine: Optional[str] = None, **kwargs) -> 
                 # Dynamic threshold: use at most 30% of *available* RAM,
                 # capped at 2 GB absolute, so future large datasets degrade
                 # gracefully instead of OOM-crashing.
-                max_preload = 6 * 1024**3  # 6 GB absolute cap (RTX 5090 machine has plenty of RAM)
+                max_preload = 6 * 1024**3  # 6 GB absolute cap
                 try:
                     import psutil
                     avail = psutil.virtual_memory().available

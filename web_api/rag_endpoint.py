@@ -1,36 +1,45 @@
 """
-Optimized RAG Endpoint - Best Practices
-Fast, reliable RAG with proper error handling and timeouts
+RAG Endpoint — optimized for quality and speed.
+
+Pipeline: multi-query expansion → grouped search → RRF fusion → rerank → MMR → LLM.
 """
 from __future__ import annotations
 
-import logging
-from typing import List, Dict, Any, Optional
-from pydantic import BaseModel
-from fastapi import HTTPException
 import asyncio
+import logging
+import math
+import re
 import threading
 import time
-import re
+from typing import Any, Dict, List, Optional, Tuple
+
+from fastapi import HTTPException
+from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
 
-
+# ---------------------------------------------------------------------------
+# Cached singletons
+# ---------------------------------------------------------------------------
 _INIT_LOCK = threading.Lock()
 _CACHED_CONFIG: Optional[Dict[str, Any]] = None
 _CACHED_DB = None
 _CACHED_EMBEDDER = None
 _CACHED_LLM = None
+
+_CACHED_RERANKER = None
+
 _CACHED_VARIABLES: List[str] = []
 _CACHED_VARIABLES_TS: float = 0.0
 _VARIABLES_LOCK = threading.Lock()
 
-
-_CACHED_RERANKER = None
+_CACHED_INFO: Optional[Dict[str, Any]] = None
+_CACHED_INFO_TS: float = 0.0
+_INFO_LOCK = threading.Lock()
 
 
 def _get_reranker():
-    """Lazy-load cross-encoder reranker on first use (separate from _get_components to avoid startup delay)."""
+    """Lazy-load cross-encoder reranker."""
     global _CACHED_RERANKER
     if _CACHED_RERANKER is not None:
         return _CACHED_RERANKER
@@ -43,61 +52,47 @@ def _get_reranker():
 
 
 def _get_llm_client():
-    """Get LLM client - OpenRouter only."""
+    """Get LLM client — OpenRouter only."""
     import os
-    
-    # OpenRouter only - no fallback to slow Ollama
     api_key = os.getenv("OPENROUTER_API_KEY")
     if not api_key:
-        logger.error("OPENROUTER_API_KEY not set! LLM will not work.")
         raise ValueError("OPENROUTER_API_KEY environment variable is required")
-    
-    try:
-        from src.llm.openrouter_client import OpenRouterClient
-        client = OpenRouterClient()
-        logger.info(f"Using OpenRouter API with model: {client.model}")
-        return client, "openrouter"
-    except Exception as e:
-        logger.error(f"OpenRouter client init failed: {e}")
-        raise ValueError(f"Failed to initialize OpenRouter: {e}")
+    from src.llm.openrouter_client import OpenRouterClient
+    client = OpenRouterClient()
+    logger.info(f"Using OpenRouter: {client.model}")
+    return client
 
 
 def _get_components():
-    """Lazy init + cache heavy components (config, DB client, embedder, LLM)."""
+    """Lazy-init heavy components (config, DB, embedder, LLM). Thread-safe."""
     global _CACHED_CONFIG, _CACHED_DB, _CACHED_EMBEDDER, _CACHED_LLM
-    if _CACHED_CONFIG is not None and _CACHED_DB is not None and _CACHED_EMBEDDER is not None and _CACHED_LLM is not None:
+    if _CACHED_CONFIG and _CACHED_DB and _CACHED_EMBEDDER and _CACHED_LLM:
         return _CACHED_CONFIG, _CACHED_DB, _CACHED_EMBEDDER, _CACHED_LLM
 
     with _INIT_LOCK:
-        if _CACHED_CONFIG is not None and _CACHED_DB is not None and _CACHED_EMBEDDER is not None and _CACHED_LLM is not None:
+        if _CACHED_CONFIG and _CACHED_DB and _CACHED_EMBEDDER and _CACHED_LLM:
             return _CACHED_CONFIG, _CACHED_DB, _CACHED_EMBEDDER, _CACHED_LLM
 
         from src.utils.config_loader import ConfigLoader
         from src.embeddings.database import VectorDatabase
         from src.climate_embeddings.embeddings.text_models import TextEmbedder
 
-        config_loader = ConfigLoader("config/pipeline_config.yaml")
-        _CACHED_CONFIG = config_loader.load()
+        _CACHED_CONFIG = ConfigLoader("config/pipeline_config.yaml").load()
         _CACHED_DB = VectorDatabase(config=_CACHED_CONFIG)
         _CACHED_EMBEDDER = TextEmbedder()
-        _CACHED_LLM, llm_type = _get_llm_client()
-        
-        # Warm up embedder with a dummy query
+        _CACHED_LLM = _get_llm_client()
+
+        # Warm up embedder
         try:
             _CACHED_EMBEDDER.embed_queries(["warmup"])
-            logger.info("Embedder warmed up")
-        except Exception as e:
-            logger.warning(f"Embedder warmup failed: {e}")
+        except Exception:
+            pass
 
     return _CACHED_CONFIG, _CACHED_DB, _CACHED_EMBEDDER, _CACHED_LLM
 
 
-def _get_variable_list(db, force_refresh: bool = False, max_vars: int = 1000) -> List[str]:
-    """Collect distinct variable names quickly using Qdrant scroll; cache results.
-    
-    This function scrolls through ALL points in the collection to get a complete
-    list of unique variables, not just from search results.
-    """
+def _get_variable_list(db, force_refresh: bool = False) -> List[str]:
+    """Collect distinct variable names via Qdrant scroll; cached 5 min."""
     global _CACHED_VARIABLES, _CACHED_VARIABLES_TS
     now = time.time()
     if not force_refresh and _CACHED_VARIABLES and (now - _CACHED_VARIABLES_TS) < 300:
@@ -107,195 +102,38 @@ def _get_variable_list(db, force_refresh: bool = False, max_vars: int = 1000) ->
         if not force_refresh and _CACHED_VARIABLES and (time.time() - _CACHED_VARIABLES_TS) < 300:
             return _CACHED_VARIABLES
 
-        client_attr = getattr(db, "client", None)
+        client = getattr(db, "client", None)
         collection = getattr(db, "collection_name", None)
-        seen = set()
+        seen: set = set()
 
-        if client_attr is not None and collection:
+        if client and collection:
             try:
                 offset = None
-                rounds = 0
-                # Increase rounds to scan more of the database
-                while rounds < 50 and len(seen) < max_vars:
-                    points, offset = client_attr.scroll(
+                for _ in range(50):
+                    points, offset = client.scroll(
                         collection_name=collection,
                         limit=500,
                         offset=offset,
                         with_vectors=False,
                         with_payload=True,
                     )
-                    rounds += 1
                     for p in points:
-                        payload = getattr(p, "payload", None) or {}
-                        var = payload.get("variable")
+                        var = (getattr(p, "payload", None) or {}).get("variable")
                         if var:
                             seen.add(str(var))
                     if offset is None:
                         break
-                logger.info(f"Scanned {rounds} rounds, found {len(seen)} unique variables")
             except Exception as e:
-                logger.error(f"Error getting variable list: {e}")
+                logger.error(f"Variable list scan error: {e}")
 
-        _CACHED_VARIABLES = sorted(seen)[:max_vars]
+        _CACHED_VARIABLES = sorted(seen)
         _CACHED_VARIABLES_TS = time.time()
-        logger.info(f"Cached {len(_CACHED_VARIABLES)} variables")
         return _CACHED_VARIABLES
 
 
-_STOPWORDS = frozenset({
-    "a", "an", "the", "is", "are", "was", "were", "be", "been", "being",
-    "have", "has", "had", "do", "does", "did", "will", "would", "shall",
-    "should", "may", "might", "can", "could", "of", "in", "to", "for",
-    "with", "on", "at", "from", "by", "about", "as", "into", "through",
-    "during", "before", "after", "above", "below", "between", "and", "or",
-    "but", "not", "no", "what", "which", "who", "whom", "this", "that",
-    "these", "those", "i", "me", "my", "we", "our", "you", "your", "it",
-    "its", "they", "them", "their", "how", "when", "where", "why", "all",
-    "each", "every", "any", "some", "most", "more", "much", "many", "show",
-    "tell", "give", "get", "data", "climate",
-})
-
-
-def _boost_metadata_scores(results, query_text: str):
-    """Apply small score boosts when metadata fields match query keywords.
-
-    Boosts +0.05 per keyword match (variable, dataset_name, long_name),
-    capped at +0.15 total per result. Modifies results in-place.
-    """
-    keywords = {
-        w.lower()
-        for w in re.findall(r"[A-Za-z0-9_]+", query_text)
-        if len(w) >= 2 and w.lower() not in _STOPWORDS
-    }
-    if not keywords:
-        return
-
-    for hit in results:
-        payload = hit.payload if hasattr(hit, "payload") else (hit.get("payload", {}) if isinstance(hit, dict) else {})
-        boost = 0.0
-        for field in ("variable", "dataset_name", "long_name", "hazard_type", "data_type"):
-            val = (payload.get(field) or "").lower()
-            if any(kw in val for kw in keywords):
-                boost += 0.05
-        boost = min(boost, 0.20)
-        if boost > 0:
-            if hasattr(hit, "score"):
-                hit.score = float(hit.score) + boost
-            elif isinstance(hit, dict):
-                hit["score"] = float(hit.get("score", 0.0)) + boost
-
-
-def _query_decomposition_search(question: str, query_vec, db, results: list, embedder, llm_client=None):
-    """For multi-topic queries, use LLM to decompose into sub-queries and search each.
-
-    Fully dynamic — no hardcoded dataset or hazard patterns.
-    Uses the LLM to identify distinct topics in the question.
-    """
-    # Fast-path: skip decomposition for short single-topic queries
-    question_lower = question.lower()
-    has_conjunction = any(w in question_lower for w in [" and ", " alongside ", " with ", " correlate ", " combined "])
-    if len(question.split()) < 12 and not has_conjunction:
-        return
-
-    # Use LLM to decompose the query into sub-topics
-    if llm_client is None:
-        return
-
-    decomposition_prompt = f"""The user asked a climate data question. Identify the distinct climate topics, datasets, or hazards mentioned.
-Return each as a SHORT search query (5-10 words) optimized for semantic similarity search against a climate dataset catalog.
-Return one query per line. Maximum 6 queries. If the question has only one topic, return SINGLE_TOPIC.
-
-QUESTION: {question}
-
-SEARCH QUERIES:"""
-
-    try:
-        import asyncio
-        response = llm_client.generate(
-            prompt=decomposition_prompt,
-            temperature=0.1,
-            max_tokens=150,
-            timeout_s=8,
-        )
-
-        sub_queries = []
-        for line in response.strip().split('\n'):
-            line = line.strip().lstrip('- ').lstrip('0123456789.)')
-            line = line.strip()
-            if line and line.upper() != "SINGLE_TOPIC" and len(line) > 5:
-                sub_queries.append(line)
-
-        if len(sub_queries) < 2:
-            return
-
-        logger.info(f"LLM query decomposition: {len(sub_queries)} sub-topics: {sub_queries}")
-
-    except Exception as e:
-        logger.warning(f"LLM query decomposition failed: {e}")
-        return
-
-    existing_ids = set()
-    for r in results:
-        rid = getattr(r, 'id', None) if hasattr(r, 'id') else (r.get('id') if isinstance(r, dict) else None)
-        if rid:
-            existing_ids.add(rid)
-
-    total_added = 0
-    for sub_query in sub_queries[:6]:
-        try:
-            sub_vec = embedder.embed_queries([sub_query])[0]
-            from qdrant_client.models import Filter, FieldCondition, MatchValue
-            metadata_filter = Filter(must=[
-                FieldCondition(key="is_metadata_only", match=MatchValue(value=True))
-            ])
-            sub_results = db.search(
-                query_vector=sub_vec.tolist(),
-                limit=5,
-                query_filter=metadata_filter,
-            )
-            for sr in sub_results:
-                sid = getattr(sr, 'id', None) if hasattr(sr, 'id') else (sr.get('id') if isinstance(sr, dict) else None)
-                if sid and sid not in existing_ids:
-                    results.append(sr)
-                    existing_ids.add(sid)
-                    total_added += 1
-        except Exception as e:
-            logger.warning(f"Sub-query search failed for '{sub_query[:30]}': {e}")
-
-    if total_added > 0:
-        logger.info(f"Query decomposition added {total_added} results from {len(sub_queries)} sub-topics")
-
-
-def _enforce_diversity(results: list, max_per_source: int = 4) -> list:
-    """Limit results per source_id to ensure diverse dataset coverage.
-
-    Prevents a single source from dominating all result slots.
-    Keeps the top max_per_source results per source, sorted by score.
-    """
-    source_counts = {}
-    diverse_results = []
-
-    # Results should already be sorted by score (descending)
-    sorted_results = sorted(
-        results,
-        key=lambda x: getattr(x, 'score', 0.0) if hasattr(x, 'score') else (x.get('score', 0.0) if isinstance(x, dict) else 0.0),
-        reverse=True
-    )
-
-    for hit in sorted_results:
-        payload = hit.payload if hasattr(hit, "payload") else (hit.get("payload", {}) if isinstance(hit, dict) else {})
-        source_id = payload.get("source_id", "unknown")
-
-        count = source_counts.get(source_id, 0)
-        if count < max_per_source:
-            diverse_results.append(hit)
-            source_counts[source_id] = count + 1
-
-    if len(diverse_results) < len(results):
-        logger.info(f"Diversity filter: {len(results)} → {len(diverse_results)} results ({len(source_counts)} unique sources)")
-
-    return diverse_results
-
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
 _VARIABLE_LIST_RE = re.compile(
     r"\b(what|which|list|show|tell|give)\b.*\b(variable|variables|var|data|fields|columns)\b.*\b(available|in|does|are|have|contains|include)\b",
@@ -303,74 +141,186 @@ _VARIABLE_LIST_RE = re.compile(
 )
 
 
-def _is_variable_list_question(question: str) -> bool:
-    q = (question or "").strip()
+def _is_variable_list_question(q: str) -> bool:
     if not q:
         return False
     if _VARIABLE_LIST_RE.search(q):
         return True
-    # Common short variants
-    lowered = q.lower()
-    return "variables" in lowered and ("available" in lowered or "list" in lowered)
+    low = q.lower()
+    return "variables" in low and ("available" in low or "list" in low)
 
 
-def _format_hit_summary(meta: Dict[str, Any], score: float) -> str:
-    """Create a compact, stable summary for LLM context (avoid huge prompts)."""
-    source_id = meta.get("source_id", "unknown")
-    dataset = meta.get("dataset_name") or source_id
-    variable = meta.get("variable", "unknown")
-    unit = meta.get("unit") or meta.get("units") or ""
-    time_start = meta.get("time_start")
-    time_end = meta.get("time_end")
-
-    parts = [f"source={dataset}", f"var={variable}", f"score={score:.3f}"]
-    if unit:
-        parts.append(f"unit={unit}")
-    if time_start:
-        if time_end and time_end != time_start:
-            parts.append(f"time={time_start}..{time_end}")
-        else:
-            parts.append(f"time={time_start}")
-
-    # Only include a tiny bit of stats if present
-    for key in ("stats_mean", "stats_min", "stats_max"):
-        if key in meta and meta[key] is not None:
-            try:
-                parts.append(f"{key.replace('stats_', '')}={float(meta[key]):.3g}")
-            except Exception:
-                pass
-
-    return ", ".join(parts)
+def _extract_payload(hit) -> tuple:
+    """Return (payload_dict, score_float) from a Qdrant hit."""
+    if hasattr(hit, "payload"):
+        return hit.payload, float(getattr(hit, "score", 0.0))
+    if isinstance(hit, dict):
+        return hit.get("payload", {}), float(hit.get("score", 0.0))
+    return {}, 0.0
 
 
-def _default_max_tokens(question: str) -> int:
-    q = (question or "").strip()
-    if _is_variable_list_question(q):
-        return 80
-    if len(q) <= 50:
-        return 200
-    if len(q) <= 100:
-        return 300
-    return 400
+def _hit_id(hit) -> Optional[str]:
+    if hasattr(hit, "id"):
+        return str(hit.id)
+    if isinstance(hit, dict):
+        return str(hit["id"]) if "id" in hit else None
+    return None
 
-# ====================================================================================
-# MODELS
-# ====================================================================================
+
+def _enforce_diversity(results: list, max_per_source: int = 4,
+                       max_per_source_var: int = 2) -> list:
+    """Limit results per source_id and per source+variable for diverse coverage.
+    Summary chunks (is_dataset_summary=True) bypass the per-variable limit."""
+    source_counts: Dict[str, int] = {}
+    combo_counts: Dict[str, int] = {}
+    out = []
+    for hit in sorted(results,
+                      key=lambda x: _extract_payload(x)[1],
+                      reverse=True):
+        meta, _ = _extract_payload(hit)
+        sid = meta.get("source_id", "unknown")
+        is_summary = meta.get("is_dataset_summary", False)
+        var = meta.get("variable", "unknown")
+        combo = f"{sid}::{var}"
+        if is_summary:
+            # Summaries always pass (one per source max)
+            if source_counts.get(sid, 0) < max_per_source:
+                out.append(hit)
+                source_counts[sid] = source_counts.get(sid, 0) + 1
+        elif (source_counts.get(sid, 0) < max_per_source
+                and combo_counts.get(combo, 0) < max_per_source_var):
+            out.append(hit)
+            source_counts[sid] = source_counts.get(sid, 0) + 1
+            combo_counts[combo] = combo_counts.get(combo, 0) + 1
+    return out
+
+
+def _rrf_fuse(result_lists: List[List], k: int = 60) -> List:
+    """Reciprocal Rank Fusion — merge multiple result lists by rank position.
+
+    Each result gets score = sum(1 / (k + rank)) across all lists it appears in.
+    Results that appear in multiple lists get boosted.
+    """
+    scores: Dict[str, float] = {}
+    hit_map: Dict[str, Any] = {}
+
+    for results in result_lists:
+        for rank, hit in enumerate(results):
+            hid = _hit_id(hit)
+            if hid is None:
+                continue
+            scores[hid] = scores.get(hid, 0.0) + 1.0 / (k + rank + 1)
+            if hid not in hit_map:
+                hit_map[hid] = hit
+
+    sorted_ids = sorted(scores.keys(), key=lambda x: scores[x], reverse=True)
+    return [hit_map[hid] for hid in sorted_ids if hid in hit_map]
+
+
+def _mmr_rerank(results: list, query_vector, embedder,
+                lambda_param: float = 0.7, top_k: int = 15) -> list:
+    """Maximal Marginal Relevance — balance relevance and diversity.
+
+    Iteratively selects results that are relevant to the query but dissimilar
+    to already-selected results. Uses payload similarity (source_id + variable)
+    as a proxy for embedding similarity to avoid re-embedding.
+    """
+    if len(results) <= top_k:
+        return results
+
+    # Use payload-based similarity as a fast proxy
+    def _payload_sim(hit_a, hit_b) -> float:
+        meta_a, _ = _extract_payload(hit_a)
+        meta_b, _ = _extract_payload(hit_b)
+        sim = 0.0
+        if meta_a.get("source_id") == meta_b.get("source_id"):
+            sim += 0.5
+        if meta_a.get("dataset_name") == meta_b.get("dataset_name"):
+            sim += 0.3
+        if meta_a.get("variable") == meta_b.get("variable"):
+            sim += 0.2
+        return sim
+
+    selected = []
+    candidates = list(results)
+
+    while len(selected) < top_k and candidates:
+        best_score = -1.0
+        best_idx = 0
+
+        for i, candidate in enumerate(candidates):
+            _, relevance = _extract_payload(candidate)
+
+            # Max similarity to any already-selected result
+            max_sim = 0.0
+            for sel in selected:
+                sim = _payload_sim(candidate, sel)
+                if sim > max_sim:
+                    max_sim = sim
+
+            mmr_score = lambda_param * relevance - (1 - lambda_param) * max_sim
+
+            if mmr_score > best_score:
+                best_score = mmr_score
+                best_idx = i
+
+        selected.append(candidates.pop(best_idx))
+
+    return selected
+
+
+def _generate_query_variants(llm_client, question: str) -> List[str]:
+    """Use the LLM to generate search query variants for broader retrieval.
+
+    Returns the original query plus 2-3 variants that capture different
+    aspects or phrasings of the question.
+    """
+    prompt = (
+        "Generate 3 alternative search queries for a climate data vector database. "
+        "Each query should focus on a DIFFERENT key concept from the original. "
+        "If the original mentions multiple topics (e.g. temperature AND drought AND fire), "
+        "create one query per topic. Use climate science terminology and dataset names "
+        "where applicable (ERA5, MERRA-2, IMERG, GRACE, CAMS, E-OBS, SPEI, etc). "
+        "Return ONLY the queries, one per line, no numbering or explanation.\n\n"
+        f"Original query: {question}\n\n"
+        "Alternative queries:"
+    )
+    try:
+        response = llm_client.generate(
+            prompt=prompt,
+            temperature=0.3,
+            max_tokens=200,
+            timeout_s=12,
+        )
+        variants = [q.strip() for q in response.strip().split("\n") if q.strip()]
+        # Filter out empty or too-short variants
+        variants = [v for v in variants if len(v) > 10][:3]
+        return variants
+    except Exception as e:
+        logger.warning(f"Query expansion failed: {e}")
+        return []
+
+
+# ---------------------------------------------------------------------------
+# Models
+# ---------------------------------------------------------------------------
 
 class RAGMessage(BaseModel):
-    role: str  # "user" or "assistant"
+    role: str
     content: str
+
 
 class RAGRequest(BaseModel):
     question: str
     top_k: int = 5
     use_llm: bool = True
     use_reranker: bool = True
-    temperature: float = 0.7
+    temperature: float = 0.3
     source_id: Optional[str] = None
     variable: Optional[str] = None
-    timeout: int = 180  # LLM timeout in seconds (increased for slow servers)
-    conversation_history: Optional[List[RAGMessage]] = None  # For multi-turn conversations
+    timeout: int = 60
+    conversation_history: Optional[List[RAGMessage]] = None
+
 
 class RAGResponse(BaseModel):
     question: str
@@ -381,651 +331,301 @@ class RAGResponse(BaseModel):
     reranker_used: bool = False
     search_time_ms: float
     llm_time_ms: Optional[float] = None
-    conversation_id: Optional[str] = None  # For tracking conversations
+    conversation_id: Optional[str] = None
 
-# ====================================================================================
-# RAG PIPELINE
-# ====================================================================================
+
+# ---------------------------------------------------------------------------
+# RAG PIPELINE — single LLM call, 2 parallel Qdrant searches
+# ---------------------------------------------------------------------------
 
 async def rag_query(request: RAGRequest) -> RAGResponse:
     """
-    Optimized RAG pipeline with proper timeout handling.
+    Optimized RAG pipeline.
+
+    Flow:
+      1. Embed question                    (~100ms)
+      2. Semantic search + metadata search  (~200ms, parallel)
+      3. Optional reranking                 (~200ms)
+      4. Diversity enforcement              (~10ms)
+      5. Single LLM call                    (~3-15s)
     """
+    question = (request.question or "").strip()
+    if not question:
+        raise HTTPException(status_code=400, detail="Question is required")
+
+    config, db, embedder, llm_client = _get_components()
+
+    # ── 1. EMBED + QUERY EXPANSION ───────────────────────────────────────
+    search_start = time.time()
+    query_vec = embedder.embed_queries([question])[0]
+    embed_ms = (time.time() - search_start) * 1000
+    logger.info(f"Embed: {embed_ms:.0f}ms")
+
+    # ── 2. MULTI-QUERY EXPANSION (LLM generates search variants) ──────
+    filter_dict = {}
+    if request.source_id:
+        filter_dict["source_id"] = request.source_id
+    if request.variable:
+        filter_dict["variable"] = request.variable
+
+    effective_top_k = max(1, min(request.top_k, 20))
+
+    # Generate query variants in parallel with main search
+    query_variants: List[str] = []
     try:
-        question_text = (request.question or "").strip()
-        if not question_text:
-            raise HTTPException(status_code=400, detail="Question is required")
-
-        _config, db, embedder, llm_client = _get_components()
-
-        # Fast path: variable listing without embeddings/LLM
-        if _is_variable_list_question(question_text) and request.use_llm is False:
-            vars_cached = _get_variable_list(db)
-            if vars_cached:
-                answer = "Available climate variables (cached):\n" + ", ".join(vars_cached[:80])
-                return RAGResponse(
-                    question=question_text,
-                    answer=answer,
-                    chunks=[],
-                    references=[],
-                    llm_used=False,
-                    search_time_ms=0,
-                    llm_time_ms=None,
-                )
-        
-        # 1. VECTOR SEARCH (fast - should take <500ms)
-        search_start = time.time()
-        
-        # Embed query
-        embed_start = time.time()
-        query_vec = embedder.embed_queries([question_text])[0]
-        embed_time = (time.time() - embed_start) * 1000
-        logger.info(f"Embedding took {embed_time:.0f}ms")
-        
-        # Build filter - DYNAMIC: No hardcoded variable names
-        filter_dict = {}
-        if request.source_id:
-            filter_dict["source_id"] = request.source_id
-        if request.variable:
-            filter_dict["variable"] = request.variable
-        
-        # DYNAMIC: For questions asking about multiple variables or statistics,
-        # increase top_k to get more diverse results (all relevant variables)
-        # Don't hardcode variable names - let semantic search find relevant ones
-        question_lower = question_text.lower()
-        # If question asks for statistics/multiple variables, get more results
-        needs_more_results = any(phrase in question_lower for phrase in [
-            "statistics", "all", "compare", "range", "show me", "list"
-        ])
-        
-        if needs_more_results:
-            effective_top_k = max(20, request.top_k)  # Get more results for comprehensive answers
-        else:
-            effective_top_k = max(1, min(request.top_k, 15))  # Standard search
-        
-        # DYNAMIC: Get all variables first to enable smart multi-search
-        all_variables = _get_variable_list(db, force_refresh=False)
-        
-        # First search: semantic search (general) - get more results to ensure diversity
-        initial_top_k = max(effective_top_k, 20)  # Get more initial results
-        reranker_used = False
-        if request.use_reranker:
-            try:
-                reranker = _get_reranker()
-                rerank_candidates = max(40, initial_top_k * 3)
-                results = db.search_and_rerank(
-                    query_text=question_text,
-                    query_vector=query_vec.tolist(),
-                    limit=initial_top_k,
-                    candidates=rerank_candidates,
-                    filter_dict=filter_dict if filter_dict else None,
-                    reranker=reranker,
-                )
-                reranker_used = True
-                logger.info(f"Reranked {rerank_candidates} candidates → top {initial_top_k}")
-            except Exception as e:
-                logger.warning(f"Reranker failed ({e}), falling back to bi-encoder search")
-                results = db.search(
-                    query_vector=query_vec.tolist(),
-                    limit=initial_top_k,
-                    filter_dict=filter_dict if filter_dict else None,
-                )
-        else:
-            results = db.search(
-                query_vector=query_vec.tolist(),
-                limit=initial_top_k,
-                filter_dict=filter_dict if filter_dict else None,
-            )
-        
-        # Check what variables we got in initial search
-        vars_in_initial = set()
-        for hit in results:
-            if hasattr(hit, 'payload'):
-                meta = hit.payload
-            else:
-                meta = hit.get('payload', {})
-            var = meta.get('variable', '')
-            if var:
-                vars_in_initial.add(var)
-        
-        logger.info(f"Initial search found variables: {vars_in_initial}")
-        
-        # DYNAMIC: Analyze question to identify relevant variable types, then do parallel searches
-        if all_variables and len(all_variables) > 1:
-            try:
-                # Get sample metadata to extract variable meanings
-                sample_meta = []
-                for hit in results[:5]:
-                    if hasattr(hit, 'payload'):
-                        sample_meta.append(hit.payload)
-                    else:
-                        sample_meta.append(hit.get('payload', {}))
-                
-                # Extract variable meanings from sample
-                var_meanings = {}
-                for meta in sample_meta:
-                    var = meta.get('variable', '')
-                    if var:
-                        long_name = meta.get('long_name') or meta.get('standard_name')
-                        if long_name:
-                            var_meanings[var] = long_name
-                
-                # Use first prompt to select variables
-                from web_api.prompt_builder import build_data_selection_prompt
-                
-                available_locations = sample_meta
-                available_time_periods = []
-                for meta in sample_meta:
-                    time_start = meta.get('time_start')
-                    time_end = meta.get('time_end')
-                    if time_start:
-                        available_time_periods.append(str(time_start)[:10])
-                    if time_end:
-                        available_time_periods.append(str(time_end)[:10])
-                available_time_periods = sorted(set(available_time_periods))
-                
-                # First prompt: Select what data to retrieve
-                data_selection_prompt = build_data_selection_prompt(
-                    question=question_text,
-                    all_variables=all_variables,
-                    var_meanings=var_meanings,
-                    available_locations=available_locations,
-                    available_time_periods=available_time_periods
-                )
-                
-                # Get data selection from LLM
-                data_selection_response = await asyncio.wait_for(
-                    asyncio.to_thread(
-                        lambda: llm_client.generate(
-                            prompt=data_selection_prompt,
-                            temperature=0.1,
-                            max_tokens=100,
-                            timeout_s=10,
-                        )
-                    ),
-                    timeout=10
-                )
-                
-                # Parse data selection - DYNAMIC: Everything from LLM, no hardcoded logic
-                selected_vars = []
-                selected_locations = []
-                selected_time_periods = []
-                
-                for line in data_selection_response.strip().split('\n'):
-                    line = line.strip()
-                    if line.startswith('VARIABLES:'):
-                        vars_text = line.replace('VARIABLES:', '').strip()
-                        if vars_text.upper() != 'NONE':
-                            selected_vars = [v.strip() for v in vars_text.split(',') if v.strip() in all_variables]
-                    elif line.startswith('LOCATIONS:'):
-                        locs_text = line.replace('LOCATIONS:', '').strip()
-                        if locs_text.upper() != 'NONE':
-                            selected_locations = [l.strip() for l in locs_text.split(',')]
-                    elif line.startswith('TIME_PERIODS:'):
-                        time_text = line.replace('TIME_PERIODS:', '').strip()
-                        if time_text.upper() != 'NONE':
-                            selected_time_periods = [t.strip() for t in time_text.split(',')]
-                
-                logger.info(f"Data selection: vars={selected_vars}, locations={selected_locations}, time_periods={selected_time_periods}")
-                
-                # Get existing variables from first search
-                existing_vars = vars_in_initial.copy()  # Use the set we already built
-                existing_ids = set()
-                for hit in results:
-                    hit_id = getattr(hit, 'id', None) if hasattr(hit, 'id') else (hit.get('id') if isinstance(hit, dict) else None)
-                    if hit_id:
-                        existing_ids.add(hit_id)
-                
-                # DYNAMIC: Build filters from selected data and perform targeted searches
-                # Search for selected variables with optional location/time filters
-                for var in selected_vars:
-                    try:
-                        # Build filter dynamically based on selected data
-                        var_filter = {"variable": var}
-                        
-                        # DYNAMIC: Parse location filters (city, country, coordinates, station)
-                        location_filters = []
-                        if selected_locations:
-                            for loc_str in selected_locations:
-                                loc_str = loc_str.strip()
-                                # Try to parse as coordinates (e.g., "48.15, 17.11")
-                                if ',' in loc_str:
-                                    try:
-                                        parts = [p.strip() for p in loc_str.split(',')]
-                                        if len(parts) == 2:
-                                            lat = float(parts[0])
-                                            lon = float(parts[1])
-                                            location_filters.append({"type": "coords", "lat": lat, "lon": lon})
-                                            logger.info(f"Parsed location as coordinates: {lat}, {lon}")
-                                            continue
-                                    except ValueError:
-                                        pass
-                                # Otherwise treat as name (city, country, station)
-                                location_filters.append({"type": "name", "value": loc_str})
-                                logger.info(f"Parsed location as name: {loc_str}")
-                        
-                        # DYNAMIC: Parse time period filters
-                        time_filters = []
-                        if selected_time_periods:
-                            for time_str in selected_time_periods:
-                                time_str = time_str.strip()
-                                # Try to parse date ranges (e.g., "2023-06-01 to 2023-08-31")
-                                if ' to ' in time_str or ' - ' in time_str:
-                                    sep = ' to ' if ' to ' in time_str else ' - '
-                                    parts = [p.strip() for p in time_str.split(sep)]
-                                    if len(parts) == 2:
-                                        time_filters.append({"start": parts[0], "end": parts[1]})
-                                        logger.info(f"Parsed time period as range: {parts[0]} to {parts[1]}")
-                                else:
-                                    # Single date or period name
-                                    time_filters.append({"value": time_str})
-                                    logger.info(f"Parsed time period as: {time_str}")
-                        
-                        logger.info(f"Performing targeted search for variable: {var} with filter: {var_filter}")
-                        var_results = db.search(
-                            query_vector=query_vec.tolist(),
-                            limit=30,  # Get more results, we'll filter by location/time after
-                            filter_dict=var_filter
-                        )
-                        
-                        # DYNAMIC: Post-filter by location and time if specified
-                        if location_filters or time_filters:
-                            filtered_results = []
-                            for hit in var_results:
-                                if hasattr(hit, 'payload'):
-                                    meta = hit.payload
-                                else:
-                                    meta = hit.get('payload', {})
-                                
-                                # Apply location filters
-                                location_match = True
-                                if location_filters:
-                                    location_match = False
-                                    hit_lat = meta.get('latitude_min') or meta.get('lat_min')
-                                    hit_lon = meta.get('longitude_min') or meta.get('lon_min')
-                                    hit_station = meta.get('station_name') or meta.get('station_id')
-                                    
-                                    for loc_filter in location_filters:
-                                        if loc_filter["type"] == "coords":
-                                            # Check if coordinates are within range (±2 degrees ≈ 200km)
-                                            if hit_lat is not None and hit_lon is not None:
-                                                lat_diff = abs(float(hit_lat) - loc_filter["lat"])
-                                                lon_diff = abs(float(hit_lon) - loc_filter["lon"])
-                                                if lat_diff <= 2.0 and lon_diff <= 2.0:
-                                                    location_match = True
-                                                    break
-                                        elif loc_filter["type"] == "name":
-                                            # Check station name or metadata contains location name
-                                            loc_name_lower = loc_filter["value"].lower()
-                                            if hit_station and loc_name_lower in str(hit_station).lower():
-                                                location_match = True
-                                                break
-                                            # Check metadata fields
-                                            for key, value in meta.items():
-                                                if loc_name_lower in str(value).lower():
-                                                    location_match = True
-                                                    break
-                                            if location_match:
-                                                break
-                                
-                                # Apply time filters
-                                time_match = True
-                                if time_filters:
-                                    time_match = False
-                                    hit_time_start = meta.get('time_start')
-                                    hit_time_end = meta.get('time_end')
-                                    
-                                    for time_filter in time_filters:
-                                        if "start" in time_filter and "end" in time_filter:
-                                            # Range filter: check overlap
-                                            try:
-                                                req_start = time_filter["start"][:10]  # YYYY-MM-DD
-                                                req_end = time_filter["end"][:10]
-                                                hit_start_str = str(hit_time_start)[:10] if hit_time_start else ""
-                                                hit_end_str = str(hit_time_end)[:10] if hit_time_end else ""
-                                                
-                                                # Overlap: hit_start <= req_end AND hit_end >= req_start
-                                                if hit_start_str and hit_end_str:
-                                                    if hit_start_str <= req_end and hit_end_str >= req_start:
-                                                        time_match = True
-                                                        break
-                                            except Exception as e:
-                                                logger.warning(f"Time range parsing failed: {e}")
-                                        elif "value" in time_filter:
-                                            # Single date or period name
-                                            time_value = time_filter["value"].lower()
-                                            hit_time_str = str(hit_time_start).lower() if hit_time_start else ""
-                                            if time_value in hit_time_str or hit_time_str.startswith(time_value[:7]):
-                                                time_match = True
-                                                break
-                                
-                                if location_match and time_match:
-                                    filtered_results.append(hit)
-                            
-                            var_results = filtered_results
-                            logger.info(f"Applied location/time filters: {len(var_results)} results after filtering")
-                        
-                        # Add filtered results to main results (avoid duplicates by ID)
-                        added_count = 0
-                        for hit in var_results:
-                            hit_id = getattr(hit, 'id', None) if hasattr(hit, 'id') else (hit.get('id') if isinstance(hit, dict) else None)
-                            if hit_id and hit_id not in existing_ids:
-                                results.append(hit)
-                                existing_ids.add(hit_id)
-                                added_count += 1
-                            elif not hit_id:  # If no ID, check by content
-                                # Compare payload to avoid exact duplicates
-                                if hasattr(hit, 'payload'):
-                                    hit_meta = hit.payload
-                                else:
-                                    hit_meta = hit.get('payload', {})
-                                hit_var = hit_meta.get('variable', '')
-                                hit_time = hit_meta.get('time_start', '')
-                                # Check if we already have this variable+time combination
-                                is_duplicate = False
-                                for existing_hit in results:
-                                    if hasattr(existing_hit, 'payload'):
-                                        existing_meta = existing_hit.payload
-                                    else:
-                                        existing_meta = existing_hit.get('payload', {})
-                                    if existing_meta.get('variable') == hit_var and existing_meta.get('time_start') == hit_time:
-                                        is_duplicate = True
-                                        break
-                                if not is_duplicate:
-                                    results.append(hit)
-                                    added_count += 1
-                        
-                        if added_count > 0:
-                            logger.info(f"✓ Added {added_count} results for variable {var} to context")
-                        else:
-                            logger.warning(f"✗ No new results found for variable {var} (may already be in context)")
-                    except Exception as e:
-                        logger.warning(f"Targeted search for {var} failed: {e}")
-                
-            except Exception as e:
-                logger.warning(f"Data selection prompt failed: {e}, continuing with initial search results")
-        
-        # Metadata keyword boosting — nudge results where metadata matches query terms
-        _boost_metadata_scores(results, question_text)
-
-        # Always search metadata-only points for catalog-level context
-        try:
-            from qdrant_client.models import Filter, FieldCondition, MatchValue
-            metadata_filter = Filter(must=[
-                FieldCondition(key="is_metadata_only", match=MatchValue(value=True))
-            ])
-            metadata_results = db.search(
-                query_vector=query_vec.tolist(),
-                limit=20,
-                query_filter=metadata_filter,
-            )
-            existing_ids = set()
-            for r in results:
-                rid = getattr(r, 'id', None) if hasattr(r, 'id') else (r.get('id') if isinstance(r, dict) else None)
-                if rid:
-                    existing_ids.add(rid)
-            meta_added = 0
-            for mr in metadata_results:
-                mid = getattr(mr, 'id', None) if hasattr(mr, 'id') else (mr.get('id') if isinstance(mr, dict) else None)
-                if mid and mid not in existing_ids:
-                    results.append(mr)
-                    existing_ids.add(mid)
-                    meta_added += 1
-            if meta_added > 0:
-                logger.info(f"Metadata search added {meta_added} catalog entries to results")
-        except Exception as e:
-            logger.warning(f"Metadata search failed: {e}")
-
-        # Query decomposition: for multi-topic queries, search each topic separately
-        _query_decomposition_search(question_text, query_vec, db, results, embedder, llm_client=llm_client)
-
-        # Diversity enforcement: limit results per source to avoid single-source dominance
-        results = _enforce_diversity(results, max_per_source=4)
-
-        # Re-sort results by score and limit
-        results = sorted(results, key=lambda x: getattr(x, 'score', 0.0) if hasattr(x, 'score') else (x.get('score', 0.0) if isinstance(x, dict) else 0.0), reverse=True)[:effective_top_k * 3]
-        
-        search_time = (time.time() - search_start) * 1000  # Convert to ms
-        logger.info(f"Total search (embed+qdrant+targeted) took {search_time:.0f}ms, found {len(results)} results")
-        
-        # 2. FORMAT CONTEXT
-        chunks = []
-        references = set()
-        # Keep LLM context compact; UI can still show full chunk text.
-        llm_context_lines: List[str] = []
-        
-        for i, hit in enumerate(results, 1):
-            # Extract payload
-            if hasattr(hit, 'payload'):
-                meta = hit.payload
-                score = hit.score
-            else:
-                meta = hit.get('payload', {})
-                score = hit.get('score', 0.0)
-            
-            # Build context entry
-            source_id = meta.get('source_id', 'unknown')
-            variable = meta.get('variable', 'unknown')
-            
-            # Generate human-readable text from metadata
-            from src.climate_embeddings.schema import generate_human_readable_text
-            text = generate_human_readable_text(meta)
-            
-            chunks.append({
-                "rank": i,
-                "score": round(score, 3),
-                "source_id": source_id,
-                "variable": variable,
-                "text": text,
-                "metadata": meta
-            })
-            
-            references.add(f"{source_id}:{variable}")
-            llm_context_lines.append(f"[{i}] {_format_hit_summary(meta, float(score))}")
-
-        # Fast path: variable listing questions - ALWAYS get ALL variables from database
-        if _is_variable_list_question(question_text):
-            # Get ALL variables from database, not just from search results
-            all_variables = _get_variable_list(db, force_refresh=False)
-            if not all_variables:
-                # Fallback: try to get from collection info
-                try:
-                    collection_info = await get_collection_info()
-                    all_variables = collection_info.get("variables", [])
-                except Exception as e:
-                    logger.warning(f"Failed to get collection info: {e}")
-                    # Last resort: use variables from chunks
-                    all_variables = sorted({c.get("variable") for c in chunks if c.get("variable")})
-            
-            # Get sources info (reuse collection_info if we already have it, otherwise fetch)
-            sources_text = ""
-            try:
-                collection_info = await get_collection_info()
-                sources = collection_info.get("sources", [])
-                if sources:
-                    sources_text = f" from {len(sources)} source(s): {', '.join(sources)}"
-            except Exception as e:
-                logger.warning(f"Failed to get sources info: {e}")
-            
-            answer = f"Available climate variables{sources_text}:\n" + ", ".join(all_variables)
-            return RAGResponse(
-                question=question_text,
-                answer=answer,
-                chunks=chunks[:10],  # Include some chunks for context
-                references=sorted(list(references)),
-                llm_used=False,
-                search_time_ms=round(search_time, 2),
-                llm_time_ms=None,
-            )
-
-        context_text = "\n".join(llm_context_lines[:5])
-        if len(context_text) > 4000:
-            context_text = context_text[:4000] + "\n..."
-        
-        # 3. LLM GENERATION (with timeout and conversation history)
-        llm_used = False
-        llm_time = None
-        answer = ""
-        
-        if request.use_llm and chunks:
-            try:
-                llm_start = time.time()
-                
-                # CRITICAL: Always get ALL variables from database for context
-                # This ensures LLM knows about ALL available variables, not just those in search results
-                all_variables = _get_variable_list(db, force_refresh=False)
-                if not all_variables:
-                    try:
-                        collection_info = await get_collection_info()
-                        all_variables = collection_info.get("variables", [])
-                    except:
-                        # Fallback: use variables from chunks
-                        all_variables = sorted({c.get("variable") for c in chunks if c.get("variable")})
-                
-                # Get sources info
-                sources = None
-                try:
-                    collection_info = await get_collection_info()
-                    sources = collection_info.get("sources", [])
-                except:
-                    pass
-                
-                # Use dynamic prompt builder
-                from web_api.prompt_builder import build_rag_prompt, detect_question_type
-                
-                question_type = detect_question_type(question_text)
-                
-                # Format chunks for prompt builder
-                formatted_chunks = []
-                for chunk in chunks:
-                    formatted_chunks.append({
-                        "metadata": chunk.get("metadata", {}),
-                        "score": chunk.get("score", 0.0),
-                        "text": chunk.get("text", "")
-                    })
-                
-                # Extract selected variables from additional searches (already done in search phase)
-                selected_variables = None
-                if all_variables:
-                    # Variables that were added via additional searches are already in chunks
-                    # We can extract them to highlight in prompt
-                    vars_in_chunks = {c.get("metadata", {}).get("variable") for c in formatted_chunks if c.get("metadata", {}).get("variable")}
-                    # If we have variables that match question intent, use them
-                    question_lower = question_text.lower()
-                    if any(word in question_lower for word in ['average', 'mean']):
-                        # Look for average/mean variables
-                        for var in all_variables:
-                            var_lower = var.lower()
-                            if ('average' in var_lower or 'mean' in var_lower) and var in vars_in_chunks:
-                                selected_variables = [var]
-                                break
-                
-                # Build comprehensive prompt with ALL variables and selected variables
-                prompt, max_tokens = build_rag_prompt(
-                    question=question_text,
-                    context_chunks=formatted_chunks,
-                    all_variables=all_variables,  # CRITICAL: Always include ALL variables
-                    sources=sources,
-                    question_type=question_type,
-                    selected_variables=selected_variables  # Pass selected variables to highlight them
-                )
-                
-                # Async timeout wrapper
-                answer = await asyncio.wait_for(
-                    asyncio.to_thread(
-                        lambda: llm_client.generate(
-                            prompt=prompt,
-                            temperature=0.3,  # Lower temp = faster, more focused
-                            max_tokens=max_tokens,
-                            timeout_s=min(request.timeout, 60),
-                        )
-                    ),
-                    timeout=request.timeout
-                )
-                
-                llm_time = (time.time() - llm_start) * 1000
-                llm_used = True
-                
-            except asyncio.TimeoutError:
-                logger.warning(f"LLM timeout after {request.timeout}s")
-                answer = f"⏱️ Found {len(chunks)} relevant results but LLM timed out. Try: 1) Simpler question, 2) Reduce top_k, or 3) Use search-only mode."
-            except Exception as e:
-                logger.error(f"LLM error: {e}")
-                answer = f"⚠️ Found {len(chunks)} relevant results. LLM error: {str(e)[:100]}. Showing search results instead."
-        
-        # Fallback answer if no LLM
-        if not answer:
-            if not chunks:
-                answer = "No relevant climate data found for your query."
-            else:
-                answer = f"Found {len(chunks)} relevant climate data chunks:\n{context_text[:500]}"
-        
-        return RAGResponse(
-            question=request.question,
-            answer=answer,
-            chunks=chunks,
-            references=sorted(list(references)),
-            llm_used=llm_used,
-            reranker_used=reranker_used,
-            search_time_ms=round(search_time, 2),
-            llm_time_ms=round(llm_time, 2) if llm_time else None
+        query_variants = await asyncio.wait_for(
+            asyncio.to_thread(_generate_query_variants, llm_client, question),
+            timeout=12,
         )
-        
+        logger.info(f"Query expansion: {len(query_variants)} variants")
     except Exception as e:
-        logger.error(f"RAG pipeline error: {e}")
-        raise HTTPException(status_code=500, detail=f"RAG error: {str(e)}")
+        logger.warning(f"Query expansion skipped: {e}")
+
+    # Embed all variants
+    variant_vecs = []
+    if query_variants:
+        try:
+            variant_vecs = [
+                v.tolist() for v in embedder.embed_queries(query_variants)
+            ]
+        except Exception as e:
+            logger.warning(f"Variant embedding failed: {e}")
+
+    # ── 3. GROUPED SEARCH + MULTI-QUERY RRF FUSION ────────────────────
+    reranker_used = False
+    all_result_lists: List[List] = []
+
+    # Primary search: grouped by dataset_name for guaranteed diversity
+    grouped_results = db.search_grouped(
+        query_vector=query_vec.tolist(),
+        group_by="dataset_name",
+        group_limit=15,
+        group_size=2,
+        filter_dict=filter_dict or None,
+    )
+    if grouped_results:
+        all_result_lists.append(grouped_results)
+
+    # Also run a standard search (ungrouped) to catch high-relevance hits
+    standard_results = db.search(
+        query_vector=query_vec.tolist(),
+        limit=max(40, effective_top_k * 4),
+        filter_dict=filter_dict or None,
+    )
+    if standard_results:
+        all_result_lists.append(standard_results)
+
+    # Search with each query variant for broader recall (fewer results = less RRF influence)
+    for vvec in variant_vecs:
+        try:
+            variant_hits = db.search(
+                query_vector=vvec,
+                limit=15,
+                filter_dict=filter_dict or None,
+            )
+            if variant_hits:
+                all_result_lists.append(variant_hits)
+        except Exception as e:
+            logger.debug(f"Variant search failed: {e}")
+
+    # RRF fusion across all result lists
+    if len(all_result_lists) > 1:
+        results = _rrf_fuse(all_result_lists)
+    elif all_result_lists:
+        results = all_result_lists[0]
+    else:
+        results = []
+
+    logger.info(f"RRF fused {len(all_result_lists)} lists → {len(results)} results")
+
+    # ── 4. CROSS-ENCODER RERANKING ────────────────────────────────────
+    if request.use_reranker and results:
+        try:
+            reranker = _get_reranker()
+            from src.climate_embeddings.schema import generate_human_readable_text as _gen_text
+
+            # Rerank the top candidates
+            rerank_candidates = results[:min(len(results), 50)]
+            passages = []
+            for hit in rerank_candidates:
+                payload = hit.payload if hasattr(hit, "payload") else (
+                    hit.get("payload", {}) if isinstance(hit, dict) else {}
+                )
+                passages.append(_gen_text(payload))
+
+            ranked = reranker.rerank(question, passages, top_k=len(rerank_candidates))
+
+            reranked = []
+            for entry in ranked:
+                idx = entry["index"]
+                hit = rerank_candidates[idx]
+                if hasattr(hit, "score"):
+                    hit.score = entry["score"]
+                elif isinstance(hit, dict):
+                    hit["score"] = entry["score"]
+                reranked.append(hit)
+
+            # Append any results beyond the rerank window
+            reranked_ids = {_hit_id(h) for h in reranked}
+            for hit in results[len(rerank_candidates):]:
+                if _hit_id(hit) not in reranked_ids:
+                    reranked.append(hit)
+
+            results = reranked
+            reranker_used = True
+        except Exception as e:
+            logger.warning(f"Reranker failed ({e}), using RRF order")
+
+    # ── 5. MMR DIVERSITY ──────────────────────────────────────────────
+    results = _mmr_rerank(results, query_vec, embedder,
+                          lambda_param=0.65, top_k=effective_top_k * 2)
+
+    search_ms = (time.time() - search_start) * 1000
+    logger.info(f"Search total: {search_ms:.0f}ms, {len(results)} results")
+
+    # ── 4. FORMAT CHUNKS ──────────────────────────────────────────────────
+    from src.climate_embeddings.schema import generate_human_readable_text
+
+    chunks = []
+    references: set = set()
+    for i, hit in enumerate(results, 1):
+        meta, score = _extract_payload(hit)
+        source_id = meta.get("source_id", "unknown")
+        variable = meta.get("variable", "unknown")
+        text = generate_human_readable_text(meta)
+
+        chunks.append({
+            "rank": i,
+            "score": round(score, 3),
+            "source_id": source_id,
+            "variable": variable,
+            "text": text,
+            "metadata": meta,
+        })
+        references.add(f"{source_id}:{variable}")
+
+    # ── 5. VARIABLE LIST FAST PATH ────────────────────────────────────────
+    if _is_variable_list_question(question):
+        all_vars = _get_variable_list(db)
+        if all_vars:
+            answer = f"Available climate variables ({len(all_vars)}):\n" + ", ".join(all_vars)
+            return RAGResponse(
+                question=question,
+                answer=answer,
+                chunks=chunks[:10],
+                references=sorted(references),
+                llm_used=False,
+                reranker_used=reranker_used,
+                search_time_ms=round(search_ms, 2),
+            )
+
+    # ── 6. LLM GENERATION (single call) ──────────────────────────────────
+    llm_used = False
+    llm_time_ms = None
+    answer = ""
+
+    if request.use_llm and chunks:
+        try:
+            llm_start = time.time()
+
+            # Get variable list (cached, no extra cost)
+            all_variables = _get_variable_list(db)
+
+            from web_api.prompt_builder import build_rag_prompt, detect_question_type
+            q_type = detect_question_type(question)
+
+            formatted = [
+                {"metadata": c["metadata"], "score": c["score"], "text": c["text"]}
+                for c in chunks
+            ]
+
+            prompt, max_tokens = build_rag_prompt(
+                question=question,
+                context_chunks=formatted,
+                all_variables=all_variables,
+                question_type=q_type,
+            )
+
+            answer = await asyncio.wait_for(
+                asyncio.to_thread(
+                    lambda: llm_client.generate(
+                        prompt=prompt,
+                        temperature=request.temperature,
+                        max_tokens=max_tokens,
+                        timeout_s=min(request.timeout, 45),
+                    )
+                ),
+                timeout=request.timeout,
+            )
+
+            llm_time_ms = (time.time() - llm_start) * 1000
+            llm_used = True
+            logger.info(f"LLM: {llm_time_ms:.0f}ms, {len(answer)} chars")
+
+        except asyncio.TimeoutError:
+            logger.warning(f"LLM timeout after {request.timeout}s")
+            answer = f"Found {len(chunks)} relevant results but LLM timed out. Showing search results."
+        except Exception as e:
+            logger.error(f"LLM error: {e}")
+            answer = f"Found {len(chunks)} relevant results. LLM error: {str(e)[:100]}."
+
+    if not answer:
+        if not chunks:
+            answer = "No relevant climate data found for your query."
+        else:
+            summary = "\n".join(
+                f"- {c['source_id']}: {c['variable']} (score {c['score']})"
+                for c in chunks[:5]
+            )
+            answer = f"Found {len(chunks)} results (no LLM):\n{summary}"
+
+    return RAGResponse(
+        question=question,
+        answer=answer,
+        chunks=chunks,
+        references=sorted(references),
+        llm_used=llm_used,
+        reranker_used=reranker_used,
+        search_time_ms=round(search_ms, 2),
+        llm_time_ms=round(llm_time_ms, 2) if llm_time_ms else None,
+    )
 
 
-# ====================================================================================
-# FAST INFO ENDPOINT (no embedding, no LLM)
-# ====================================================================================
-
-_CACHED_INFO: Optional[Dict[str, Any]] = None
-_CACHED_INFO_TS: float = 0.0
-_INFO_LOCK = threading.Lock()
-
+# ---------------------------------------------------------------------------
+# COLLECTION INFO (cached, no LLM)
+# ---------------------------------------------------------------------------
 
 async def get_collection_info() -> Dict[str, Any]:
-    """
-    Return cached collection info: variables, sources, count.
-    No embeddings, no LLM - instant response.
-    """
+    """Return cached collection info: variables, sources, count."""
     global _CACHED_INFO, _CACHED_INFO_TS
     now = time.time()
-    
-    # Return cache if fresh (5 min)
     if _CACHED_INFO and (now - _CACHED_INFO_TS) < 300:
         return _CACHED_INFO
-    
+
     with _INFO_LOCK:
         if _CACHED_INFO and (time.time() - _CACHED_INFO_TS) < 300:
             return _CACHED_INFO
-        
-        # Only need config + DB for info — no LLM or embedder required
+
         from src.utils.config_loader import ConfigLoader
         from src.embeddings.database import VectorDatabase
 
-        config_loader = ConfigLoader("config/pipeline_config.yaml")
-        config = config_loader.load()
+        config = ConfigLoader("config/pipeline_config.yaml").load()
         db = VectorDatabase(config=config)
 
-        variables = set()
-        sources = set()
+        variables: set = set()
+        sources: set = set()
         count = 0
 
         client = getattr(db, "client", None)
         collection = getattr(db, "collection_name", None)
-        
+
         if client and collection:
             try:
-                # Get count
                 info = client.get_collection(collection)
                 count = info.points_count
-                
-                # Scroll to get unique variables/sources
+
                 offset = None
-                rounds = 0
-                while rounds < 20 and len(variables) < 200:
+                for _ in range(20):
                     points, offset = client.scroll(
                         collection_name=collection,
                         limit=500,
@@ -1033,19 +633,18 @@ async def get_collection_info() -> Dict[str, Any]:
                         with_vectors=False,
                         with_payload={"include": ["variable", "source_id", "dataset_name"]},
                     )
-                    rounds += 1
                     for p in points:
-                        payload = getattr(p, "payload", None) or {}
-                        if payload.get("variable"):
-                            variables.add(payload["variable"])
-                        src = payload.get("source_id") or payload.get("dataset_name")
+                        pl = getattr(p, "payload", None) or {}
+                        if pl.get("variable"):
+                            variables.add(pl["variable"])
+                        src = pl.get("source_id") or pl.get("dataset_name")
                         if src:
                             sources.add(src)
                     if offset is None:
                         break
             except Exception as e:
                 logger.error(f"get_collection_info error: {e}")
-        
+
         _CACHED_INFO = {
             "total_embeddings": count,
             "variables": sorted(variables),
@@ -1056,51 +655,31 @@ async def get_collection_info() -> Dict[str, Any]:
         return _CACHED_INFO
 
 
-# ====================================================================================
-# SIMPLE SEARCH (no LLM)
-# ====================================================================================
+# ---------------------------------------------------------------------------
+# SIMPLE SEARCH (no LLM, for debugging)
+# ---------------------------------------------------------------------------
 
 async def simple_search(query: str, top_k: int = 5, filters: Optional[Dict] = None) -> List[Dict]:
-    """
-    Fast vector search without LLM - for debugging and quick queries.
-    """
-    from src.climate_embeddings.embeddings.text_models import TextEmbedder
-    from src.embeddings.database import VectorDatabase
-    from src.utils.config_loader import ConfigLoader
-    
+    """Fast vector search without LLM."""
     try:
-        config_loader = ConfigLoader("config/pipeline_config.yaml")
-        config = config_loader.load()
-        
-        db = VectorDatabase(config=config)
-        embedder = TextEmbedder()
-        
-        # Search
+        config, db, embedder, _ = _get_components()
         query_vec = embedder.embed_queries([query])[0]
         results = db.search(
             query_vector=query_vec.tolist(),
             limit=top_k,
-            filter_dict=filters
+            filter_dict=filters,
         )
-        
-        # Format
+
         chunks = []
         for hit in results:
-            if hasattr(hit, 'payload'):
-                meta = hit.payload
-                score = hit.score
-            else:
-                meta = hit.get('payload', {})
-                score = hit.get('score', 0.0)
-            
+            meta, score = _extract_payload(hit)
             chunks.append({
                 "score": round(score, 3),
-                "source_id": meta.get('source_id'),
-                "variable": meta.get('variable'),
-                "metadata": meta
+                "source_id": meta.get("source_id"),
+                "variable": meta.get("variable"),
+                "metadata": meta,
             })
-        
         return chunks
-        
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Search error: {str(e)}")

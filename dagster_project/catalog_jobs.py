@@ -12,6 +12,7 @@ from pathlib import Path
 from dagster import (
     job, op, In, Out, Nothing, OpExecutionContext,
     AssetMaterialization, MetadataValue,
+    in_process_executor,
 )
 
 
@@ -168,7 +169,10 @@ def catalog_phase3_op(context: OpExecutionContext, prev_result: dict):
 # Jobs
 # ────────────────────────────────────────────────────────────────────
 
-@job(description="Full catalog ETL: classify → phase0 → phase1 → phase2 → phase3")
+@job(
+    description="Full catalog ETL: classify → phase0 → phase1 → phase2 → phase3",
+    executor_def=in_process_executor,
+)
 def catalog_full_etl_job():
     summary = read_and_classify_catalog()
     p0 = catalog_phase0_op(summary)
@@ -177,14 +181,20 @@ def catalog_full_etl_job():
     catalog_phase3_op(p2)
 
 
-@job(description="Batch process D1.1.xlsx: classify → phase0 (metadata) → phase1 (downloads)")
+@job(
+    description="Batch process D1.1.xlsx: classify → phase0 (metadata) → phase1 (downloads)",
+    executor_def=in_process_executor,
+)
 def batch_catalog_etl_job():
     summary = read_and_classify_catalog()
     p0 = catalog_phase0_op(summary)
     catalog_phase1_op(p0)
 
 
-@job(description="Quick metadata-only processing of the Excel catalog (Phase 0)")
+@job(
+    description="Quick metadata-only processing of the Excel catalog (Phase 0)",
+    executor_def=in_process_executor,
+)
 def catalog_metadata_only_job():
     summary = read_and_classify_catalog()
     catalog_phase0_op(summary)

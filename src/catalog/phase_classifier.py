@@ -20,8 +20,12 @@ logger = logging.getLogger(__name__)
 # Override classification for specific datasets by name.
 # Used when the Excel URL doesn't match the actual download method.
 _FORCE_PHASE: Dict[str, int] = {
-    # CDS datasets with DOI or dead ADS URLs — CDS adapter handles them
+    # CDS datasets — many ERA5 rows have DOI/ECMWF links that don't match
+    # portal domains, so they fall through to Phase 4. Force Phase 3 for CDS adapter.
+    "ERA5": 3,
+    "ERA5 Land": 3,
     "ERA5-HEAT": 3,
+    "CERRA": 3,
     "CAMS": 3,
     # Figshare: AWS WAF blocks automated downloads
     "Aridity Index and Potential Evapotranspiration": 4,
@@ -36,9 +40,9 @@ _FORCE_PHASE: Dict[str, int] = {
     # Requires Mistral portal registration + custom API
     "Mistral": 4,
     "Mistral (CINECA)": 4,
-    # Japanese Meteorological Agency — no public API
-    "JRA55": 4,
-    "JRA-55": 4,
+    # JRA-55 available via NCAR RDA with API token
+    "JRA55": 3,
+    "JRA-55": 3,
     # Greek portals — registration closed / portal only
     "NOA-GR": 4,
     "HWE-DB": 4,
@@ -52,8 +56,7 @@ _FORCE_PHASE: Dict[str, int] = {
     # Specialized portals without download API
     "COST-g": 4,
     "G3P": 4,
-    # CEDA auth required, no adapter
-    "CMIP6-BCCAQ": 4,
+    # CMIP6-BCCAQ now handled by EIDC adapter with CEDA token + OpenDAP subsetting
 }
 
 # File extensions we can download and process directly
@@ -141,6 +144,17 @@ def _get_portal(url: str) -> str | None:
     return None
 
 
+# Datasets that have working Phase 3 adapters by name alone (no URL required).
+# These are resolved by the adapter registry using dataset_name, not the link field.
+_HAS_ADAPTER: set = {
+    "ERA5", "ERA5 Land", "ERA5-HEAT", "CERRA", "CAMS",
+    "JRA55", "JRA-55", "Hydro-JULES",
+    "EURO-CORDEX", "MED-CORDEX", "CMIP6", "CMIP6-BCCAQ",
+    "MERRA-2", "MERRA2", "IMERG",
+    "CERES-EBAF", "JPL GRACE",
+}
+
+
 def classify_source(entry: CatalogEntry) -> int:
     """
     Classify a catalog entry into a processing phase.
@@ -160,6 +174,10 @@ def classify_source(entry: CatalogEntry) -> int:
     from src.catalog.batch_orchestrator import DIRECT_DOWNLOAD_URLS
     if entry.dataset_name and entry.dataset_name in DIRECT_DOWNLOAD_URLS:
         return 1
+
+    # Datasets with working adapters get Phase 3 even without a URL
+    if entry.dataset_name and entry.dataset_name in _HAS_ADAPTER:
+        return 3
 
     access = (entry.access or "").lower().strip()
     link = (entry.link or "").strip()

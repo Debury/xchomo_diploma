@@ -307,6 +307,8 @@ def _to_dto(row: Source) -> ClimateDataSource:
         chunk_size=row.chunk_size,
         description=row.description,
         tags=row.tags,
+        keywords=row.keywords,
+        custom_metadata=row.custom_metadata,
         created_at=row.created_at.isoformat() if row.created_at else None,
         updated_at=row.updated_at.isoformat() if row.updated_at else None,
         processing_status=row.processing_status or "pending",

@@ -2,7 +2,7 @@ services:
   # ====================================================================================
   # PHASE 4: DAGSTER + WEB API SERVICES
   # ====================================================================================
-  
+
   # Dagster PostgreSQL database
   dagster-postgres:
     image: postgres:15
@@ -35,6 +35,8 @@ services:
       - ./logs:/app/logs
       - ./.env:/app/.env:ro
       - dagster-home:/opt/dagster/dagster_home
+    env_file:
+      - .env
     environment:
       - DAGSTER_HOME=/opt/dagster/dagster_home
       - DAGSTER_POSTGRES_USER=dagster
@@ -44,6 +46,7 @@ services:
       - DAGSTER_POSTGRES_PORT=5432
       - PYTHONPATH=/app
       - PYTHONUNBUFFERED=1
+      - PYTHONDONTWRITEBYTECODE=1
       - QDRANT_HOST=qdrant
       - QDRANT_REST_PORT=6333
       - QDRANT_GRPC_PORT=6334
@@ -66,18 +69,9 @@ services:
       - "6334:6334"
     volumes:
       - qdrant-data:/qdrant/storage
-    environment:
-      - QDRANT__GPU__INDEXING=true
     networks:
       - climate-net
     restart: unless-stopped
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
 
   # Dagit Web UI
   dagit:
@@ -103,6 +97,7 @@ services:
       - DAGSTER_POSTGRES_PORT=5432
       - PYTHONPATH=/app
       - PYTHONUNBUFFERED=1
+      - PYTHONDONTWRITEBYTECODE=1
       - QDRANT_HOST=qdrant
       - QDRANT_REST_PORT=6333
       - QDRANT_GRPC_PORT=6334
@@ -138,6 +133,7 @@ services:
       - DAGSTER_HOST=dagit
       - DAGSTER_PORT=3000
       - PYTHONUNBUFFERED=1
+      - PYTHONDONTWRITEBYTECODE=1
       - QDRANT_HOST=qdrant
       - QDRANT_REST_PORT=6333
       - QDRANT_GRPC_PORT=6334
@@ -146,10 +142,14 @@ services:
       - CDS_API_URL=${CDS_API_URL:-https://cds.climate.copernicus.eu/api}
       - CDS_API_KEY=${CDS_API_KEY:-}
       - NASA_EARTHDATA_TOKEN=${NASA_EARTHDATA_TOKEN:-}
+      - NASA_EARTHDATA_USER=${NASA_EARTHDATA_USER:-}
+      - NASA_EARTHDATA_PASSWORD=${NASA_EARTHDATA_PASSWORD:-}
       - CMEMS_USERNAME=${CMEMS_USERNAME:-}
       - CMEMS_PASSWORD=${CMEMS_PASSWORD:-}
       - EIDC_USERNAME=${EIDC_USERNAME:-}
       - EIDC_PASSWORD=${EIDC_PASSWORD:-}
+      - NCAR_RDA_TOKEN=${NCAR_RDA_TOKEN:-}
+      - CEDA_TOKEN=${CEDA_TOKEN:-}
     depends_on:
       dagit:
         condition: service_started
@@ -158,13 +158,6 @@ services:
     networks:
       - climate-net
     restart: unless-stopped
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
 
   # Caddy reverse proxy with automatic HTTPS
   caddy:
@@ -184,35 +177,8 @@ services:
       - web-api
     restart: unless-stopped
 
-  # ====================================================================================
-  # ORIGINAL SERVICES
-  # ====================================================================================
-
-  # Legacy standalone ETL container - DISABLED (ETL runs via Dagster now)
-  # climate-etl:
-  #   build: .
-  #   container_name: climate-etl-pipeline
-  #   volumes:
-  #     - ./data:/app/data
-  #     - ./logs:/app/logs
-  #     - ./.env:/app/.env:ro
-  #     - ./config:/app/config:ro
-  #   environment:
-  #     - PYTHONUNBUFFERED=1
-  #     - LOG_LEVEL=INFO
-  #     - QDRANT_HOST=qdrant
-  #     - QDRANT_REST_PORT=6333
-  #     - QDRANT_GRPC_PORT=6334
-  #     - VECTOR_DB_MEMORY_ONLY=false
-  #   command: python -m src.data_transformation.pipeline data/raw/test_era5_data.nc
-  #   restart: unless-stopped
-  #   depends_on:
-  #     qdrant:
-  #       condition: service_started
-  #   networks:
-  #     - climate-net
-
   # Optional: Jupyter notebook for interactive analysis
+  # Start manually with: docker compose --profile jupyter up jupyter
   jupyter:
     image: jupyter/scipy-notebook:latest
     container_name: climate-jupyter
@@ -226,6 +192,8 @@ services:
       - JUPYTER_ENABLE_LAB=yes
     networks:
       - climate-net
+    profiles:
+      - jupyter
 
 volumes:
   dagster-postgres-data:
@@ -242,4 +210,3 @@ volumes:
 networks:
   climate-net:
     driver: bridge
-

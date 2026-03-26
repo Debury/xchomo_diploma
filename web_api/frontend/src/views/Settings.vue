@@ -204,13 +204,15 @@ const hasChanges = computed(() => {
 const credentials = ref({})
 const credentialEdits = reactive({
   openrouter_api_key: '', groq_api_key: '', cds_api_key: '',
-  nasa_earthdata_token: '', cmems_username: '', cmems_password: ''
+  nasa_earthdata_user: '', nasa_earthdata_password: '',
+  cmems_username: '', cmems_password: ''
 })
 const credentialFields = reactive([
   { key: 'openrouter_api_key', label: 'OpenRouter API Key', visible: false },
   { key: 'groq_api_key', label: 'Groq API Key', visible: false },
   { key: 'cds_api_key', label: 'CDS API Key (Copernicus)', visible: false },
-  { key: 'nasa_earthdata_token', label: 'NASA Earthdata Token', visible: false },
+  { key: 'nasa_earthdata_user', label: 'NASA Earthdata Username', visible: true },
+  { key: 'nasa_earthdata_password', label: 'NASA Earthdata Password', visible: false },
   { key: 'cmems_username', label: 'CMEMS Username', visible: true },
   { key: 'cmems_password', label: 'CMEMS Password', visible: false }
 ])

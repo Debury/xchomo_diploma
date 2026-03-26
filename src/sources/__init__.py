@@ -34,6 +34,8 @@ class ClimateDataSource:
     chunk_size: Optional[int] = 512
     description: Optional[str] = None
     tags: Optional[List[str]] = None
+    keywords: Optional[List[str]] = None
+    custom_metadata: Optional[Dict[str, str]] = None
 
     # Tracking fields
     created_at: Optional[str] = None
