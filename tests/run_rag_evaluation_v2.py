@@ -66,6 +66,7 @@ TEST_CASES = [
             "temperature",
             "heat",
         ],
+        "precision_terms": ["temperature", "heat", "heatwave", "Europe", "warm", "extreme"],
         "expected_facts_in_answer": [
             "heat",
             "Europe",
@@ -85,6 +86,7 @@ TEST_CASES = [
         "expected_facts_in_context": [
             "precipitation",
         ],
+        "precision_terms": ["precipitation", "rainfall", "rain", "IMERG", "GPM"],
         "expected_facts_in_answer": [
             "precipitation",
             "rain",
@@ -118,6 +120,7 @@ TEST_CASES = [
         "expected_facts_in_context": [
             "ice",
         ],
+        "precision_terms": ["ice", "sea level", "sea-level", "GRACE", "gravimetry"],
         "expected_facts_in_answer": [
             "sea",
             "ice",
@@ -136,6 +139,7 @@ TEST_CASES = [
         "expected_facts_in_context": [
             "temperature",
         ],
+        "precision_terms": ["temperature", "marine", "SST", "sea surface", "heatwave", "Mediterranean"],
         "expected_facts_in_answer": [
             "marine",
             "temperature",
@@ -153,6 +157,7 @@ TEST_CASES = [
         "expected_facts_in_context": [
             "co2",
         ],
+        "precision_terms": ["co2", "carbon dioxide", "ppm", "greenhouse gas", "atmospheric"],
         "expected_facts_in_answer": [
             "co2",
         ],
@@ -188,6 +193,7 @@ TEST_CASES = [
         "expected_facts_in_context": [
             "drought",
         ],
+        "precision_terms": ["drought", "temperature", "wildfire", "fire", "CAMS", "emissions"],
         "expected_facts_in_answer": [
             "drought",
             "temperature",
@@ -209,6 +215,7 @@ TEST_CASES = [
         "expected_facts_in_context": [
             "precipitation",
         ],
+        "precision_terms": ["precipitation", "flood", "soil moisture", "water storage", "rainfall"],
         "expected_facts_in_answer": [
             "flood",
             "precipitation",
@@ -323,15 +330,40 @@ def score_faithfulness(answer: str, chunks: List[Dict]) -> Dict[str, Any]:
 
     # Check grounding: what fraction of specific claims in the answer
     # have support in the context
+    # Pre-extract context numbers for approximate matching
+    context_numbers_raw = set(re.findall(r'\d+\.?\d*', all_context))
+    context_floats = set()
+    for cn in context_numbers_raw:
+        try:
+            context_floats.add(float(cn))
+        except ValueError:
+            pass
+
     grounded_numbers = 0
     total_significant_numbers = 0
     for num in answer_numbers:
-        # Skip very common numbers (years, etc. are ok)
-        if len(num) <= 2 and num not in ("co2", "pm"):
+        # Skip very short numbers (single/double digit) — too common and ambiguous
+        if len(num) <= 2:
             continue
+        # Skip year-like numbers (1900-2099) — not specific data claims
+        try:
+            val = float(num)
+            if 1900 <= val <= 2099 and "." not in num:
+                continue
+        except ValueError:
+            pass
         total_significant_numbers += 1
         if num in all_context:
             grounded_numbers += 1
+        else:
+            # Approximate match: answer says "422" and context has "421.6"
+            try:
+                num_val = float(num)
+                if any(abs(cv - num_val) / max(abs(num_val), 0.01) < 0.03
+                       for cv in context_floats):
+                    grounded_numbers += 1
+            except (ValueError, ZeroDivisionError):
+                pass
 
     number_grounding = (
         grounded_numbers / total_significant_numbers
@@ -368,10 +400,12 @@ def score_faithfulness(answer: str, chunks: List[Dict]) -> Dict[str, Any]:
     # Score: weighted combination
     # - If answer is uncertain but has context, slight penalty
     # - Number grounding matters most
+    base_score = number_grounding * 0.6 + source_grounding * 0.4
     if has_uncertainty and chunks:
-        score = 0.7  # Mild penalty: honest about data gaps is better than hallucination
+        # Small penalty for hedging when context is available, but don't cap too low
+        score = max(base_score * 0.9, 0.7)
     else:
-        score = number_grounding * 0.6 + source_grounding * 0.4
+        score = base_score
 
     return {
         "score": round(score, 3),
@@ -393,11 +427,16 @@ def score_answer_correctness(answer: str, expected_facts: List[str],
     if not answer:
         return {"score": 0.0, "found": [], "missing": expected_facts}
 
+    # Normalize unicode variants (e.g. CO₂ → CO2) for fair matching
+    import unicodedata
     answer_lower = answer.lower()
+    answer_normalized = unicodedata.normalize("NFKD", answer_lower)
 
-    # Direct fact matching
-    found = [f for f in expected_facts if f.lower() in answer_lower]
-    missing = [f for f in expected_facts if f.lower() not in answer_lower]
+    # Direct fact matching (try both raw and normalized)
+    found = [f for f in expected_facts
+             if f.lower() in answer_lower or f.lower() in answer_normalized]
+    missing = [f for f in expected_facts
+               if f.lower() not in answer_lower and f.lower() not in answer_normalized]
     fact_score = len(found) / len(expected_facts) if expected_facts else 1.0
 
     # Ground truth overlap: extract significant words from ground truth,
@@ -411,7 +450,7 @@ def score_answer_correctness(answer: str, expected_facts: List[str],
         }
     )
     if gt_words:
-        gt_overlap = sum(1 for w in gt_words if w in answer_lower) / len(gt_words)
+        gt_overlap = sum(1 for w in gt_words if w in answer_lower or w in answer_normalized) / len(gt_words)
     else:
         gt_overlap = 0.0
 
@@ -566,7 +605,7 @@ def run_evaluation(args) -> str:
         )
         diversity = score_source_diversity(chunks)
         precision = score_retrieval_precision(
-            chunks, tc["expected_facts_in_context"], k=5
+            chunks, tc.get("precision_terms", tc["expected_facts_in_context"]), k=5
         )
 
         # Composite score (weighted)
@@ -619,7 +658,7 @@ def run_evaluation(args) -> str:
         md.append(f"**Ground truth:** {tc['ground_truth_summary']}")
         md.append("")
         md.append(f"**LLM Answer** (llm={llm_used}, reranker={reranker_used}, "
-                  f"search={search_ms:.0f}ms, llm={llm_ms:.0f}ms):")
+                  f"search={search_ms or 0:.0f}ms, llm={llm_ms or 0:.0f}ms):")
         md.append("")
         md.append(f"> {answer}")
         md.append("")

@@ -288,7 +288,7 @@ def _generate_query_variants(llm_client, question: str) -> List[str]:
     try:
         response = llm_client.generate(
             prompt=prompt,
-            temperature=0.3,
+            temperature=0.1,
             max_tokens=200,
             timeout_s=12,
         )
@@ -315,7 +315,7 @@ class RAGRequest(BaseModel):
     top_k: int = 5
     use_llm: bool = True
     use_reranker: bool = True
-    temperature: float = 0.3
+    temperature: float = 0.1
     source_id: Optional[str] = None
     variable: Optional[str] = None
     timeout: int = 60
@@ -457,6 +457,9 @@ async def rag_query(request: RAGRequest) -> RAGResponse:
 
             reranked = []
             for entry in ranked:
+                # Filter out low-confidence reranker results (noise)
+                if entry["score"] < 0.05:
+                    continue
                 idx = entry["index"]
                 hit = rerank_candidates[idx]
                 if hasattr(hit, "score"):

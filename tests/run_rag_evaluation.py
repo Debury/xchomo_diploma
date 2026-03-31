@@ -198,9 +198,11 @@ def query_rag(base_url: str, question: str, top_k: int = 10,
 
 def score_keywords(text: str, keywords: List[str]) -> Dict[str, Any]:
     """Check keyword presence in text."""
+    import unicodedata
     text_lower = text.lower()
-    found = [kw for kw in keywords if kw.lower() in text_lower]
-    missing = [kw for kw in keywords if kw.lower() not in text_lower]
+    text_normalized = unicodedata.normalize("NFKD", text_lower)
+    found = [kw for kw in keywords if kw.lower() in text_lower or kw.lower() in text_normalized]
+    missing = [kw for kw in keywords if kw.lower() not in text_lower and kw.lower() not in text_normalized]
     return {
         "found": found,
         "missing": missing,

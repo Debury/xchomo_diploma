@@ -346,6 +346,27 @@ def generate_human_readable_text(metadata: Dict[str, Any], verbosity: str = "med
     if ds_desc_parts:
         parts.append("File metadata: " + "; ".join(ds_desc_parts[:5]))
 
+    # Enriched context for dataset summary chunks
+    if metadata.get("is_dataset_summary"):
+        summary_parts = []
+        summary_parts.append(f"This is an overview of the {dataset} dataset")
+        if hazard:
+            clean_hazard = hazard.replace("catalog_", "").replace("_", " ")
+            summary_parts.append(f"used for monitoring {clean_hazard}")
+        if impact:
+            summary_parts.append(f"relevant to sectors: {impact}")
+        if temporal_text:
+            summary_parts.append(f"covering the period {temporal_text}")
+        if spatial_cov:
+            summary_parts.append(f"with {spatial_cov} spatial coverage")
+        if data_type:
+            summary_parts.append(f"provided as {data_type}")
+        # Growth rate if present (e.g. CO2 trend)
+        growth = metadata.get("growth_rate_ppm_per_year")
+        if growth is not None:
+            summary_parts.append(f"showing a growth rate of {growth} ppm per year")
+        parts.append(". ".join(summary_parts))
+
     return ". ".join(parts)
 
 
