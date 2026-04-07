@@ -285,7 +285,7 @@ class VectorDatabase:
                         "limit": limit,
                         "with_payload": True,
                         "search_params": SearchParams(
-                            hnsw_ef=256,
+                            hnsw_ef=64,
                             exact=exact,
                         ),
                     }
@@ -403,6 +403,55 @@ class VectorDatabase:
 
         return reranked_results
 
+    def search_batch(self, queries: List[Dict[str, Any]]) -> List[List[Any]]:
+        """Run multiple searches in a single gRPC call for parallel execution.
+
+        Args:
+            queries: List of dicts with keys: vector, limit, filter_dict (optional)
+
+        Returns:
+            List of result lists, one per query.
+        """
+        if not self.client or not queries:
+            return [[] for _ in queries]
+
+        try:
+            from qdrant_client.models import SearchRequest, SearchParams, Filter, FieldCondition, MatchValue
+
+            requests = []
+            for q in queries:
+                search_params = SearchParams(hnsw_ef=64)
+                qf = None
+                fd = q.get("filter_dict")
+                if fd:
+                    conditions = [FieldCondition(key=k, match=MatchValue(value=v)) for k, v in fd.items()]
+                    qf = Filter(must=conditions)
+
+                requests.append(SearchRequest(
+                    vector=q["vector"],
+                    limit=q.get("limit", 20),
+                    filter=qf,
+                    with_payload=True,
+                    params=search_params,
+                ))
+
+            results = self.client.search_batch(
+                collection_name=self.collection,
+                requests=requests,
+            )
+            return [list(r) for r in results]
+
+        except Exception as e:
+            logger.warning(f"search_batch failed ({e}), falling back to sequential")
+            out = []
+            for q in queries:
+                out.append(self.search(
+                    query_vector=q["vector"],
+                    limit=q.get("limit", 20),
+                    filter_dict=q.get("filter_dict"),
+                ))
+            return out
+
     def search_grouped(
         self,
         query_vector: List[float],
@@ -420,10 +469,9 @@ class VectorDatabase:
 
         Returns a flat list of ScoredPoint-like objects.
         """
-        # Use exact search via REST to guarantee we find all relevant groups
-        # (HNSW approximate search misses small clusters in large collections)
-        over_retrieve = max(group_limit * group_size * 30, 500)
-        raw = self._search_exact_rest(query_vector, over_retrieve, filter_dict)
+        # Use HNSW search — keep limit low for speed on large collections
+        over_retrieve = min(group_limit * group_size * 3, 60)
+        raw = self.search(query_vector, limit=over_retrieve, filter_dict=filter_dict)
 
         if not raw:
             return []

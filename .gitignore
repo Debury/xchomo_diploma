@@ -448,3 +448,6 @@ Icon
 # Check for large files: git ls-files --stage | awk '$4 > 1048576 {print $4, $2}'
 # Check for secrets: git grep -E "api[_-]?key|password|secret|token" --cached
 # Clean git history if needed: git filter-branch or BFG Repo-Cleaner
+
+# Qdrant snapshots
+*.snapshot

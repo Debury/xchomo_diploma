@@ -283,7 +283,7 @@ api: ## Start FastAPI web service (port 8000)
 	@echo "$(BLUE)Starting FastAPI service...$(NC)"
 	@echo "API: http://localhost:8000"
 	@echo "Docs: http://localhost:8000/docs"
-	$(PYTHON) -m uvicorn web_api.main:app --host 0.0.0.0 --port 8000 --reload
+	$(PYTHON) -m uvicorn web_api.main:app --host 0.0.0.0 --port 8000 --reload --reload-dir web_api --reload-dir src --reload-dir config
 
 dagster-all: ## Start all Dagster services (Docker Compose)
 	@echo "$(BLUE)Starting all Dagster services...$(NC)"

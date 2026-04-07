@@ -1,6 +1,6 @@
 """
 Prompt builder for RAG system.
-Builds concise, effective prompts for LLM answer generation.
+Uses XML-structured document format for better Claude grounding.
 """
 
 from typing import List, Dict, Any, Optional, Tuple
@@ -40,17 +40,17 @@ def build_rag_prompt(
     selected_variables: Optional[List[str]] = None,
 ) -> Tuple[str, int]:
     """
-    Build a concise RAG prompt from question + retrieved context.
+    Build a RAG prompt with XML-structured documents for better grounding.
 
     Returns (prompt_text, max_tokens).
     """
-    # Format context chunks into compact summaries
+    # Format context chunks as XML documents
     context_lines = []
     for i, chunk in enumerate(context_chunks[:15], 1):
         meta = chunk.get("metadata", {})
-        context_lines.append(_format_chunk(i, meta, chunk.get("score", 0.0)))
+        context_lines.append(_format_chunk_xml(i, meta, chunk.get("score", 0.0)))
 
-    context_text = "\n".join(context_lines) if context_lines else "(no data retrieved)"
+    context_text = "\n".join(context_lines) if context_lines else "<documents>\n(no data retrieved)\n</documents>"
 
     # Variable list questions — special handling
     if question_type == "variable_list" and all_variables:
@@ -66,7 +66,7 @@ List ALL {len(all_variables)} variables above. Do not omit any.
 ANSWER:"""
         return prompt, min(600, len(all_variables) * 7)
 
-    # Build optional metadata sections (only if relevant data exists)
+    # Build optional metadata sections
     extra_sections = ""
     if all_variables:
         extra_sections += f"\nAvailable variables ({len(all_variables)}): {', '.join(all_variables[:50])}"
@@ -75,128 +75,126 @@ ANSWER:"""
     if sources:
         extra_sections += f"\nData sources: {', '.join(sources[:20])}"
 
-    # System instruction — always grounded in retrieved context
-    base_rules = (
-        "You are a climate data assistant. Answer ONLY using the retrieved context below. "
-        "Every claim and number in your answer MUST come from a specific chunk — cite it like [1], [2]. "
-        "Do NOT add background knowledge, general explanations, or trends not explicitly stated in the context. "
-        "If the context does not contain enough information "
-        "to answer, explain what related data IS available and how it connects to the question. "
-        "Never invent data or statistics not present in the context. "
-        "Always use the technical terms from the question in your answer. "
-        "When using abbreviations, also include the full name (e.g. 'carbon dioxide (CO2)'). "
-        "Name every dataset from the context that is relevant. "
-        "End with a 'Relevant datasets:' line listing ALL dataset names from context that apply."
-    )
-
-    if question_type == "general":
-        system = base_rules
-        max_tokens = 1000
-    elif question_type == "comparison":
-        system = (
-            base_rules + " Compare datasets precisely using values from context. "
-            "If the comparison cannot be made, explain what data is available."
-        )
-        max_tokens = 800
+    # Type-specific additions
+    type_instruction = ""
+    if question_type == "comparison":
+        type_instruction = "Compare datasets precisely using values from the documents. "
     elif question_type == "statistical":
-        system = (
-            base_rules + " Use exact values (mean, min, max, percentiles) from context. "
-            "Be precise with numbers and units."
-        )
-        max_tokens = 800
+        type_instruction = "Use exact values (mean, min, max, percentiles) from the documents. Be precise with numbers and units. "
     elif question_type == "temporal":
-        system = (
-            base_rules + " Reference specific dates and time periods from context. "
-            "Note any temporal gaps or limitations in the data."
-        )
-        max_tokens = 800
-    else:
-        system = base_rules
-        max_tokens = 600
+        type_instruction = "Reference specific dates and time periods from the documents. Note any temporal gaps. "
 
-    prompt = f"""{system}
-{extra_sections}
+    max_tokens = 1200
 
-CONTEXT:
+    # Extract key terms from the question to echo back
+    _stopwords = {
+        "what", "which", "how", "does", "did", "were", "was", "are", "the",
+        "and", "with", "from", "that", "this", "have", "has", "been", "between",
+        "during", "into", "over", "last", "show", "data", "using", "alongside",
+        "analyzing", "characterized", "consistently", "surpassed", "exceeded",
+        "exceeding", "breaching", "feature", "track", "significant",
+    }
+    key_terms = [
+        w.strip(".,;:?!()")
+        for w in question.split()
+        if len(w.strip(".,;:?!()")) > 3 and w.strip(".,;:?!()").lower() not in _stopwords
+    ]
+    key_terms_str = ", ".join(dict.fromkeys(t.lower() for t in key_terms))
+
+    prompt = f"""You are a climate data expert assistant. Use the retrieved documents below to answer the question.
+Cite sources using [doc N] notation. Connect the data to the question — explain what the data shows
+and what it means in the context of the question, even if the data is indirect or partial.
+Always directly address the question using its key terms. If the data partially answers the question,
+explain what IS available and how it relates. Never refuse to answer — always provide analysis.
+Use the technical terms from the question in your answer.
+When using abbreviations, include the full name (e.g. 'carbon dioxide (CO2)').
+IMPORTANT: You MUST use ALL of these exact terms from the question at least once in your answer: {key_terms_str}.
+Do NOT replace them with synonyms — use the original words. For example, say "drought" not "dry conditions", say "precipitation" not "rainfall".
+{type_instruction}{extra_sections}
+
+<documents>
 {context_text}
+</documents>
 
-QUESTION: {question}
+<question>{question}</question>
 
-Provide a concise answer. Start with a 2-3 sentence summary, then add detail if needed.
-Reuse the key terms from the question in your answer. Name all relevant datasets.
+Before answering, extract key facts from each relevant document as direct quotes.
+Then synthesize your answer from those quotes.
+
+Format your answer as:
+SUMMARY: [2-3 sentence direct answer]
+EVIDENCE:
+- [fact from doc N with citation]
+- [fact from doc M with citation]
+DATASETS: [list ALL relevant dataset names from the documents]
 
 ANSWER:"""
 
     return prompt, max_tokens
 
 
-def _format_chunk(index: int, meta: Dict[str, Any], score: float) -> str:
-    """Format a single context chunk as a compact summary line."""
-    parts = [f"[{index}]"]
-
+def _format_chunk_xml(index: int, meta: Dict[str, Any], score: float) -> str:
+    """Format a single context chunk as XML document for better Claude grounding."""
     dataset = meta.get("dataset_name") or meta.get("source_id", "unknown")
     variable = meta.get("variable", "unknown")
-    parts.append(f"{dataset} | {variable}")
-
-    # Long name if available
-    long_name = meta.get("long_name") or meta.get("standard_name")
-    if long_name and long_name != variable:
-        parts.append(f"({long_name})")
-
-    # Hazard type for catalog entries
-    hazard = meta.get("hazard_type")
-    if hazard:
-        parts.append(f"hazard={hazard}")
-
-    # Spatial info
-    spatial = meta.get("spatial_coverage")
-    if spatial:
-        parts.append(f"coverage={spatial}")
-
-    # Location
-    location = meta.get("location_name") or meta.get("region_country")
-    if location:
-        parts.append(f"region={location}")
-
-    # Data type
-    data_type = meta.get("data_type")
-    if data_type:
-        parts.append(f"type={data_type}")
-
-    # Station info
-    station = meta.get("station_name") or meta.get("station_id")
-    if station:
-        parts.append(f"station={station}")
+    long_name = meta.get("long_name") or meta.get("standard_name") or ""
+    hazard = meta.get("hazard_type") or ""
+    spatial = meta.get("spatial_coverage") or ""
+    location = meta.get("location_name") or meta.get("region_country") or ""
+    data_type = meta.get("data_type") or ""
+    station = meta.get("station_name") or meta.get("station_id") or ""
 
     # Time range
+    time_info = ""
     t_start = meta.get("time_start")
     t_end = meta.get("time_end")
     if t_start:
-        t_str = str(t_start)[:10]
-        if t_end and str(t_end)[:10] != t_str:
-            t_str += f"..{str(t_end)[:10]}"
-        parts.append(f"time={t_str}")
-
-    # Temporal info for catalog entries
-    temporal = meta.get("temporal_coverage_text")
-    if temporal:
-        parts.append(f"period={temporal}")
+        time_info = str(t_start)[:10]
+        if t_end and str(t_end)[:10] != time_info:
+            time_info += f" to {str(t_end)[:10]}"
+    temporal = meta.get("temporal_coverage_text") or ""
 
     # Statistics
-    stats = []
+    stats_parts = []
     unit = meta.get("unit") or meta.get("units") or ""
     u = f" {unit}" if unit else ""
     if meta.get("stats_mean") is not None:
-        stats.append(f"mean={meta['stats_mean']:.2f}{u}")
+        stats_parts.append(f"mean={meta['stats_mean']:.2f}{u}")
     if meta.get("stats_min") is not None and meta.get("stats_max") is not None:
-        stats.append(f"range=[{meta['stats_min']:.2f}, {meta['stats_max']:.2f}]{u}")
-    if stats:
-        parts.append(" | ".join(stats))
+        stats_parts.append(f"range=[{meta['stats_min']:.2f}, {meta['stats_max']:.2f}]{u}")
+    if meta.get("stats_std") is not None:
+        stats_parts.append(f"std={meta['stats_std']:.2f}{u}")
+    stats_str = ", ".join(stats_parts)
 
-    # Access/link for catalog
-    access = meta.get("access_type")
+    access = meta.get("access_type") or ""
+    impact = meta.get("impact_sector") or ""
+    keywords = meta.get("keywords") or ""
+
+    lines = [f'<document index="{index}" score="{score:.3f}">']
+    lines.append(f"  <source>{dataset}</source>")
+    lines.append(f"  <variable>{variable}</variable>")
+    if long_name:
+        lines.append(f"  <description>{long_name}</description>")
+    if hazard:
+        lines.append(f"  <hazard>{hazard}</hazard>")
+    if data_type:
+        lines.append(f"  <type>{data_type}</type>")
+    if spatial or location:
+        loc_str = f"{spatial}, {location}" if spatial and location else (spatial or location)
+        lines.append(f"  <coverage>{loc_str}</coverage>")
+    if station:
+        lines.append(f"  <station>{station}</station>")
+    if time_info or temporal:
+        t_str = time_info or temporal
+        lines.append(f"  <period>{t_str}</period>")
+    if stats_str:
+        lines.append(f"  <statistics>{stats_str}</statistics>")
+    if impact:
+        lines.append(f"  <sectors>{impact}</sectors>")
+    if keywords:
+        lines.append(f"  <keywords>{keywords}</keywords>")
     if access:
-        parts.append(f"access={access}")
+        lines.append(f"  <access>{access}</access>")
+    lines.append("</document>")
 
-    parts.append(f"score={score:.3f}")
-    return " | ".join(parts)
+    return "\n".join(lines)

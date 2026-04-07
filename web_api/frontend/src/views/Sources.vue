@@ -313,7 +313,7 @@ async function loadSources() {
       description: source.description || `Data source: ${source.source_id}`,
       type: source.format || 'Unknown',
       variables: source.variables || [],
-      embedding_count: 0,
+      embedding_count: source.embedding_count || 0,
       url: source.url,
       source_id: source.source_id,
       processing_status: source.processing_status || 'pending',

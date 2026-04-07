@@ -5,6 +5,8 @@
 :root {
   --mendelu-green: #79be15;
   --mendelu-green-hover: #6aaa10;
+  --mendelu-green-glow: rgba(121, 190, 21, 0.15);
+  --mendelu-green-dim: rgba(121, 190, 21, 0.08);
   --mendelu-success: #82c55b;
   --mendelu-alert: #d53e3c;
   --mendelu-black: #1c1c1c;
@@ -12,13 +14,16 @@
   --mendelu-gray-dark: #535a5d;
   --mendelu-gray-semi: #dce3e4;
   --mendelu-gray-light: #f7f8fa;
+  --font-display: 'DM Sans', system-ui, -apple-system, sans-serif;
+  --font-mono: 'JetBrains Mono', 'SF Mono', 'Fira Code', monospace;
 }
 
 @layer base {
   body {
     @apply bg-mendelu-gray-light text-mendelu-black min-h-screen antialiased;
-    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    font-family: var(--font-display);
     font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+    letter-spacing: -0.01em;
   }
   .dark body,
   body.dark {
@@ -30,6 +35,7 @@
   /* Typography */
   .page-title {
     @apply text-2xl font-semibold text-mendelu-black tracking-tight;
+    font-family: var(--font-display);
   }
   .dark .page-title {
     @apply text-white;
@@ -41,21 +47,25 @@
     @apply text-gray-400;
   }
 
+  .font-mono {
+    font-family: var(--font-mono);
+  }
+
   /* Buttons */
   .btn-primary {
-    @apply px-4 py-2 bg-mendelu-green hover:bg-mendelu-green-hover active:bg-mendelu-green-hover text-white text-sm font-medium rounded-lg transition-all duration-150;
+    @apply px-4 py-2 bg-mendelu-green hover:bg-mendelu-green-hover active:bg-mendelu-green-hover text-white text-sm font-medium rounded-lg transition-colors duration-150;
   }
   .btn-secondary {
-    @apply px-4 py-2 bg-white hover:bg-mendelu-gray-light active:bg-mendelu-gray-semi text-mendelu-gray-dark text-sm font-medium rounded-lg border border-mendelu-gray-semi transition-all duration-150;
+    @apply px-4 py-2 bg-white hover:bg-mendelu-gray-light active:bg-mendelu-gray-semi text-mendelu-gray-dark hover:text-mendelu-black text-sm font-medium rounded-lg border border-mendelu-gray-semi hover:border-mendelu-green transition-colors duration-150;
   }
   .dark .btn-secondary {
-    @apply bg-dark-card hover:bg-dark-hover text-gray-300 border-dark-border;
+    @apply bg-dark-card hover:bg-dark-hover text-gray-300 border-dark-border hover:border-mendelu-green/40 hover:text-white;
   }
   .btn-danger {
-    @apply px-4 py-2 bg-mendelu-alert hover:bg-red-700 active:bg-red-800 text-white text-sm font-medium rounded-lg transition-all duration-150;
+    @apply px-4 py-2 bg-mendelu-alert hover:bg-red-700 active:bg-red-800 text-white text-sm font-medium rounded-lg transition-colors duration-150;
   }
   .btn-ghost {
-    @apply px-3 py-1.5 text-sm font-medium text-mendelu-gray-dark bg-transparent hover:bg-mendelu-gray-light active:bg-mendelu-gray-semi rounded-lg transition-all duration-150;
+    @apply px-3 py-1.5 text-sm font-medium text-mendelu-gray-dark bg-transparent hover:bg-mendelu-gray-light active:bg-mendelu-gray-semi rounded-lg transition-colors duration-150;
   }
   .dark .btn-ghost {
     @apply text-gray-400 hover:bg-white/5 active:bg-white/10;
@@ -63,7 +73,7 @@
 
   /* Inputs */
   .input-field {
-    @apply w-full px-3 py-2 bg-white border border-mendelu-gray-semi rounded-lg text-sm text-mendelu-black placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-mendelu-green/30 focus:border-mendelu-green transition-all duration-150;
+    @apply w-full px-3 py-2 bg-white border border-mendelu-gray-semi rounded-lg text-sm text-mendelu-black placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-mendelu-green/30 focus:border-mendelu-green transition-colors duration-150;
   }
   .dark .input-field {
     @apply bg-dark-bg border-dark-border text-gray-100 placeholder-gray-500;
@@ -71,57 +81,90 @@
 
   /* Cards */
   .card {
-    @apply bg-white rounded-xl border border-transparent p-5 transition-all duration-200;
-    box-shadow: 0 1px 3px rgba(0,0,0,0.05), 0 1px 2px rgba(0,0,0,0.03);
+    @apply bg-white rounded-2xl border border-mendelu-gray-semi/60 p-5 transition-colors duration-150;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.04);
   }
   .card:hover {
-    box-shadow: 0 4px 16px rgba(0,0,0,0.08);
+    border-color: rgba(121, 190, 21, 0.25);
   }
   .dark .card {
     @apply bg-dark-card border-dark-border;
     box-shadow: none;
   }
   .dark .card:hover {
-    @apply border-dark-hover;
-    box-shadow: none;
+    border-color: rgba(121, 190, 21, 0.25);
   }
 
   .stat-card {
-    @apply bg-white rounded-xl border-t-2 border-mendelu-green/20 p-5 transition-all duration-200;
-    box-shadow: 0 1px 3px rgba(0,0,0,0.05), 0 1px 2px rgba(0,0,0,0.03);
+    @apply bg-white rounded-2xl border border-mendelu-gray-semi/60 p-5 relative overflow-hidden transition-colors duration-150;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.04);
   }
+  .stat-card::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 2px;
+    background: linear-gradient(90deg, var(--mendelu-green), var(--mendelu-success));
+    opacity: 0;
+    transition: opacity 0.15s ease;
+  }
+  .stat-card:hover::before { opacity: 1; }
   .stat-card:hover {
-    box-shadow: 0 4px 16px rgba(0,0,0,0.08);
     transform: translateY(-1px);
+    border-color: rgba(121, 190, 21, 0.25);
+    box-shadow: 0 4px 12px rgba(0,0,0,0.06);
   }
   .dark .stat-card {
     @apply bg-dark-card border-dark-border;
     box-shadow: none;
   }
   .dark .stat-card:hover {
-    @apply border-dark-hover;
-    box-shadow: none;
+    border-color: rgba(121, 190, 21, 0.3);
     transform: translateY(-1px);
   }
 
   /* Badges */
   .badge-success {
-    @apply px-2 py-0.5 rounded-full text-xs font-medium bg-mendelu-success/10 text-mendelu-success border border-mendelu-success/20;
+    @apply px-2.5 py-0.5 rounded-full text-xs font-medium;
+    background: rgba(130, 197, 91, 0.12);
+    color: #5ba33a;
+    border: 1px solid rgba(130, 197, 91, 0.2);
+  }
+  .dark .badge-success {
+    color: #82c55b;
+    background: rgba(130, 197, 91, 0.1);
+    border-color: rgba(130, 197, 91, 0.15);
   }
   .badge-danger {
-    @apply px-2 py-0.5 rounded-full text-xs font-medium bg-mendelu-alert/10 text-mendelu-alert border border-mendelu-alert/20;
+    @apply px-2.5 py-0.5 rounded-full text-xs font-medium;
+    background: rgba(213, 62, 60, 0.1);
+    color: #c23230;
+    border: 1px solid rgba(213, 62, 60, 0.15);
+  }
+  .dark .badge-danger {
+    color: #e85856;
+    background: rgba(213, 62, 60, 0.1);
+    border-color: rgba(213, 62, 60, 0.15);
   }
   .badge-warning {
-    @apply px-2 py-0.5 rounded-full text-xs font-medium bg-amber-500/10 text-amber-600 border border-amber-500/20;
+    @apply px-2.5 py-0.5 rounded-full text-xs font-medium;
+    background: rgba(217, 119, 6, 0.1);
+    color: #b45309;
+    border: 1px solid rgba(217, 119, 6, 0.15);
   }
   .dark .badge-warning {
     @apply text-amber-400;
+    background: rgba(217, 119, 6, 0.1);
+    border-color: rgba(217, 119, 6, 0.15);
   }
   .badge-info {
-    @apply px-2 py-0.5 rounded-full text-xs font-medium bg-mendelu-green/10 text-mendelu-green border border-mendelu-green/20;
+    @apply px-2.5 py-0.5 rounded-full text-xs font-medium;
+    background: var(--mendelu-green-dim);
+    color: var(--mendelu-green);
+    border: 1px solid rgba(121, 190, 21, 0.2);
   }
   .badge-neutral {
-    @apply px-2 py-0.5 rounded-full text-xs font-medium bg-mendelu-gray-light text-mendelu-gray-dark border border-mendelu-gray-semi;
+    @apply px-2.5 py-0.5 rounded-full text-xs font-medium bg-mendelu-gray-light text-mendelu-gray-dark border border-mendelu-gray-semi;
   }
   .dark .badge-neutral {
     @apply bg-gray-500/10 text-gray-400 border-gray-500/20;
@@ -139,6 +182,9 @@
   /* Table */
   .table-header {
     @apply px-4 py-2.5 text-left text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 0.08em;
   }
   .dark .table-header {
     @apply text-gray-400;
@@ -165,7 +211,7 @@ table tbody tr:hover { @apply bg-black/[0.02]; }
   @apply bg-dark-bg border-dark-border text-gray-100;
 }
 
-/* Dark mode text overrides for hardcoded mendelu-black text */
+/* Dark mode text overrides */
 .dark .text-mendelu-black { color: #f1f5f9; }
 .dark .text-mendelu-gray-dark { color: #94a3b8; }
 .dark .bg-mendelu-gray-light { background-color: #0f172a; }
@@ -177,13 +223,24 @@ table tbody tr:hover { @apply bg-black/[0.02]; }
   @apply bg-dark-border;
 }
 
-/* Animate-in utility */
+/* ========== Animations ========== */
+
 .animate-in {
-  animation: fadeSlideUp 0.4s ease-out both;
+  animation: fadeSlideUp 0.5s cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
+/* Staggered entrance delays */
+.stagger-1 { animation-delay: 0.05s; }
+.stagger-2 { animation-delay: 0.1s; }
+.stagger-3 { animation-delay: 0.15s; }
+.stagger-4 { animation-delay: 0.2s; }
+.stagger-5 { animation-delay: 0.25s; }
+.stagger-6 { animation-delay: 0.3s; }
+.stagger-7 { animation-delay: 0.35s; }
+.stagger-8 { animation-delay: 0.4s; }
+
 @keyframes fadeSlideUp {
-  from { opacity: 0; transform: translateY(8px); }
+  from { opacity: 0; transform: translateY(12px); }
   to { opacity: 1; transform: translateY(0); }
 }
 
@@ -191,3 +248,42 @@ table tbody tr:hover { @apply bg-black/[0.02]; }
   0%, 100% { opacity: 1; }
   50% { opacity: 0.4; }
 }
+
+@keyframes pulse-ring {
+  0% { transform: scale(1); opacity: 0.6; }
+  100% { transform: scale(2.2); opacity: 0; }
+}
+
+@keyframes float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-4px); }
+}
+
+@keyframes glow-pulse {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 1; }
+}
+
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+/* Service status pulse */
+.pulse-online {
+  animation: pulse-ring 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+/* Lightweight background accents — no repaints */
+.topo-bg {}
+.mesh-gradient {}
+
+/* Data value typography */
+.data-value {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+}
+
+/* Green glow effect */
+.glow-green {}

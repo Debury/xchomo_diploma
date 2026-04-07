@@ -9,10 +9,12 @@ import requests
 import json
 from typing import Optional
 
+from src.llm.base import BaseLLMClient
+
 logger = logging.getLogger(__name__)
 
 
-class OpenRouterClient:
+class OpenRouterClient(BaseLLMClient):
     def __init__(self):
         self.api_key = os.getenv("OPENROUTER_API_KEY")
         self.base_url = "https://openrouter.ai/api/v1"
@@ -29,6 +31,7 @@ class OpenRouterClient:
         # - anthropic/claude-3-haiku ($0.25/1M input) - very good
         # - openai/gpt-4o ($2.50/1M input) - best quality
         self.model = os.getenv("OPENROUTER_MODEL", "x-ai/grok-4.1-fast")
+        self.fast_model = os.getenv("OPENROUTER_FAST_MODEL", "anthropic/claude-sonnet-4.6")
     
     def is_available(self) -> bool:
         """Check if OpenRouter API key is configured."""
@@ -39,7 +42,7 @@ class OpenRouterClient:
         prompt: str,
         temperature: float = 0.3,
         max_tokens: int = 1024,
-        timeout_s: int = 60,
+        timeout_s: int = 300,
     ) -> str:
         """
         Generate text using OpenRouter API.
@@ -92,12 +95,51 @@ class OpenRouterClient:
             error_detail = ""
             try:
                 error_detail = resp.json().get("error", {}).get("message", "")
-            except:
+            except Exception:
                 pass
             raise Exception(f"OpenRouter API error: {e} - {error_detail}")
         except Exception as e:
             raise Exception(f"OpenRouter generate error: {e}")
     
+    def generate_fast(
+        self,
+        prompt: str,
+        temperature: float = 0.3,
+        max_tokens: int = 256,
+        timeout_s: int = 30,
+    ) -> str:
+        """Generate using the fast model (Sonnet) for auxiliary tasks like query expansion."""
+        if not self.api_key:
+            raise ValueError("OPENROUTER_API_KEY not set")
+
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+        if self.site_url:
+            headers["HTTP-Referer"] = self.site_url
+        if self.site_name:
+            headers["X-Title"] = self.site_name
+
+        payload = {
+            "model": self.fast_model,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+        }
+
+        try:
+            resp = requests.post(
+                f"{self.base_url}/chat/completions",
+                headers=headers,
+                data=json.dumps(payload),
+                timeout=timeout_s,
+            )
+            resp.raise_for_status()
+            return resp.json()["choices"][0]["message"]["content"].strip()
+        except Exception as e:
+            raise Exception(f"OpenRouter fast generate error: {e}")
+
     def check_health(self) -> bool:
         """Check if OpenRouter API is accessible."""
         if not self.api_key:

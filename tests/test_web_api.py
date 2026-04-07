@@ -4,18 +4,12 @@ Tests for FastAPI Web Service - Phase 4
 Async tests for API endpoints using httpx test client.
 """
 
-import sys
 import pytest
-from pathlib import Path
 from datetime import datetime
-
-# Add project root to path
-sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from httpx import AsyncClient, ASGITransport
 from fastapi import status
 
-# Import app after path setup
 from web_api.main import app
 
 

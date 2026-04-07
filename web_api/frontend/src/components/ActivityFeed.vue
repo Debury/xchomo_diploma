@@ -1,29 +1,60 @@
 <template>
   <div>
-    <h3 class="text-sm font-medium text-mendelu-black mb-3">Activity</h3>
-    <div class="space-y-0">
+    <div class="flex items-center justify-between mb-4">
+      <h3 class="text-sm font-semibold text-mendelu-black flex items-center gap-2">
+        <svg class="w-4 h-4 text-mendelu-green" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z" />
+        </svg>
+        Live Activity
+        <span v-if="events.length" class="inline-flex items-center justify-center w-5 h-5 rounded-full text-[9px] font-bold bg-mendelu-green/10 text-mendelu-green" style="font-family: var(--font-mono);">{{ events.length }}</span>
+      </h3>
+      <div class="flex items-center gap-1.5">
+        <div class="w-1.5 h-1.5 rounded-full bg-mendelu-green animate-pulse"></div>
+        <span class="text-[10px] font-medium text-mendelu-gray-dark/60" style="font-family: var(--font-mono);">LIVE</span>
+      </div>
+    </div>
+
+    <!-- Timeline -->
+    <div class="relative">
+      <!-- Vertical line -->
+      <div class="absolute left-[7px] top-2 bottom-2 w-px bg-gradient-to-b from-mendelu-gray-semi via-mendelu-gray-semi/40 to-transparent"></div>
+
       <TransitionGroup name="feed">
         <div
-          v-for="event in events"
+          v-for="(event, idx) in events"
           :key="event.id"
-          class="flex items-start gap-3 py-2.5 border-b border-mendelu-gray-semi/40 last:border-0"
+          class="relative flex items-start gap-3 py-2 group"
+          :style="{ animationDelay: `${idx * 30}ms` }"
         >
-          <span
-            class="mt-1.5 w-2 h-2 rounded-full flex-shrink-0"
-            :class="{
-              'bg-mendelu-success': event.type === 'success',
-              'bg-mendelu-alert': event.type === 'error',
-              'bg-mendelu-green': event.type === 'info',
-              'bg-mendelu-gray-semi': event.type === 'neutral',
-            }"
-          ></span>
-          <div class="min-w-0 flex-1">
-            <p class="text-sm text-mendelu-black leading-snug">{{ event.message }}</p>
-            <p class="text-[10px] text-mendelu-gray-dark mt-0.5">{{ event.time }}</p>
+          <!-- Timeline dot -->
+          <div class="relative z-10 mt-1 flex-shrink-0">
+            <span
+              class="block w-[15px] h-[15px] rounded-full border-2 transition-all duration-200"
+              :class="dotClass(event.type)"
+            ></span>
           </div>
+
+          <!-- Content -->
+          <div class="flex-1 min-w-0 pb-1">
+            <p class="text-[13px] text-mendelu-black leading-snug group-hover:text-mendelu-green transition-colors duration-200">{{ event.message }}</p>
+            <p class="text-[10px] text-mendelu-gray-dark/50 mt-1 font-medium" style="font-family: var(--font-mono);">{{ event.time }}</p>
+          </div>
+
+          <!-- Type badge -->
+          <span
+            class="flex-shrink-0 mt-0.5 px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider opacity-0 group-hover:opacity-100 transition-opacity duration-200"
+            :class="badgeClass(event.type)"
+            style="font-family: var(--font-mono);"
+          >{{ event.type }}</span>
         </div>
       </TransitionGroup>
-      <p v-if="!events.length" class="text-sm text-mendelu-gray-dark py-4 text-center">Waiting for events...</p>
+
+      <p v-if="!events.length" class="text-sm text-mendelu-gray-dark/50 py-6 text-center flex flex-col items-center gap-2">
+        <svg class="w-8 h-8 text-mendelu-gray-semi" fill="none" stroke="currentColor" stroke-width="1" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+        </svg>
+        Waiting for events...
+      </p>
     </div>
   </div>
 </template>
@@ -36,6 +67,24 @@ let intervalId = null
 let eventCounter = 0
 let prevProgress = null
 let prevHealth = null
+
+function dotClass(type) {
+  return {
+    'bg-mendelu-success/20 border-mendelu-success': type === 'success',
+    'bg-mendelu-alert/20 border-mendelu-alert': type === 'error',
+    'bg-mendelu-green/20 border-mendelu-green': type === 'info',
+    'bg-mendelu-gray-semi border-mendelu-gray-dark/30': type === 'neutral',
+  }
+}
+
+function badgeClass(type) {
+  return {
+    'bg-mendelu-success/10 text-mendelu-success': type === 'success',
+    'bg-mendelu-alert/10 text-mendelu-alert': type === 'error',
+    'bg-mendelu-green/10 text-mendelu-green': type === 'info',
+    'bg-mendelu-gray-light text-mendelu-gray-dark': type === 'neutral',
+  }
+}
 
 function addEvent(type, message) {
   const now = new Date()
@@ -57,11 +106,11 @@ async function poll() {
         if (h.dagster_available !== prevHealth.dagster_available) {
           addEvent(h.dagster_available ? 'success' : 'error', h.dagster_available ? 'Dagster connected' : 'Dagster disconnected')
         }
-        if (h.qdrant !== prevHealth.qdrant) {
-          addEvent(h.qdrant ? 'success' : 'error', h.qdrant ? 'Qdrant online' : 'Qdrant offline')
+        if ((h.status === 'healthy') !== (prevHealth.status === 'healthy')) {
+          addEvent(h.status === 'healthy' ? 'success' : 'error', h.status === 'healthy' ? 'Qdrant online' : 'Qdrant offline')
         }
       } else {
-        if (h.qdrant) addEvent('success', 'Qdrant online')
+        if (h.status === 'healthy') addEvent('success', 'Qdrant online')
         if (h.dagster_available) addEvent('success', 'Dagster connected')
         addEvent('info', 'System health check OK')
       }
@@ -94,16 +143,17 @@ onUnmounted(() => {
 
 <style scoped>
 .feed-enter-active {
-  transition: all 0.3s ease-out;
+  transition: all 0.4s cubic-bezier(0.16, 1, 0.3, 1);
 }
 .feed-enter-from {
   opacity: 0;
-  transform: translateY(-8px);
+  transform: translateX(-8px);
 }
 .feed-leave-active {
   transition: all 0.2s ease-in;
 }
 .feed-leave-to {
   opacity: 0;
+  transform: translateX(8px);
 }
 </style>

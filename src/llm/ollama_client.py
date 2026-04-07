@@ -392,7 +392,7 @@ To install the model, run:
 Or use an available model by setting OLLAMA_MODEL environment variable."""
                     else:
                         return f"LLM Error: Model '{self.model}' not found. Please install it with: docker compose exec ollama ollama pull {self.model}"
-                except:
+                except Exception:
                     return f"LLM Error: Model '{self.model}' not found. Please install it with: docker compose exec ollama ollama pull {self.model}"
             else:
                 return f"LLM Error: HTTP {e.response.status_code} - {str(e)}"
@@ -418,7 +418,7 @@ Solutions:
 - Increase server resources (RAM/CPU)"""
                     else:
                         return f"LLM Error: Model '{self.model}' not found. Please install it with: docker compose exec ollama ollama pull {self.model}"
-            except:
+            except Exception:
                 pass
             return "LLM Error: Request timed out. The model may still be loading, the server is unavailable, or the model is too slow for the current hardware."
         except requests.exceptions.ConnectionError:
@@ -515,7 +515,7 @@ Solutions:
                 timeout=timeout
             )
             return resp.status_code == 200
-        except:
+        except Exception:
             return False
     
     def list_available_models(self) -> list:
@@ -526,5 +526,5 @@ Solutions:
                 models = resp.json().get("models", [])
                 return [m.get("name", "") for m in models]
             return []
-        except:
+        except Exception:
             return []

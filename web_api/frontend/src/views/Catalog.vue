@@ -76,7 +76,7 @@
         <span class="text-mendelu-success">{{ progress.processed }} processed</span>
         <span v-if="progress.metadata_only" class="text-mendelu-green/70">{{ progress.metadata_only }} metadata only</span>
         <span v-if="progress.failed" class="text-mendelu-alert">{{ progress.failed }} failed</span>
-        <span>{{ progress.pending }} pending</span>
+        <span>{{ progress.pending || 0 }} pending</span>
       </div>
     </div>
 
@@ -292,5 +292,5 @@ function pollProgress() {
   }, 3000)
 }
 
-onMounted(() => { refreshCatalog(); classifyCatalog() })
+onMounted(() => { refreshCatalog(); classifyCatalog().catch(() => {}) })
 </script>

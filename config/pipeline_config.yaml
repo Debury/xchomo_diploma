@@ -239,7 +239,7 @@ performance:
 
   memory:
     chunk_size: 5000
-    max_memory_gb: 48
+    max_memory_gb: 8  # Adjust based on available system RAM
     use_dask: false
   
   caching:
@@ -339,7 +339,7 @@ vector_db:
   
   qdrant:
     # Connection configuration
-    host: "localhost"
+    host: "localhost"  # Overridden by QDRANT_HOST env var in Docker
     grpc_port: 6334
     rest_port: 6333
     prefer_grpc: true

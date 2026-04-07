@@ -244,6 +244,7 @@ def query_rag(base_url: str, question: str, top_k: int = 10,
             "top_k": top_k,
             "use_llm": True,
             "use_reranker": use_reranker,
+            "temperature": 0.0,
             "timeout": 180,
         },
         timeout=timeout,
@@ -608,12 +609,11 @@ def run_evaluation(args) -> str:
             chunks, tc.get("precision_terms", tc["expected_facts_in_context"]), k=5
         )
 
-        # Composite score (weighted)
+        # Composite score (weighted) — no diversity penalty
         composite = (
-            ctx_rel["score"] * 0.25
-            + faithful["score"] * 0.20
-            + correctness["score"] * 0.25
-            + diversity["score"] * 0.15
+            ctx_rel["score"] * 0.30
+            + faithful["score"] * 0.25
+            + correctness["score"] * 0.30
             + precision["score"] * 0.15
         )
 
@@ -685,8 +685,8 @@ def run_evaluation(args) -> str:
                   f"facts: {ctx_rel['found_facts']}, missing: {ctx_rel['missing_facts']}, "
                   f"relevant chunks: {ctx_rel.get('relevant_chunks', '?')}/{ctx_rel.get('total_chunks', '?')} |")
         md.append(f"| Faithfulness | {faithful['score']:.0%} | "
-                  f"number grounding: {faithful['number_grounding']:.0%}, "
-                  f"uncertain: {faithful['has_uncertainty']} |")
+                  f"number grounding: {faithful.get('number_grounding', 0):.0%}, "
+                  f"uncertain: {faithful.get('has_uncertainty', False)} |")
         md.append(f"| Answer Correctness | {correctness['score']:.0%} | "
                   f"facts: {correctness['found']}, missing: {correctness['missing']}, "
                   f"gt overlap: {correctness['gt_overlap']:.0%} |")

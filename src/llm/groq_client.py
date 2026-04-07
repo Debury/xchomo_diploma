@@ -8,10 +8,12 @@ import logging
 import requests
 from typing import Optional
 
+from src.llm.base import BaseLLMClient
+
 logger = logging.getLogger(__name__)
 
 
-class GroqClient:
+class GroqClient(BaseLLMClient):
     def __init__(self):
         self.api_key = os.getenv("GROQ_API_KEY")
         self.base_url = "https://api.groq.com/openai/v1"
@@ -77,7 +79,7 @@ class GroqClient:
             error_detail = ""
             try:
                 error_detail = resp.json().get("error", {}).get("message", "")
-            except:
+            except Exception:
                 pass
             raise Exception(f"Groq API error: {e} - {error_detail}")
         except Exception as e:

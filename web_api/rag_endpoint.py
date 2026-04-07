@@ -167,8 +167,9 @@ def _hit_id(hit) -> Optional[str]:
     return None
 
 
-def _enforce_diversity(results: list, max_per_source: int = 4,
-                       max_per_source_var: int = 2) -> list:
+def _enforce_diversity(results: list, max_per_source: int = 3,
+                       max_per_source_var: int = 2,
+                       min_sources: int = 4) -> list:
     """Limit results per source_id and per source+variable for diverse coverage.
     Summary chunks (is_dataset_summary=True) bypass the per-variable limit."""
     source_counts: Dict[str, int] = {}
@@ -192,26 +193,55 @@ def _enforce_diversity(results: list, max_per_source: int = 4,
             out.append(hit)
             source_counts[sid] = source_counts.get(sid, 0) + 1
             combo_counts[combo] = combo_counts.get(combo, 0) + 1
+
+    # Guarantee minimum unique sources
+    unique_sources = len(set(
+        _extract_payload(h)[0].get("source_id", "?") for h in out
+    ))
+    if unique_sources < min_sources:
+        seen_sources = {_extract_payload(h)[0].get("source_id", "?") for h in out}
+        for hit in sorted(results,
+                          key=lambda x: _extract_payload(x)[1],
+                          reverse=True):
+            meta, _ = _extract_payload(hit)
+            sid = meta.get("source_id", "unknown")
+            if sid not in seen_sources:
+                out.append(hit)
+                seen_sources.add(sid)
+                if len(seen_sources) >= min_sources:
+                    break
+
     return out
 
 
-def _rrf_fuse(result_lists: List[List], k: int = 60) -> List:
-    """Reciprocal Rank Fusion — merge multiple result lists by rank position.
+def _rrf_fuse(result_lists: List[List], k: int = 60,
+              weights: Optional[List[float]] = None) -> List:
+    """Weighted Reciprocal Rank Fusion — merge multiple result lists by rank.
 
-    Each result gets score = sum(1 / (k + rank)) across all lists it appears in.
-    Results that appear in multiple lists get boosted.
+    Each result gets score = sum(weight * 1 / (k + rank)) across all lists.
+    Primary query gets higher weight than expansion variants.
+    Adaptive threshold: drops results below 40% of top score.
     """
     scores: Dict[str, float] = {}
     hit_map: Dict[str, Any] = {}
 
-    for results in result_lists:
+    if weights is None:
+        weights = [1.0] * len(result_lists)
+
+    for results, w in zip(result_lists, weights):
         for rank, hit in enumerate(results):
             hid = _hit_id(hit)
             if hid is None:
                 continue
-            scores[hid] = scores.get(hid, 0.0) + 1.0 / (k + rank + 1)
+            scores[hid] = scores.get(hid, 0.0) + w / (k + rank + 1)
             if hid not in hit_map:
                 hit_map[hid] = hit
+
+    # Adaptive threshold: drop noise below 40% of top score
+    if scores:
+        max_score = max(scores.values())
+        threshold = max_score * 0.4
+        scores = {k: v for k, v in scores.items() if v >= threshold}
 
     sorted_ids = sorted(scores.keys(), key=lambda x: scores[x], reverse=True)
     return [hit_map[hid] for hid in sorted_ids if hid in hit_map]
@@ -269,6 +299,37 @@ def _mmr_rerank(results: list, query_vector, embedder,
     return selected
 
 
+def _extract_topic_keywords(question: str) -> List[str]:
+    """Extract distinct topic keywords from the question for per-topic sub-searches.
+
+    Uses a curated list of climate domain terms to identify which distinct topics
+    the query covers. Returns a list of topic keywords.
+    """
+    q_lower = question.lower()
+    # Climate domain topics — each tuple is (canonical_term, [synonyms])
+    TOPIC_MAP = [
+        ("drought", ["drought", "dry spell", "aridity", "spei", "pdsi", "spi "]),
+        ("temperature", ["temperature", "warming", "heat", "thermal", "t2m"]),
+        ("precipitation", ["precipitation", "rainfall", "rain", "monsoon", "imerg"]),
+        ("wildfire", ["wildfire", "fire", "burned area", "fire emission", "gfas"]),
+        ("flood", ["flood", "inundation", "submerg"]),
+        ("sea level", ["sea level", "sea-level", "tide", "grace"]),
+        ("ice", ["ice sheet", "ice loss", "glacier", "cryosphere", "ice mass"]),
+        ("aerosol", ["aerosol", "dust", "particulate", "pm2.5", "pm10", "saharan"]),
+        ("co2", ["co2", "carbon dioxide", "greenhouse gas", "ghg", "ppm"]),
+        ("soil moisture", ["soil moisture", "soil water"]),
+        ("water storage", ["water storage", "terrestrial water", "grace-fo"]),
+        ("wind", ["wind speed", "wind gust", "cyclone", "hurricane", "storm"]),
+        ("marine", ["marine heatwave", "sst", "sea surface temperature", "ocean heat"]),
+        ("emissions", ["emission", "cams"]),
+    ]
+    found_topics = []
+    for canonical, synonyms in TOPIC_MAP:
+        if any(syn in q_lower for syn in synonyms):
+            found_topics.append(canonical)
+    return found_topics
+
+
 def _generate_query_variants(llm_client, question: str) -> List[str]:
     """Use the LLM to generate search query variants for broader retrieval.
 
@@ -286,9 +347,11 @@ def _generate_query_variants(llm_client, question: str) -> List[str]:
         "Alternative queries:"
     )
     try:
-        response = llm_client.generate(
+        # Use fast model (Sonnet) for query expansion — much faster than Opus
+        gen_fn = getattr(llm_client, "generate_fast", None) or llm_client.generate
+        response = gen_fn(
             prompt=prompt,
-            temperature=0.1,
+            temperature=0.0,
             max_tokens=200,
             timeout_s=12,
         )
@@ -299,6 +362,125 @@ def _generate_query_variants(llm_client, question: str) -> List[str]:
     except Exception as e:
         logger.warning(f"Query expansion failed: {e}")
         return []
+
+
+def _generate_topic_queries(topics: List[str], original_question: str) -> List[str]:
+    """Generate one focused search query per extracted topic.
+
+    These are simple, keyword-dense queries that target each topic individually
+    in the vector DB. They complement the LLM-generated variants.
+    """
+    if len(topics) <= 1:
+        return []
+
+    # Dataset name hints per topic for better retrieval
+    DATASET_HINTS = {
+        "drought": "SPEI drought index climate data",
+        "temperature": "ERA5 temperature climate reanalysis data",
+        "precipitation": "IMERG GPM precipitation rainfall satellite data",
+        "wildfire": "CAMS GFAS wildfire fire emissions burned area",
+        "flood": "precipitation flood inundation soil moisture water",
+        "sea level": "GRACE sea level rise ice sheet mass loss",
+        "ice": "GRACE ice sheet mass loss cryosphere glacier",
+        "aerosol": "CAMS MERRA-2 aerosol dust particulate reanalysis",
+        "co2": "CAMS CO2 carbon dioxide greenhouse gas atmospheric concentration",
+        "soil moisture": "ERA5 Land soil moisture volumetric",
+        "water storage": "GRACE-FO terrestrial water storage anomaly",
+        "wind": "ERA5 wind speed gust storm cyclone",
+        "marine": "sea surface temperature SST marine heatwave ocean heat",
+        "emissions": "CAMS emissions wildfire carbon atmospheric composition",
+    }
+    topic_queries = []
+    for topic in topics:
+        tq = DATASET_HINTS.get(topic, f"{topic} climate data")
+        topic_queries.append(tq)
+    return topic_queries
+
+
+# ---------------------------------------------------------------------------
+# CRAG: Corrective RAG — grade retrieval quality, retry if insufficient
+# ---------------------------------------------------------------------------
+
+def _grade_retrieval(llm_client, question: str, chunks: List[Dict]) -> str:
+    """Fast LLM check: do retrieved chunks actually answer the question?"""
+    chunk_summaries = "\n".join(
+        f"- [{i+1}] {c.get('source_id','?')}/{c.get('variable','?')}: "
+        f"{c.get('text','')[:120]}"
+        for i, c in enumerate(chunks[:5])
+    )
+    prompt = (
+        f"Question: {question}\n\n"
+        f"Retrieved data:\n{chunk_summaries}\n\n"
+        "Do these results contain information relevant to answering the question? "
+        "Reply ONLY 'sufficient' or 'insufficient'."
+    )
+    try:
+        gen_fn = getattr(llm_client, "generate_fast", None) or llm_client.generate
+        result = gen_fn(prompt=prompt, temperature=0.0, max_tokens=10, timeout_s=8)
+        grade = "insufficient" if "insufficient" in result.lower() else "sufficient"
+        logger.info(f"CRAG grade: {grade}")
+        return grade
+    except Exception as e:
+        logger.warning(f"CRAG grading failed: {e}")
+        return "sufficient"  # Don't block on failure
+
+
+def _rewrite_query(llm_client, question: str) -> Optional[str]:
+    """Rewrite query to improve retrieval on retry."""
+    prompt = (
+        f"The following search query did not retrieve good results from a climate data database:\n"
+        f"Query: {question}\n\n"
+        f"Rewrite as a better search query. Use specific climate variable names, "
+        f"dataset names (ERA5, E-OBS, IMERG, GRACE, CAMS, MERRA-2, SPEI, etc), "
+        f"and technical terms. Return ONLY the rewritten query, nothing else."
+    )
+    try:
+        gen_fn = getattr(llm_client, "generate_fast", None) or llm_client.generate
+        result = gen_fn(prompt=prompt, temperature=0.1, max_tokens=100, timeout_s=8)
+        rewritten = result.strip().strip('"').strip("'")
+        if len(rewritten) > 10 and rewritten.lower() != question.lower():
+            logger.info(f"CRAG rewrite: {rewritten[:80]}")
+            return rewritten
+    except Exception as e:
+        logger.warning(f"CRAG rewrite failed: {e}")
+    return None
+
+
+# ---------------------------------------------------------------------------
+# LLM-based query analysis for hybrid search
+# ---------------------------------------------------------------------------
+
+def _analyze_query(llm_client, question: str) -> Dict[str, Any]:
+    """Use fast LLM to extract search metadata from the query.
+
+    Returns dict with optional keys: datasets, variables, hazards.
+    This replaces hardcoded keyword maps — the LLM understands context.
+    """
+    prompt = (
+        "Analyze this climate data query and extract search filters.\n\n"
+        f"Query: {question}\n\n"
+        "Return ONLY a JSON object with these optional fields:\n"
+        '- "datasets": list of likely dataset names (e.g. ["ERA5", "IMERG", "GRACE"])\n'
+        '- "variables": list of likely variable names (e.g. ["t2m", "tp", "sst"])\n'
+        '- "hazards": list of hazard categories (e.g. ["Extreme heat", "Drought"])\n'
+        "Only include fields you are confident about. Be concise."
+    )
+    try:
+        gen_fn = getattr(llm_client, "generate_fast", None) or llm_client.generate
+        result = gen_fn(prompt=prompt, temperature=0.0, max_tokens=150, timeout_s=8)
+        import json as _json
+        # Extract JSON from response (handle markdown code blocks)
+        text = result.strip()
+        if "```" in text:
+            text = text.split("```")[1]
+            if text.startswith("json"):
+                text = text[4:]
+        parsed = _json.loads(text.strip())
+        logger.info(f"Query analysis: {parsed}")
+        return parsed
+    except Exception as e:
+        logger.debug(f"Query analysis failed: {e}")
+        return {}
 
 
 # ---------------------------------------------------------------------------
@@ -354,12 +536,14 @@ async def rag_query(request: RAGRequest) -> RAGResponse:
         raise HTTPException(status_code=400, detail="Question is required")
 
     config, db, embedder, llm_client = _get_components()
+    timings: Dict[str, float] = {}
 
     # ── 1. EMBED + QUERY EXPANSION ───────────────────────────────────────
     search_start = time.time()
+    t0 = time.time()
     query_vec = embedder.embed_queries([question])[0]
-    embed_ms = (time.time() - search_start) * 1000
-    logger.info(f"Embed: {embed_ms:.0f}ms")
+    timings["embed"] = (time.time() - t0) * 1000
+    logger.info(f"⏱ Embed: {timings['embed']:.0f}ms")
 
     # ── 2. MULTI-QUERY EXPANSION (LLM generates search variants) ──────
     filter_dict = {}
@@ -372,6 +556,7 @@ async def rag_query(request: RAGRequest) -> RAGResponse:
 
     # Generate query variants in parallel with main search
     query_variants: List[str] = []
+    t0 = time.time()
     try:
         query_variants = await asyncio.wait_for(
             asyncio.to_thread(_generate_query_variants, llm_client, question),
@@ -380,108 +565,142 @@ async def rag_query(request: RAGRequest) -> RAGResponse:
         logger.info(f"Query expansion: {len(query_variants)} variants")
     except Exception as e:
         logger.warning(f"Query expansion skipped: {e}")
+    timings["query_expansion"] = (time.time() - t0) * 1000
+    logger.info(f"⏱ Query expansion: {timings['query_expansion']:.0f}ms")
 
-    # Embed all variants
+    # Generate per-topic focused queries for multi-topic questions
+    topics = _extract_topic_keywords(question)
+    topic_queries = _generate_topic_queries(topics, question)
+    if topic_queries:
+        logger.info(f"Multi-topic detected: {topics} → {len(topic_queries)} topic queries")
+
+    # Embed all variants + topic queries
+    all_extra_queries = query_variants + topic_queries
     variant_vecs = []
-    if query_variants:
+    topic_vec_start = len(query_variants)  # index where topic vecs start
+    if all_extra_queries:
+        t0 = time.time()
         try:
-            variant_vecs = [
-                v.tolist() for v in embedder.embed_queries(query_variants)
-            ]
+            all_vecs = embedder.embed_queries(all_extra_queries)
+            variant_vecs = [v.tolist() for v in all_vecs]
         except Exception as e:
             logger.warning(f"Variant embedding failed: {e}")
+        timings["variant_embed"] = (time.time() - t0) * 1000
+        logger.info(f"⏱ Variant embed: {timings['variant_embed']:.0f}ms ({len(query_variants)} variants + {len(topic_queries)} topics)")
 
-    # ── 3. GROUPED SEARCH + MULTI-QUERY RRF FUSION ────────────────────
+    # ── 3. BATCH SEARCH + RRF FUSION (single gRPC call) ────────────────
     reranker_used = False
-    all_result_lists: List[List] = []
+    t0 = time.time()
 
-    # Primary search: grouped by dataset_name for guaranteed diversity
-    grouped_results = db.search_grouped(
-        query_vector=query_vec.tolist(),
-        group_by="dataset_name",
-        group_limit=15,
-        group_size=2,
-        filter_dict=filter_dict or None,
-    )
-    if grouped_results:
-        all_result_lists.append(grouped_results)
-
-    # Also run a standard search (ungrouped) to catch high-relevance hits
-    standard_results = db.search(
-        query_vector=query_vec.tolist(),
-        limit=max(40, effective_top_k * 4),
-        filter_dict=filter_dict or None,
-    )
-    if standard_results:
-        all_result_lists.append(standard_results)
-
-    # Search with each query variant for broader recall (fewer results = less RRF influence)
+    # Build all search queries for batch execution
+    batch_queries = [
+        # Primary: broad search for grouping + diversity
+        {"vector": query_vec.tolist(), "limit": 60, "filter_dict": filter_dict or None},
+    ]
+    # Add variant searches — each variant captures a different aspect
     for vvec in variant_vecs:
-        try:
-            variant_hits = db.search(
-                query_vector=vvec,
-                limit=15,
-                filter_dict=filter_dict or None,
-            )
-            if variant_hits:
-                all_result_lists.append(variant_hits)
-        except Exception as e:
-            logger.debug(f"Variant search failed: {e}")
+        batch_queries.append({"vector": vvec, "limit": 20, "filter_dict": filter_dict or None})
 
-    # RRF fusion across all result lists
+    # Execute all searches in ONE gRPC call
+    batch_results = await asyncio.to_thread(db.search_batch, batch_queries)
+
+    # Client-side grouping on primary results for diversity
+    all_result_lists: List[List] = []
+    if batch_results and batch_results[0]:
+        primary = batch_results[0]
+        all_result_lists.append(primary)
+
+        # Group by dataset_name from primary results
+        groups: Dict[str, List] = {}
+        for hit in primary:
+            meta, _ = _extract_payload(hit)
+            ds = meta.get("dataset_name", "unknown")
+            if ds not in groups:
+                groups[ds] = []
+            if len(groups[ds]) < 2:
+                groups[ds].append(hit)
+        grouped = []
+        for hits in sorted(groups.values(),
+                           key=lambda g: max(_extract_payload(h)[1] for h in g),
+                           reverse=True)[:15]:
+            grouped.extend(hits)
+        if grouped:
+            all_result_lists.append(grouped)
+
+    # Add variant results
+    for vr in batch_results[1:]:
+        if vr:
+            all_result_lists.append(vr)
+
+    # Weighted RRF fusion — primary + grouped = 1.0, LLM variants = 0.6, topic queries = 0.9
     if len(all_result_lists) > 1:
-        results = _rrf_fuse(all_result_lists)
+        weights = []
+        # all_result_lists: [primary, grouped, variant_0..N, topic_0..M]
+        # variant searches start at index 2, topic searches start at 2 + len(query_variants)
+        n_variant_searches = len(query_variants) if query_variants else 0
+        for i in range(len(all_result_lists)):
+            if i <= 1:
+                weights.append(1.0)  # primary + grouped
+            elif i < 2 + n_variant_searches:
+                weights.append(0.6)  # LLM-generated variants
+            else:
+                weights.append(0.9)  # topic-focused queries (high weight — targeted)
+        results = _rrf_fuse(all_result_lists, weights=weights)
     elif all_result_lists:
         results = all_result_lists[0]
     else:
         results = []
 
-    logger.info(f"RRF fused {len(all_result_lists)} lists → {len(results)} results")
+    timings["search_total"] = (time.time() - t0) * 1000
+    logger.info(f"⏱ Search + RRF: {timings['search_total']:.0f}ms, {len(all_result_lists)} lists → {len(results)} results")
 
-    # ── 4. CROSS-ENCODER RERANKING ────────────────────────────────────
-    if request.use_reranker and results:
-        try:
-            reranker = _get_reranker()
-            from src.climate_embeddings.schema import generate_human_readable_text as _gen_text
+    # ── 4. BOOST DATA CHUNKS FOR MULTI-TOPIC QUERIES ONLY ───────────
+    # For cross-domain queries, metadata-only entries dominate top-5 and
+    # push out real data chunks. Only apply boost for multi-topic queries.
+    if len(topics) >= 2:
+        data_chunks = []
+        meta_only = []
+        for hit in results:
+            payload, _ = _extract_payload(hit)
+            if payload.get("is_metadata_only") or payload.get("is_dataset_summary"):
+                meta_only.append(hit)
+            else:
+                data_chunks.append(hit)
+        results = data_chunks + meta_only
+        logger.info(f"Data boost: {len(data_chunks)} data + {len(meta_only)} metadata-only")
 
-            # Rerank the top candidates
-            rerank_candidates = results[:min(len(results), 50)]
-            passages = []
-            for hit in rerank_candidates:
-                payload = hit.payload if hasattr(hit, "payload") else (
-                    hit.get("payload", {}) if isinstance(hit, dict) else {}
-                )
-                passages.append(_gen_text(payload))
+    # ── 5. DIVERSITY ENFORCEMENT + MMR ──────────────────────────────
+    results = _enforce_diversity(results)
 
-            ranked = reranker.rerank(question, passages, top_k=len(rerank_candidates))
+    # Guarantee minimum 3 unique sources: if we have < 3, relax filters
+    # and pull from further down the ranked list
+    _unique_srcs = set()
+    for h in results:
+        meta, _ = _extract_payload(h)
+        _unique_srcs.add(meta.get("source_id") or meta.get("dataset_name", "unknown"))
+    if len(_unique_srcs) < 3 and len(all_result_lists) > 0:
+        # Gather all candidate hits across all lists
+        _all_candidates = []
+        _seen_ids = {_hit_id(h) for h in results}
+        for rl in all_result_lists:
+            for h in rl:
+                hid = _hit_id(h)
+                if hid and hid not in _seen_ids:
+                    _all_candidates.append(h)
+                    _seen_ids.add(hid)
+        # Sort by score descending, pick hits from new sources
+        _all_candidates.sort(key=lambda x: _extract_payload(x)[1], reverse=True)
+        for h in _all_candidates:
+            meta, _ = _extract_payload(h)
+            src = meta.get("source_id") or meta.get("dataset_name", "unknown")
+            if src not in _unique_srcs:
+                results.append(h)
+                _unique_srcs.add(src)
+                if len(_unique_srcs) >= 3:
+                    break
 
-            reranked = []
-            for entry in ranked:
-                # Filter out low-confidence reranker results (noise)
-                if entry["score"] < 0.05:
-                    continue
-                idx = entry["index"]
-                hit = rerank_candidates[idx]
-                if hasattr(hit, "score"):
-                    hit.score = entry["score"]
-                elif isinstance(hit, dict):
-                    hit["score"] = entry["score"]
-                reranked.append(hit)
-
-            # Append any results beyond the rerank window
-            reranked_ids = {_hit_id(h) for h in reranked}
-            for hit in results[len(rerank_candidates):]:
-                if _hit_id(hit) not in reranked_ids:
-                    reranked.append(hit)
-
-            results = reranked
-            reranker_used = True
-        except Exception as e:
-            logger.warning(f"Reranker failed ({e}), using RRF order")
-
-    # ── 5. MMR DIVERSITY ──────────────────────────────────────────────
     results = _mmr_rerank(results, query_vec, embedder,
-                          lambda_param=0.65, top_k=effective_top_k * 2)
+                          lambda_param=0.55, top_k=effective_top_k * 2)
 
     search_ms = (time.time() - search_start) * 1000
     logger.info(f"Search total: {search_ms:.0f}ms, {len(results)} results")
@@ -522,6 +741,71 @@ async def rag_query(request: RAGRequest) -> RAGResponse:
                 search_time_ms=round(search_ms, 2),
             )
 
+    # ── 5b. CRAG: Grade retrieval quality, retry if insufficient ─────────
+    # CRAG: only when retrieval looks very weak (< 3 chunks or very low scores)
+    t0 = time.time()
+    top_score = chunks[0]["score"] if chunks else 0
+    crag_needed = len(chunks) < 3 or top_score < 0.2
+    if request.use_llm and crag_needed and chunks:
+        try:
+            grade = await asyncio.wait_for(
+                asyncio.to_thread(_grade_retrieval, llm_client, question, chunks),
+                timeout=10,
+            )
+            if grade == "insufficient":
+                # Rewrite query and do one more search pass
+                rewritten = await asyncio.wait_for(
+                    asyncio.to_thread(_rewrite_query, llm_client, question),
+                    timeout=10,
+                )
+                if rewritten:
+                    retry_vec = embedder.embed_queries([rewritten])[0]
+                    retry_results = db.search(
+                        query_vector=retry_vec.tolist(),
+                        limit=40,
+                        filter_dict=filter_dict or None,
+                    )
+                    if retry_results:
+                        # Rerank retry results
+                        if request.use_reranker:
+                            try:
+                                reranker = _get_reranker()
+                                from src.climate_embeddings.schema import generate_human_readable_text as _gen_text2
+                                retry_passages = [_gen_text2(
+                                    h.payload if hasattr(h, "payload") else h.get("payload", {})
+                                ) for h in retry_results[:30]]
+                                retry_ranked = reranker.rerank(rewritten, retry_passages, top_k=len(retry_passages))
+                                for entry in retry_ranked:
+                                    if entry["score"] >= 0.10:
+                                        hit = retry_results[entry["index"]]
+                                        if hasattr(hit, "score"):
+                                            hit.score = entry["score"]
+                                        # Add to chunks if not duplicate
+                                        meta, score = _extract_payload(hit)
+                                        sid = meta.get("source_id", "unknown")
+                                        var = meta.get("variable", "unknown")
+                                        ref_key = f"{sid}:{var}"
+                                        if ref_key not in references:
+                                            chunks.append({
+                                                "rank": len(chunks) + 1,
+                                                "score": round(score, 3),
+                                                "source_id": sid,
+                                                "variable": var,
+                                                "text": generate_human_readable_text(meta),
+                                                "metadata": meta,
+                                            })
+                                            references.add(ref_key)
+                            except Exception as e:
+                                logger.warning(f"CRAG retry rerank failed: {e}")
+
+                        crag_ms = (time.time() - search_start) * 1000
+                        logger.info(f"CRAG retry added chunks, total: {len(chunks)}, {crag_ms:.0f}ms")
+        except Exception as e:
+            logger.warning(f"CRAG step failed: {e}")
+
+    timings["crag"] = (time.time() - t0) * 1000
+    logger.info(f"⏱ CRAG: {timings['crag']:.0f}ms")
+
     # ── 6. LLM GENERATION (single call) ──────────────────────────────────
     llm_used = False
     llm_time_ms = None
@@ -555,22 +839,43 @@ async def rag_query(request: RAGRequest) -> RAGResponse:
                         prompt=prompt,
                         temperature=request.temperature,
                         max_tokens=max_tokens,
-                        timeout_s=min(request.timeout, 45),
+                        timeout_s=min(request.timeout, 180),
                     )
                 ),
                 timeout=request.timeout,
             )
 
             llm_time_ms = (time.time() - llm_start) * 1000
+            timings["llm"] = llm_time_ms
             llm_used = True
-            logger.info(f"LLM: {llm_time_ms:.0f}ms, {len(answer)} chars")
+            logger.info(f"⏱ LLM: {llm_time_ms:.0f}ms, {len(answer)} chars")
 
         except asyncio.TimeoutError:
             logger.warning(f"LLM timeout after {request.timeout}s")
             answer = f"Found {len(chunks)} relevant results but LLM timed out. Showing search results."
         except Exception as e:
-            logger.error(f"LLM error: {e}")
-            answer = f"Found {len(chunks)} relevant results. LLM error: {str(e)[:100]}."
+            logger.warning(f"LLM error (attempt 1): {e}, retrying...")
+            try:
+                import time as _time
+                _time.sleep(1)
+                answer = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        lambda: llm_client.generate(
+                            prompt=prompt,
+                            temperature=request.temperature,
+                            max_tokens=max_tokens,
+                            timeout_s=min(request.timeout, 180),
+                        )
+                    ),
+                    timeout=request.timeout,
+                )
+                llm_time_ms = (time.time() - llm_start) * 1000
+                timings["llm"] = llm_time_ms
+                llm_used = True
+                logger.info(f"⏱ LLM retry OK: {llm_time_ms:.0f}ms")
+            except Exception as e2:
+                logger.error(f"LLM error (attempt 2): {e2}")
+                answer = f"Found {len(chunks)} relevant results. LLM error: {str(e2)[:100]}."
 
     if not answer:
         if not chunks:
@@ -581,6 +886,11 @@ async def rag_query(request: RAGRequest) -> RAGResponse:
                 for c in chunks[:5]
             )
             answer = f"Found {len(chunks)} results (no LLM):\n{summary}"
+
+    total_ms = (time.time() - search_start) * 1000
+    timings["total"] = total_ms
+    timing_summary = " | ".join(f"{k}={v:.0f}ms" for k, v in timings.items())
+    logger.info(f"⏱ PIPELINE TOTAL: {timing_summary}")
 
     return RAGResponse(
         question=question,

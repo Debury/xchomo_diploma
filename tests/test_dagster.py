@@ -4,13 +4,8 @@ Tests for Dagster Components
 Tests for ops, resources, schedules, and sensors using Dagster test utilities.
 """
 
-import sys
 import pytest
-from pathlib import Path
 from datetime import datetime
-
-# Add project root to path
-sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from dagster import build_op_context, DagsterInstance, build_schedule_context, build_sensor_context
 from dagster_project.resources import ConfigLoaderResource, LoggerResource, DataPathResource
