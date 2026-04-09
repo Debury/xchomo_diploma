@@ -168,10 +168,89 @@ def test_connection(url: str, timeout: int = 15) -> Dict[str, Any]:
     return result
 
 
-def analyze_url(url: str) -> Dict[str, Any]:
+def _extract_dataset_name_from_url(url: str, portal: Optional[str] = None) -> Optional[str]:
+    """Extract a human-readable dataset name from a URL."""
+    parsed = urlparse(url)
+    path = parsed.path.strip("/")
+
+    # CDS: /api/v2/resources/reanalysis-era5-land → "reanalysis-era5-land"
+    if portal == "CDS" or "cds.climate.copernicus.eu" in (parsed.hostname or ""):
+        parts = path.split("/")
+        if parts:
+            slug = parts[-1]
+            # Clean up CDS slug: "sis-agrometeorological-indicators" → "SIS Agrometeorological Indicators"
+            return slug.replace("-", " ").replace("_", " ").title()
+
+    # NOAA: /Datasets/ncep.reanalysis2/Monthlies/pressure/air.mon.mean.nc → "NCEP Reanalysis2"
+    if portal == "NOAA" or "psl.noaa.gov" in (parsed.hostname or ""):
+        if "/Datasets/" in parsed.path or "/datasets/" in path:
+            dataset_part = path.split("atasets/")[-1].split("/")[0]
+            return dataset_part.replace(".", " ").replace("_", " ").title()
+
+    # NASA: extract from path
+    if portal == "NASA":
+        parts = path.split("/")
+        for p in reversed(parts):
+            if p and not p.startswith(".") and len(p) > 3:
+                return p.replace("_", " ").replace("-", " ").title()
+
+    # Marine Copernicus
+    if portal == "MARINE":
+        parts = path.split("/")
+        if parts:
+            return parts[-1].replace("-", " ").replace("_", " ").upper()
+
+    # Generic: use filename without extension
+    if path:
+        filename = path.split("/")[-1]
+        name = filename.rsplit(".", 1)[0] if "." in filename else filename
+        if name and len(name) > 2:
+            return name.replace("_", " ").replace("-", " ").title()
+
+    return None
+
+
+def _match_existing_dataset(extracted_name: str, existing_datasets: list) -> Optional[Dict]:
+    """Fuzzy match an extracted name against existing datasets."""
+    if not extracted_name or not existing_datasets:
+        return None
+
+    extracted_lower = extracted_name.lower()
+    extracted_tokens = set(extracted_lower.replace("-", " ").replace("_", " ").split())
+
+    best_match = None
+    best_score = 0
+
+    for ds in existing_datasets:
+        ds_name = (ds.get("dataset_name") or "").lower()
+        ds_tokens = set(ds_name.replace("-", " ").replace("_", " ").split())
+
+        # Exact match
+        if extracted_lower == ds_name:
+            return ds
+
+        # Token overlap score
+        if ds_tokens and extracted_tokens:
+            overlap = len(extracted_tokens & ds_tokens)
+            score = overlap / max(len(extracted_tokens), len(ds_tokens))
+            # Also check substring containment
+            if ds_name in extracted_lower or extracted_lower in ds_name:
+                score = max(score, 0.7)
+            if score > best_score and score >= 0.4:
+                best_score = score
+                best_match = ds
+
+    return best_match
+
+
+def analyze_url(url: str, existing_datasets: list = None) -> Dict[str, Any]:
     """
-    Analyze a URL to auto-detect format, portal, and suggested auth.
+    Analyze a URL to auto-detect format, portal, auth, and dataset grouping.
     Combines URL parsing with a connection test.
+
+    Args:
+        url: The URL to analyze
+        existing_datasets: List of existing dataset dicts (from Qdrant) for grouping
     """
     conn = test_connection(url)
 
@@ -186,7 +265,16 @@ def analyze_url(url: str) -> Dict[str, Any]:
                 conn["detected_format"] = fmt
                 break
 
-    return {
+    # Extract dataset name from URL
+    portal = conn["detected_portal"]
+    extracted_name = _extract_dataset_name_from_url(url, portal)
+
+    # Match against existing datasets
+    matched_dataset = None
+    if extracted_name and existing_datasets:
+        matched_dataset = _match_existing_dataset(extracted_name, existing_datasets)
+
+    result = {
         "url": url,
         "reachable": conn["reachable"],
         "content_type": conn["content_type"],
@@ -195,4 +283,15 @@ def analyze_url(url: str) -> Dict[str, Any]:
         "suggested_auth": conn["suggested_auth"],
         "latency_ms": conn["latency_ms"],
         "error": conn["error"],
+        "suggested_name": extracted_name,
+        "matched_dataset": None,
     }
+
+    if matched_dataset:
+        result["matched_dataset"] = {
+            "dataset_name": matched_dataset.get("dataset_name"),
+            "source_id": matched_dataset.get("source_id"),
+            "chunk_count": matched_dataset.get("chunk_count", 0),
+        }
+
+    return result

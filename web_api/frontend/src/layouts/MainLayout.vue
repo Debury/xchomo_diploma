@@ -170,9 +170,7 @@ onUnmounted(() => {
 const navItems = [
   { path: '/', label: 'Dashboard' },
   { path: '/chat', label: 'Chat' },
-  { path: '/catalog', label: 'Catalog' },
   { path: '/sources', label: 'Sources' },
-  { path: '/embeddings', label: 'Embeddings' },
   { path: '/etl', label: 'ETL Monitor' },
   { path: '/schedules', label: 'Schedules' },
   { path: '/settings', label: 'Settings' },

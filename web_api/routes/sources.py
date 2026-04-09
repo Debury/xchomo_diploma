@@ -83,36 +83,249 @@ async def create_source(source: SourceCreate):
         raise HTTPException(500, str(e))
 
 
-@router.get("/", response_model=List[SourceResponse])
-async def list_sources(active_only: bool = True):
-    """List all sources."""
-    from src.sources import get_source_store
+@router.get("/")
+async def list_sources(active_only: bool = False):
+    """List all sources. Qdrant is the truth for what data exists,
+    PostgreSQL provides management metadata (schedules, auth, processing history)."""
 
-    persisted = load_settings()
-    source_creds = persisted.get("source_credentials", {})
+    # 1. Get all datasets from Qdrant (the truth)
+    qdrant_datasets = []
+    try:
+        from web_api.routes.qdrant_datasets import list_qdrant_datasets
+        qdrant_datasets = await list_qdrant_datasets()
+    except Exception as e:
+        logger.warning(f"Could not fetch Qdrant datasets: {e}")
+
+    # 2. Get PostgreSQL management data
+    db_sources = {}
+    try:
+        from src.sources import get_source_store
+        for s in get_source_store().get_all_sources(active_only=False):
+            d = s.to_dict()
+            db_sources[d["source_id"]] = d
+    except Exception:
+        pass
 
     schedules_map = {}
     try:
         from src.database.connection import get_db_session
         from src.database.models import SourceSchedule
-
         with get_db_session() as session:
             for sched in session.query(SourceSchedule).all():
                 schedules_map[sched.source_id] = sched.to_dict()
     except Exception:
         pass
 
+    persisted = load_settings()
+    source_creds = persisted.get("source_credentials", {})
+
+    # 3. Build unified list: Qdrant datasets enriched with DB management info
+    seen_source_ids = set()
     results = []
-    for s in get_source_store().get_all_sources(active_only):
-        d = s.to_dict()
-        cred_info = source_creds.get(d.get("source_id", ""), {})
-        d["auth_method"] = d.get("auth_method") or cred_info.get("auth_method")
-        d["portal"] = d.get("portal") or cred_info.get("portal")
-        sched = schedules_map.get(d.get("source_id", ""))
+
+    for qd in qdrant_datasets:
+        source_id = qd.get("source_id") or ""
+        dataset_name = qd.get("dataset_name") or source_id
+        seen_source_ids.add(source_id)
+
+        # Start with Qdrant data
+        entry = {
+            "source_id": source_id,
+            "dataset_name": dataset_name,
+            "url": qd.get("link") or "",
+            "format": None,
+            "variables": [v["name"] for v in qd.get("variables", [])],
+            "is_active": True,
+            "processing_status": "completed" if qd.get("chunk_count", 0) > 10 else "metadata_only",
+            "embedding_count": qd.get("chunk_count", 0),
+            "hazard_type": qd.get("hazard_type"),
+            "location_name": qd.get("location_name"),
+            "impact_sector": qd.get("impact_sector"),
+            "spatial_coverage": qd.get("spatial_coverage"),
+            "catalog_source": qd.get("catalog_source"),
+            "is_metadata_only": qd.get("is_metadata_only", False),
+            "time_start": qd.get("time_start"),
+            "time_end": qd.get("time_end"),
+        }
+
+        # Enrich with DB management data if available
+        db = db_sources.get(source_id, {})
+        if db:
+            entry["url"] = db.get("url") or entry["url"]
+            entry["format"] = db.get("format")
+            entry["description"] = db.get("description")
+            entry["is_active"] = db.get("is_active", True)
+            entry["error_message"] = db.get("error_message")
+            entry["last_processed"] = db.get("last_processed")
+            entry["tags"] = db.get("tags")
+            entry["created_at"] = db.get("created_at")
+            # DB processing_status overrides if it's more specific
+            db_status = db.get("processing_status")
+            if db_status and db_status != "pending":
+                entry["processing_status"] = db_status
+
+        # Auth & schedule
+        cred_info = source_creds.get(source_id, {})
+        entry["auth_method"] = db.get("auth_method") or cred_info.get("auth_method")
+        entry["portal"] = db.get("portal") or cred_info.get("portal")
+        sched = schedules_map.get(source_id)
         if sched:
-            d["schedule"] = sched
-        results.append(d)
+            entry["schedule"] = sched
+
+        results.append(entry)
+
+    # 4. Add DB-only sources not yet in Qdrant (e.g., just created, not processed yet)
+    for sid, db in db_sources.items():
+        if sid not in seen_source_ids:
+            db["embedding_count"] = 0
+            cred_info = source_creds.get(sid, {})
+            db["auth_method"] = db.get("auth_method") or cred_info.get("auth_method")
+            db["portal"] = db.get("portal") or cred_info.get("portal")
+            sched = schedules_map.get(sid)
+            if sched:
+                db["schedule"] = sched
+            results.append(db)
+
+    # Sort: most data first, then by name
+    results.sort(key=lambda r: (-r.get("embedding_count", 0), r.get("dataset_name", r.get("source_id", ""))))
+
     return results
+
+
+@router.post("/sync-from-qdrant")
+async def sync_sources_from_qdrant():
+    """Create PostgreSQL source records for all datasets in Qdrant.
+    Ensures every dataset has management metadata (for scheduling, history, etc.).
+    Skips sources that already have a DB record."""
+    from src.sources import get_source_store
+
+    store = get_source_store()
+    created = 0
+    skipped = 0
+
+    try:
+        from web_api.routes.qdrant_datasets import list_qdrant_datasets
+        datasets = await list_qdrant_datasets()
+    except Exception as e:
+        raise HTTPException(500, f"Could not fetch Qdrant datasets: {e}")
+
+    for ds in datasets:
+        source_id = ds.get("source_id")
+        if not source_id:
+            continue
+
+        existing = store.get_source(source_id)
+        if existing:
+            skipped += 1
+            continue
+
+        variables = [v["name"] for v in ds.get("variables", [])]
+        tags = []
+        if ds.get("catalog_source"):
+            tags.append(f"catalog:{ds['catalog_source']}")
+        if ds.get("hazard_type"):
+            tags.append(ds["hazard_type"])
+
+        store.create_source({
+            "source_id": source_id,
+            "url": ds.get("link") or "",
+            "format": None,
+            "variables": variables,
+            "is_active": True,
+            "description": ds.get("dataset_name") or source_id,
+            "tags": tags,
+            "processing_status": "completed" if ds.get("chunk_count", 0) > 10 else "metadata_only",
+            "embedding_model": "BAAI/bge-large-en-v1.5",
+        })
+        created += 1
+
+    # Clear caches
+    clear_rag_cache()
+
+    return {"created": created, "skipped": skipped, "total": created + skipped}
+
+
+@router.put("/{source_id}/metadata")
+async def update_source_metadata(source_id: str, updates: dict):
+    """Update metadata on both PostgreSQL and Qdrant payload.
+    Updates Qdrant payload fields on ALL points matching this source_id,
+    improving RAG retrieval without re-embedding."""
+
+    # Fields that go to Qdrant payload
+    qdrant_fields = {
+        "hazard_type", "keywords", "impact_sector", "location_name",
+        "spatial_coverage", "description", "dataset_name",
+    }
+    qdrant_updates = {k: v for k, v in updates.items() if k in qdrant_fields and v is not None}
+
+    # Update Qdrant payloads
+    qdrant_updated = 0
+    if qdrant_updates:
+        try:
+            import httpx
+            import os
+            qdrant_host = os.getenv("QDRANT_HOST", "localhost")
+            qdrant_port = os.getenv("QDRANT_REST_PORT", "6333")
+            qdrant_base = f"http://{qdrant_host}:{qdrant_port}"
+            collection = get_collection_name()
+
+            # Use Qdrant REST API directly (avoids gRPC timeout issues on bulk ops)
+            set_resp = httpx.post(
+                f"{qdrant_base}/collections/{collection}/points/payload",
+                json={
+                    "payload": qdrant_updates,
+                    "filter": {"must": [{"key": "source_id", "match": {"value": source_id}}]},
+                },
+                timeout=120.0,
+            )
+            set_resp.raise_for_status()
+
+            count_resp = httpx.post(
+                f"{qdrant_base}/collections/{collection}/points/count",
+                json={"filter": {"must": [{"key": "source_id", "match": {"value": source_id}}]}},
+                timeout=30.0,
+            )
+            if count_resp.status_code == 200:
+                qdrant_updated = count_resp.json().get("result", {}).get("count", 0)
+
+            logger.info(f"Updated Qdrant payload for {source_id}: {qdrant_updated} points, fields: {list(qdrant_updates.keys())}")
+        except Exception as e:
+            logger.error(f"Qdrant payload update failed for {source_id}: {e}")
+            raise HTTPException(500, f"Qdrant update failed: {e}")
+
+    # Update PostgreSQL source record
+    db_updated = False
+    try:
+        from src.sources import get_source_store
+        store = get_source_store()
+        source = store.get_source(source_id)
+        if source:
+            db_fields = {k: v for k, v in updates.items() if k in {
+                "url", "format", "description", "is_active", "variables", "tags",
+                "keywords", "hazard_type", "region_country", "spatial_coverage", "impact_sector",
+            }}
+            if db_fields:
+                store.update_source(source_id, db_fields)
+                db_updated = True
+    except Exception as e:
+        logger.warning(f"DB update failed for {source_id}: {e}")
+
+    # Clear caches
+    clear_rag_cache()
+    try:
+        from web_api.routes.qdrant_datasets import _DATASETS_CACHE, _COUNTS_CACHE
+        import web_api.routes.qdrant_datasets as qd_mod
+        qd_mod._DATASETS_CACHE = None
+        qd_mod._DATASETS_CACHE_TS = 0
+    except Exception:
+        pass
+
+    return {
+        "source_id": source_id,
+        "qdrant_points_updated": qdrant_updated,
+        "db_updated": db_updated,
+        "fields_updated": list(qdrant_updates.keys()) + ([k for k in updates if k not in qdrant_fields] if db_updated else []),
+    }
 
 
 @router.post("/{source_id}/trigger", response_model=RunResponse)
@@ -285,16 +498,151 @@ async def test_source_connection(source_id: str):
     return result
 
 
+@router.post("/scan-metadata")
+async def scan_source_metadata(data: dict):
+    """Read file metadata remotely (variables, time range, spatial extent, attributes).
+    For NetCDF/HDF5 files, reads only headers without downloading the full file."""
+    url = data.get("url", "")
+    if not url:
+        raise HTTPException(400, "URL is required")
+
+    import asyncio
+    loop = asyncio.get_event_loop()
+
+    def _scan():
+        result = {
+            "variables": [],
+            "time_range": {},
+            "spatial_extent": {},
+            "attributes": {},
+            "description": None,
+            "error": None,
+        }
+        try:
+            import xarray as xr
+            import tempfile
+            import requests as req
+
+            # Download to temp file (netcdf4 can't open URLs directly)
+            tmp = tempfile.NamedTemporaryFile(suffix=".nc", delete=False)
+            try:
+                resp = req.get(url, stream=True, timeout=(10, 60), headers={"User-Agent": "ClimateRAG/1.0"})
+                resp.raise_for_status()
+                # Check size from Content-Length, skip files over 200MB
+                content_length = int(resp.headers.get("Content-Length", 0))
+                if content_length > 200 * 1024 * 1024:
+                    tmp.close()
+                    import os
+                    os.unlink(tmp.name)
+                    result["error"] = f"File too large for scan ({content_length // 1024 // 1024}MB). Add the source and let the pipeline process it."
+                    return result
+
+                for chunk in resp.iter_content(chunk_size=65536):
+                    tmp.write(chunk)
+                tmp.close()
+            except Exception as dl_err:
+                tmp.close()
+                import os
+                os.unlink(tmp.name)
+                result["error"] = f"Download failed: {dl_err}"
+                return result
+
+            ds = xr.open_dataset(tmp.name)
+
+            # Variables
+            for var_name in ds.data_vars:
+                var = ds[var_name]
+                info = {"name": var_name}
+                if hasattr(var, "long_name"):
+                    info["long_name"] = str(var.attrs.get("long_name", ""))
+                if hasattr(var, "units"):
+                    info["units"] = str(var.attrs.get("units", ""))
+                result["variables"].append(info)
+
+            # Time range
+            if "time" in ds.coords:
+                times = ds.coords["time"]
+                try:
+                    result["time_range"]["start"] = str(times.values[0])[:10]
+                    result["time_range"]["end"] = str(times.values[-1])[:10]
+                except Exception:
+                    pass
+
+            # Spatial extent
+            for lat_name in ["lat", "latitude", "y"]:
+                if lat_name in ds.coords:
+                    lats = ds.coords[lat_name].values
+                    result["spatial_extent"]["lat_min"] = float(lats.min())
+                    result["spatial_extent"]["lat_max"] = float(lats.max())
+                    break
+            for lon_name in ["lon", "longitude", "x"]:
+                if lon_name in ds.coords:
+                    lons = ds.coords[lon_name].values
+                    result["spatial_extent"]["lon_min"] = float(lons.min())
+                    result["spatial_extent"]["lon_max"] = float(lons.max())
+                    break
+
+            # Global attributes
+            for key in ["title", "institution", "source", "history", "references", "Conventions"]:
+                if key in ds.attrs:
+                    result["attributes"][key] = str(ds.attrs[key])[:500]
+
+            # Build description from attributes
+            parts = []
+            if ds.attrs.get("title"):
+                parts.append(str(ds.attrs["title"]))
+            if ds.attrs.get("institution"):
+                parts.append(f"by {ds.attrs['institution']}")
+            var_names = [v["name"] for v in result["variables"]]
+            if var_names:
+                parts.append(f"Variables: {', '.join(var_names[:10])}")
+            if result["time_range"].get("start"):
+                parts.append(f"Period: {result['time_range']['start']} to {result['time_range'].get('end', 'present')}")
+            result["description"] = ". ".join(parts) if parts else None
+
+            ds.close()
+            import os
+            os.unlink(tmp.name)
+        except Exception as e:
+            result["error"] = str(e)[:500]
+            # Clean up temp file
+            try:
+                import os
+                os.unlink(tmp.name)
+            except Exception:
+                pass
+        return result
+
+    result = await loop.run_in_executor(None, _scan)
+    return result
+
+
 @router.post("/analyze-url")
 async def analyze_source_url(data: dict):
-    """Auto-detect format, portal, and auth requirements from a URL."""
+    """Auto-detect format, portal, auth, and suggest dataset grouping from a URL."""
     url = data.get("url", "")
     if not url:
         raise HTTPException(400, "URL is required")
 
     from src.sources.connection_tester import analyze_url
 
-    return analyze_url(url)
+    # Get existing datasets for grouping suggestions (use cache, don't block)
+    existing = []
+    try:
+        from web_api.routes.qdrant_datasets import _DATASETS_CACHE
+        if _DATASETS_CACHE:
+            existing = _DATASETS_CACHE
+        else:
+            # Trigger cache population in background, use empty for now
+            from web_api.routes.qdrant_datasets import list_qdrant_datasets
+            try:
+                existing = await list_qdrant_datasets()
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    return analyze_url(url, existing_datasets=existing)
 
 
 @router.get("/{source_id}/history")

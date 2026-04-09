@@ -59,7 +59,7 @@ climate_etl_repository = Definitions(
         "data_paths": DataPathResource(
             raw_data_dir="data/raw",
             processed_data_dir="data/processed",
-            embeddings_dir="chroma_db",
+            embeddings_dir="qdrant_db",
         ),
         "database": DatabaseResource(),
     },

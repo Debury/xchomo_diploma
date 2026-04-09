@@ -115,7 +115,7 @@ services:
   web-api:
     build: .
     container_name: climate-web-api
-    command: uvicorn web_api.main:app --host 0.0.0.0 --port 8000
+    command: uvicorn web_api.main:app --host 0.0.0.0 --port 8000 --reload --reload-dir /app/web_api --reload-dir /app/src
     ports:
       - "8000:8000"
     volumes:

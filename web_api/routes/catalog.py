@@ -27,19 +27,39 @@ _batch_thread_phases: Optional[List[int]] = None
 
 @router.get("/", response_model=List[CatalogEntryResponse])
 async def list_catalog():
-    """List all catalog entries with phase classification and processing status."""
+    """List all catalog entries with phase classification and processing status.
+
+    Processing status is derived from Qdrant presence:
+    - 'completed' if dataset has >10 chunks (real data)
+    - 'metadata_only' if dataset has 1-10 chunks (Phase 0 metadata)
+    - 'pending' if dataset is not in Qdrant
+    """
     try:
         from src.catalog.excel_reader import read_catalog
         from src.catalog.phase_classifier import classify_source
-        from src.catalog.batch_orchestrator import BatchProgress
 
         entries = read_catalog(CATALOG_EXCEL_PATH)
-        progress = BatchProgress()
+
+        # Get Qdrant dataset counts for status derivation
+        qdrant_counts = {}
+        try:
+            from web_api.routes.qdrant_datasets import _get_embedding_counts
+            qdrant_counts = _get_embedding_counts()
+        except Exception as e:
+            logger.warning(f"Could not fetch Qdrant counts for catalog: {e}")
 
         result = []
         for entry in entries:
             phase = classify_source(entry)
-            processing_status = progress.get_overall_status(entry.source_id, phase)
+
+            # Derive status from Qdrant presence
+            count = qdrant_counts.get(entry.source_id, 0)
+            if count > 10:
+                processing_status = "completed"
+            elif count > 0:
+                processing_status = "metadata_only"
+            else:
+                processing_status = "pending"
 
             result.append(
                 CatalogEntryResponse(

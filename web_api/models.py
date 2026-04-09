@@ -84,6 +84,7 @@ class SourceResponse(BaseModel):
     impact_sector: Optional[str] = None
     keywords: Optional[List[str]] = None
     custom_metadata: Optional[Dict[str, str]] = None
+    embedding_count: Optional[int] = None
     id: Optional[int] = None
     collection_name: Optional[str] = None
     created_at: Optional[str] = None

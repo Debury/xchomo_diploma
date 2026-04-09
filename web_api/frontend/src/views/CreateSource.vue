@@ -50,25 +50,52 @@
             </div>
           </div>
 
-          <div v-if="urlAnalysis" class="bg-mendelu-gray-light p-3 rounded-lg text-xs space-y-1">
-            <div class="flex items-center gap-2 mb-1">
+          <div v-if="urlAnalysis" class="bg-mendelu-gray-light p-3 rounded-lg text-xs space-y-2">
+            <div class="flex items-center gap-2">
               <span class="w-2 h-2 rounded-full" :class="urlAnalysis.reachable ? 'bg-mendelu-success' : 'bg-mendelu-alert'"></span>
               <span class="font-medium">{{ urlAnalysis.reachable ? 'URL reachable' : 'URL unreachable' }}</span>
-              <span v-if="urlAnalysis.latency_ms" class="text-mendelu-gray-dark">({{ urlAnalysis.latency_ms }}ms)</span>
+              <span v-if="urlAnalysis.latency_ms > 0" class="text-mendelu-gray-dark">({{ urlAnalysis.latency_ms }}ms)</span>
             </div>
-            <p v-if="urlAnalysis.format"><span class="text-mendelu-gray-dark">Format:</span> {{ urlAnalysis.format }}</p>
-            <p v-if="urlAnalysis.portal"><span class="text-mendelu-gray-dark">Portal:</span> {{ urlAnalysis.portal }}</p>
-            <p v-if="urlAnalysis.suggested_auth"><span class="text-mendelu-gray-dark">Auth:</span> {{ urlAnalysis.suggested_auth }}</p>
+            <div class="grid grid-cols-2 gap-x-4 gap-y-1">
+              <p v-if="urlAnalysis.format"><span class="text-mendelu-gray-dark">Format:</span> <span class="font-medium">{{ urlAnalysis.format }}</span></p>
+              <p v-if="urlAnalysis.portal"><span class="text-mendelu-gray-dark">Portal:</span> <span class="font-medium">{{ urlAnalysis.portal }}</span></p>
+              <p v-if="urlAnalysis.suggested_auth"><span class="text-mendelu-gray-dark">Auth:</span> <span class="font-medium">{{ urlAnalysis.suggested_auth }}</span></p>
+              <p v-if="urlAnalysis.suggested_name"><span class="text-mendelu-gray-dark">Name:</span> <span class="font-medium">{{ urlAnalysis.suggested_name }}</span></p>
+            </div>
+            <!-- Dataset grouping suggestion -->
+            <div v-if="urlAnalysis.matched_dataset && urlAnalysis.reachable" class="mt-2 p-2 bg-mendelu-success/10 border border-mendelu-success/20 rounded-lg">
+              <div class="flex items-center justify-between">
+                <div>
+                  <span class="font-medium text-mendelu-success">Existing dataset found:</span>
+                  <span class="text-mendelu-black ml-1">{{ urlAnalysis.matched_dataset.dataset_name }}</span>
+                  <span class="text-mendelu-gray-dark ml-1">({{ urlAnalysis.matched_dataset.chunk_count?.toLocaleString() }} chunks)</span>
+                </div>
+                <button type="button" @click="useMatchedDataset" class="text-mendelu-green font-medium hover:underline">
+                  Add to this dataset
+                </button>
+              </div>
+            </div>
+            <div v-else-if="urlAnalysis.suggested_name && urlAnalysis.reachable && !urlAnalysis.matched_dataset" class="mt-2 p-2 bg-mendelu-gray-light border border-mendelu-gray-semi rounded-lg">
+              <span class="text-mendelu-gray-dark">New dataset:</span>
+              <span class="font-medium text-mendelu-black ml-1">{{ urlAnalysis.suggested_name }}</span>
+              <button type="button" @click="useSuggestedName" class="ml-2 text-mendelu-green font-medium hover:underline">
+                Use this name
+              </button>
+            </div>
             <p v-if="urlAnalysis.error" class="text-mendelu-alert">{{ urlAnalysis.error }}</p>
           </div>
 
           <div>
-            <label class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-1">Data Type</label>
+            <label class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-1">Data Format</label>
             <select v-model="form.type" class="input-field">
-              <option value="netcdf">NetCDF Files</option>
-              <option value="csv">CSV Files</option>
-              <option value="api">REST API</option>
-              <option value="geotiff">GeoTIFF</option>
+              <option value="netcdf">NetCDF (.nc, .nc4)</option>
+              <option value="grib">GRIB (.grib, .grib2)</option>
+              <option value="hdf5">HDF5 (.h5, .hdf, .he5)</option>
+              <option value="geotiff">GeoTIFF (.tif, .tiff)</option>
+              <option value="csv">CSV / TSV (.csv, .tsv, .txt)</option>
+              <option value="zarr">Zarr (.zarr)</option>
+              <option value="ascii">ASCII Grid (.asc)</option>
+              <option value="zip">Archive (.zip, .gz, .tar)</option>
             </select>
           </div>
         </div>
@@ -142,71 +169,117 @@
 
         <!-- Step 3: Variables & Metadata -->
         <div v-show="step === 3" class="space-y-5">
-          <p class="page-subtitle">Configure data variables and metadata for RAG</p>
-
-          <div>
-            <label class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-1">Variables (comma separated)</label>
-            <input v-model="form.variables" type="text" class="input-field" placeholder="tas, pr, hurs, sfcWind" />
-            <p class="mt-1 text-xs text-mendelu-gray-dark">Climate variables to extract from the dataset</p>
+          <div class="flex items-center justify-between">
+            <p class="page-subtitle">File metadata — auto-discovered from the source</p>
+            <button
+              type="button"
+              @click="scanMetadata"
+              :disabled="!form.url || scanning"
+              class="btn-primary !py-2 !px-4 !text-xs disabled:opacity-50"
+            >
+              {{ scanning ? 'Scanning...' : 'Scan File' }}
+            </button>
           </div>
 
-          <div class="grid grid-cols-2 gap-4">
-            <div>
-              <label class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-1">Start Year</label>
-              <input v-model.number="form.startYear" type="number" min="1900" max="2100" class="input-field" placeholder="2020" />
+          <!-- Scan results -->
+          <div v-if="scanResult && !scanResult.error" class="bg-mendelu-success/5 border border-mendelu-success/20 p-4 rounded-lg space-y-3">
+            <div class="flex items-center gap-2 text-xs font-medium text-mendelu-success">
+              <span class="w-2 h-2 rounded-full bg-mendelu-success"></span>
+              File scanned — metadata auto-filled
             </div>
-            <div>
-              <label class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-1">End Year</label>
-              <input v-model.number="form.endYear" type="number" min="1900" max="2100" class="input-field" placeholder="2100" />
+
+            <div v-if="scanResult.variables?.length" class="text-xs">
+              <span class="text-mendelu-gray-dark">Variables found:</span>
+              <div class="flex flex-wrap gap-1 mt-1">
+                <span v-for="v in scanResult.variables" :key="v.name" class="badge-info !text-[10px]">
+                  {{ v.name }}<span v-if="v.long_name" class="text-mendelu-gray-dark ml-1">({{ v.long_name }})</span>
+                </span>
+              </div>
+            </div>
+
+            <div v-if="scanResult.time_range?.start" class="text-xs">
+              <span class="text-mendelu-gray-dark">Time range:</span>
+              <span class="ml-1">{{ scanResult.time_range.start }} — {{ scanResult.time_range.end }}</span>
+            </div>
+
+            <div v-if="scanResult.spatial_extent?.lat_min != null" class="text-xs">
+              <span class="text-mendelu-gray-dark">Spatial:</span>
+              <span class="ml-1">{{ scanResult.spatial_extent.lat_min.toFixed(1) }}° to {{ scanResult.spatial_extent.lat_max.toFixed(1) }}°N, {{ scanResult.spatial_extent.lon_min.toFixed(1) }}° to {{ scanResult.spatial_extent.lon_max.toFixed(1) }}°E</span>
+            </div>
+
+            <div v-if="Object.keys(scanResult.attributes || {}).length" class="text-xs">
+              <span class="text-mendelu-gray-dark">Source:</span>
+              <span v-if="scanResult.attributes.institution" class="ml-1">{{ scanResult.attributes.institution }}</span>
+              <span v-if="scanResult.attributes.title" class="ml-1">— {{ scanResult.attributes.title }}</span>
             </div>
           </div>
 
-          <div>
-            <label class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-1">Hazard Type</label>
-            <select v-model="form.hazard_type" class="input-field">
-              <option value="">Not specified</option>
-              <option value="Drought">Drought</option>
-              <option value="Flood">Flood</option>
-              <option value="Heat">Heat</option>
-              <option value="Wildfire">Wildfire</option>
-              <option value="Storm">Storm</option>
-              <option value="Cold">Cold</option>
-              <option value="Multi-hazard">Multi-hazard</option>
-              <option value="other">Other</option>
-            </select>
+          <div v-if="scanResult?.error" class="bg-mendelu-alert/5 border border-mendelu-alert/20 p-3 rounded-lg text-xs text-mendelu-alert">
+            Could not scan file: {{ scanResult.error }}
           </div>
 
-          <div>
-            <label class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-1">Region / Country</label>
-            <input v-model="form.region_country" type="text" class="input-field" placeholder="e.g., Europe, Mediterranean, Global" />
-          </div>
+          <p v-if="!scanResult" class="text-xs text-mendelu-gray-dark">
+            Click "Scan File" to auto-detect variables, time range, and spatial coverage from the file headers. You can also fill these in manually.
+          </p>
 
-          <div>
-            <label class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-1">Spatial Coverage</label>
-            <input v-model="form.spatial_coverage" type="text" class="input-field" placeholder="e.g., Global, 50N-35N 10W-40E" />
-          </div>
+          <!-- Manual overrides (collapsed by default if scan succeeded) -->
+          <details :open="!scanResult || scanResult.error">
+            <summary class="text-xs font-medium text-mendelu-gray-dark cursor-pointer hover:text-mendelu-black">
+              {{ scanResult && !scanResult.error ? 'Edit metadata manually' : 'Manual metadata entry' }}
+            </summary>
+            <div class="mt-3 space-y-4">
+              <div>
+                <label class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-1">Variables (comma separated)</label>
+                <input v-model="form.variables" type="text" class="input-field" placeholder="Auto-filled from scan" />
+              </div>
 
-          <div>
-            <label class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-1">Impact Sector</label>
-            <input v-model="form.impact_sector" type="text" class="input-field" placeholder="e.g., agriculture, water resources, health" />
-          </div>
+              <div class="grid grid-cols-2 gap-4">
+                <div>
+                  <label class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-1">Start Year</label>
+                  <input v-model.number="form.startYear" type="number" min="1900" max="2100" class="input-field" />
+                </div>
+                <div>
+                  <label class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-1">End Year</label>
+                  <input v-model.number="form.endYear" type="number" min="1900" max="2100" class="input-field" />
+                </div>
+              </div>
 
-          <div>
-            <label class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-1">Description</label>
-            <textarea v-model="form.description" rows="3" class="input-field resize-none" placeholder="Brief description..."></textarea>
-          </div>
+              <div>
+                <label class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-1">Hazard Type</label>
+                <select v-model="form.hazard_type" class="input-field">
+                  <option value="">Not specified</option>
+                  <option value="Drought">Drought</option>
+                  <option value="Flood">Flood</option>
+                  <option value="Heat">Heat</option>
+                  <option value="Wildfire">Wildfire</option>
+                  <option value="Storm">Storm</option>
+                  <option value="Cold">Cold</option>
+                  <option value="Multi-hazard">Multi-hazard</option>
+                  <option value="other">Other</option>
+                </select>
+              </div>
 
-          <div>
-            <label class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-1">Keywords (comma separated)</label>
-            <input v-model="form.keywords" type="text" class="input-field" placeholder="e.g., temperature, reanalysis, global warming, ERA5" />
-            <p class="mt-1 text-xs text-mendelu-gray-dark">Keywords improve RAG retrieval quality for this source</p>
-          </div>
+              <div>
+                <label class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-1">Region / Country</label>
+                <input v-model="form.region_country" type="text" class="input-field" placeholder="Auto-detected from coordinates" />
+              </div>
 
-          <div>
-            <label class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-1">Custom Metadata</label>
-            <textarea v-model="form.custom_metadata_raw" rows="2" class="input-field resize-none" placeholder='e.g., institution=ECMWF, project=Copernicus'></textarea>
-            <p class="mt-1 text-xs text-mendelu-gray-dark">Key=value pairs (one per line or comma-separated) added to every chunk</p>
-          </div>
+              <div>
+                <label class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-1">Description</label>
+                <textarea v-model="form.description" rows="3" class="input-field resize-none" placeholder="Auto-generated from file metadata"></textarea>
+              </div>
+
+              <div>
+                <label class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-1">Keywords (comma separated)</label>
+                <input v-model="form.keywords" type="text" class="input-field" placeholder="Auto-generated from variables and attributes" />
+              </div>
+
+              <div>
+                <label class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-1">Custom Metadata</label>
+                <textarea v-model="form.custom_metadata_raw" rows="2" class="input-field resize-none" placeholder='e.g., institution=ECMWF, project=Copernicus'></textarea>
+              </div>
+            </div>
+          </details>
         </div>
 
         <!-- Step 4: Schedule -->
@@ -305,6 +378,8 @@ const form = ref({
 const submitting = ref(false)
 const analyzing = ref(false)
 const urlAnalysis = ref(null)
+const scanning = ref(false)
+const scanResult = ref(null)
 const testingConnection = ref(false)
 const reviewConnectionResult = ref(null)
 
@@ -339,6 +414,69 @@ onMounted(async () => {
   } catch (e) { /* ignore */ }
 })
 
+function useMatchedDataset() {
+  if (urlAnalysis.value?.matched_dataset) {
+    form.value.name = urlAnalysis.value.matched_dataset.dataset_name
+  }
+}
+
+async function scanMetadata() {
+  if (!form.value.url) return
+  scanning.value = true
+  scanResult.value = null
+  try {
+    const resp = await fetch('/sources/scan-metadata', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: form.value.url }),
+    })
+    if (resp.ok) {
+      const data = await resp.json()
+      scanResult.value = data
+      if (!data.error) {
+        // Auto-fill form fields
+        if (data.variables?.length) {
+          form.value.variables = data.variables.map(v => v.name).join(', ')
+        }
+        if (data.time_range?.start) {
+          form.value.startYear = parseInt(data.time_range.start.substring(0, 4)) || null
+        }
+        if (data.time_range?.end) {
+          form.value.endYear = parseInt(data.time_range.end.substring(0, 4)) || null
+        }
+        if (data.spatial_extent?.lat_min != null) {
+          const ext = data.spatial_extent
+          if (ext.lat_min < -60 && ext.lat_max > 60) form.value.region_country = 'Global'
+          else if (ext.lat_min > 35 && ext.lat_max < 72 && ext.lon_min > -25 && ext.lon_max < 45) form.value.region_country = 'Europe'
+          else form.value.region_country = `${ext.lat_min.toFixed(0)}N-${ext.lat_max.toFixed(0)}N, ${ext.lon_min.toFixed(0)}E-${ext.lon_max.toFixed(0)}E`
+        }
+        if (data.description) form.value.description = data.description
+        // Generate keywords from variables and attributes
+        const kw = []
+        for (const v of data.variables || []) {
+          if (v.long_name) kw.push(v.long_name)
+        }
+        if (data.attributes?.institution) kw.push(data.attributes.institution)
+        if (kw.length) form.value.keywords = kw.join(', ')
+        // Custom metadata from attributes
+        const meta = []
+        if (data.attributes?.institution) meta.push(`institution=${data.attributes.institution}`)
+        if (data.attributes?.source) meta.push(`source=${data.attributes.source}`)
+        if (meta.length) form.value.custom_metadata_raw = meta.join('\n')
+      }
+    }
+  } catch (e) {
+    scanResult.value = { error: e.message }
+  } finally {
+    scanning.value = false
+  }
+}
+
+function useSuggestedName() {
+  if (urlAnalysis.value?.suggested_name) {
+    form.value.name = urlAnalysis.value.suggested_name
+  }
+}
+
 function onPortalChange() {
   if (form.value.portal && PORTAL_AUTH_MAP[form.value.portal]) {
     form.value.auth_method = PORTAL_AUTH_MAP[form.value.portal]
@@ -367,6 +505,11 @@ async function analyzeUrl() {
       urlAnalysis.value = data
       if (data.format) form.value.type = data.format
       if (data.portal) { form.value.portal = data.portal; onPortalChange() }
+      // Auto-fill name from matched dataset or suggestion
+      if (!form.value.name) {
+        if (data.matched_dataset) form.value.name = data.matched_dataset.dataset_name
+        else if (data.suggested_name) form.value.name = data.suggested_name
+      }
     }
   } catch (e) {
     urlAnalysis.value = { reachable: false, error: e.message }

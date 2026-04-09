@@ -14,7 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from web_api.config import restore_settings_to_env
-from web_api.routes import health, auth, frontend, embeddings, sources, rag, catalog, schedules, admin
+from web_api.routes import health, auth, frontend, embeddings, sources, rag, catalog, schedules, admin, qdrant_datasets
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +60,7 @@ app.include_router(rag.router)
 app.include_router(catalog.router)
 app.include_router(schedules.router)
 app.include_router(admin.router)
+app.include_router(qdrant_datasets.router)
 
 
 if __name__ == "__main__":

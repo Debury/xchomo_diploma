@@ -937,24 +937,22 @@ async def get_collection_info() -> Dict[str, Any]:
                 info = client.get_collection(collection)
                 count = info.points_count
 
-                offset = None
-                for _ in range(20):
-                    points, offset = client.scroll(
-                        collection_name=collection,
-                        limit=500,
-                        offset=offset,
-                        with_vectors=False,
-                        with_payload={"include": ["variable", "source_id", "dataset_name"]},
+                # Use facets for accurate counts instead of slow scroll
+                try:
+                    var_facets = client.facet(
+                        collection_name=collection, key="variable", limit=500,
                     )
-                    for p in points:
-                        pl = getattr(p, "payload", None) or {}
-                        if pl.get("variable"):
-                            variables.add(pl["variable"])
-                        src = pl.get("source_id") or pl.get("dataset_name")
-                        if src:
-                            sources.add(src)
-                    if offset is None:
-                        break
+                    variables = {h.value for h in var_facets.hits}
+                except Exception:
+                    pass
+
+                try:
+                    src_facets = client.facet(
+                        collection_name=collection, key="source_id", limit=500,
+                    )
+                    sources = {h.value for h in src_facets.hits}
+                except Exception:
+                    pass
             except Exception as e:
                 logger.error(f"get_collection_info error: {e}")
 

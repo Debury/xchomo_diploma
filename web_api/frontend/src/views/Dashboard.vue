@@ -12,7 +12,7 @@
           <p class="text-mendelu-gray-dark mt-1.5 text-sm max-w-lg">
             Your RAG pipeline is {{ systemStatus }}.
             <span v-if="stats.total_embeddings" class="text-mendelu-black font-medium">{{ stats.total_embeddings?.toLocaleString() }} vectors</span> indexed across
-            <span v-if="stats.variables" class="text-mendelu-black font-medium">{{ stats.variables?.length }} climate variables</span>.
+            <span v-if="qdrantDatasets.length" class="text-mendelu-black font-medium">{{ qdrantDatasets.length }} datasets</span>.
           </p>
         </div>
         <div class="flex items-center gap-2">
@@ -48,32 +48,31 @@
       </StatCard>
 
       <StatCard
-        label="Variables"
-        description="Unique climate parameters"
-        :target="stats.variables?.length || 0"
+        label="Datasets"
+        :description="`${metadataOnlyCount} metadata-only`"
+        :target="datasetsWithData"
         :loading="loading"
         variant="success"
         class="animate-in stagger-2"
       >
         <template #icon>
           <svg class="w-4.5 h-4.5 text-mendelu-success" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" d="M3 15a4 4 0 004 4h9a5 5 0 10-.1-9.999 5.002 5.002 0 10-9.78 2.096A4.001 4.001 0 003 15z" />
+            <path stroke-linecap="round" stroke-linejoin="round" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4m0 5c0 2.21-3.582 4-8 4s-8-1.79-8-4" />
           </svg>
         </template>
       </StatCard>
 
       <StatCard
-        label="Sources"
-        description="Active data sources"
-        :target="stats.sources?.length || 0"
-        :delta="staleSources > 0 ? `${staleSources} stale` : ''"
+        label="Variables"
+        description="Unique climate parameters"
+        :target="stats.variables?.length || 0"
         :loading="loading"
-        :variant="staleSources > 0 ? 'amber' : 'green'"
+        variant="green"
         class="animate-in stagger-3"
       >
         <template #icon>
-          <svg class="w-4.5 h-4.5" :class="staleSources > 0 ? 'text-amber-500' : 'text-mendelu-green'" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4m0 5c0 2.21-3.582 4-8 4s-8-1.79-8-4" />
+          <svg class="w-4.5 h-4.5 text-mendelu-green" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M3 15a4 4 0 004 4h9a5 5 0 10-.1-9.999 5.002 5.002 0 10-9.78 2.096A4.001 4.001 0 003 15z" />
           </svg>
         </template>
       </StatCard>
@@ -97,52 +96,50 @@
     <!-- ===== Main Content Grid ===== -->
     <div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
 
-      <!-- LEFT COLUMN: Pipeline + Phase Distribution -->
+      <!-- LEFT COLUMN: Top Datasets + Hazard Distribution -->
       <div class="lg:col-span-7 space-y-6">
 
-        <!-- Processing Pipeline -->
+        <!-- Top Datasets by Chunk Count -->
         <div class="card animate-in stagger-5">
-          <div class="flex items-center justify-between mb-5">
-            <div class="flex items-center gap-2.5">
-              <div class="w-8 h-8 rounded-lg bg-mendelu-green/10 flex items-center justify-center">
-                <svg class="w-4 h-4 text-mendelu-green" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-                  <path stroke-linecap="round" stroke-linejoin="round" d="M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z" />
-                </svg>
-              </div>
-              <div>
-                <h3 class="text-sm font-bold text-mendelu-black">Processing Pipeline</h3>
-                <p class="text-[10px] text-mendelu-gray-dark/60">5-phase catalog ingestion</p>
-              </div>
+          <div class="flex items-center gap-2.5 mb-5">
+            <div class="w-8 h-8 rounded-lg bg-mendelu-green/10 flex items-center justify-center">
+              <svg class="w-4 h-4 text-mendelu-green" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z" />
+              </svg>
             </div>
-            <div v-if="catalogProgress?.thread_alive" class="flex items-center gap-2">
-              <span class="relative flex h-2 w-2">
-                <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-mendelu-green opacity-75"></span>
-                <span class="relative inline-flex rounded-full h-2 w-2 bg-mendelu-green"></span>
-              </span>
-              <span class="text-[10px] font-bold text-mendelu-green uppercase tracking-wider" style="font-family: var(--font-mono);">Processing</span>
+            <div>
+              <h3 class="text-sm font-bold text-mendelu-black">Largest Datasets</h3>
+              <p class="text-[10px] text-mendelu-gray-dark/60">Top sources by embedding count</p>
             </div>
           </div>
 
-          <PipelineViz :progress="catalogProgress" />
+          <div class="space-y-3">
+            <div v-for="ds in topDatasets" :key="ds.dataset_name" class="flex items-center gap-3">
+              <div class="flex-1 min-w-0">
+                <div class="flex items-center gap-2 mb-1">
+                  <span class="text-sm font-medium text-mendelu-black truncate">{{ ds.dataset_name }}</span>
+                  <span v-if="ds.hazard_type" class="badge-info !text-[9px] !py-0 flex-shrink-0">{{ ds.hazard_type }}</span>
+                </div>
+                <div class="w-full bg-mendelu-gray-semi/30 rounded-full h-1.5">
+                  <div class="bg-mendelu-green rounded-full h-1.5 transition-all duration-700"
+                       :style="{ width: `${(ds.chunk_count / maxChunks) * 100}%` }"></div>
+                </div>
+              </div>
+              <span class="text-xs font-medium text-mendelu-gray-dark tabular-nums flex-shrink-0 w-16 text-right">
+                {{ ds.chunk_count.toLocaleString() }}
+              </span>
+            </div>
+          </div>
 
-          <!-- Summary stats -->
-          <div v-if="catalogProgress" class="flex gap-6 mt-5 pt-4 border-t border-mendelu-gray-semi/40">
-            <div class="text-center">
-              <p class="text-lg font-bold text-mendelu-black data-value">{{ catalogProgress.processed || 0 }}</p>
-              <p class="text-[10px] text-mendelu-gray-dark/60 font-medium uppercase tracking-wider" style="font-family: var(--font-mono);">Processed</p>
-            </div>
-            <div class="text-center">
-              <p class="text-lg font-bold data-value" :class="(catalogProgress.failed || 0) > 0 ? 'text-mendelu-alert' : 'text-mendelu-gray-dark'">{{ catalogProgress.failed || 0 }}</p>
-              <p class="text-[10px] text-mendelu-gray-dark/60 font-medium uppercase tracking-wider" style="font-family: var(--font-mono);">Failed</p>
-            </div>
-            <div class="text-center">
-              <p class="text-lg font-bold text-mendelu-black data-value">{{ catalogProgress.pending || 0 }}</p>
-              <p class="text-[10px] text-mendelu-gray-dark/60 font-medium uppercase tracking-wider" style="font-family: var(--font-mono);">Pending</p>
-            </div>
+          <div class="mt-4 pt-3 border-t border-mendelu-gray-semi/40 flex justify-between items-center">
+            <span class="text-[11px] text-mendelu-gray-dark">{{ qdrantDatasets.length }} total datasets</span>
+            <router-link to="/catalog" class="text-[11px] font-medium text-mendelu-green hover:text-mendelu-green-hover transition-colors">
+              View all &rarr;
+            </router-link>
           </div>
         </div>
 
-        <!-- Phase Distribution -->
+        <!-- Hazard Type Distribution -->
         <div class="card animate-in stagger-6">
           <div class="flex items-center gap-2.5 mb-5">
             <div class="w-8 h-8 rounded-lg bg-mendelu-green/10 flex items-center justify-center">
@@ -152,15 +149,15 @@
               </svg>
             </div>
             <div>
-              <h3 class="text-sm font-bold text-mendelu-black">Phase Distribution</h3>
-              <p class="text-[10px] text-mendelu-gray-dark/60">Catalog entries by access type</p>
+              <h3 class="text-sm font-bold text-mendelu-black">Hazard Coverage</h3>
+              <p class="text-[10px] text-mendelu-gray-dark/60">Datasets by climate hazard type</p>
             </div>
           </div>
           <div class="flex items-center justify-center py-2">
             <DonutChart
-              :segments="phaseSegments"
+              :segments="hazardSegments"
               :size="180"
-              label="entries"
+              label="hazards"
             />
           </div>
         </div>
@@ -209,16 +206,16 @@
             </div>
           </router-link>
 
-          <router-link to="/catalog" class="stat-card group">
+          <router-link to="/sources" class="stat-card group">
             <div class="flex items-center gap-4">
               <div class="w-11 h-11 rounded-xl bg-mendelu-green/10 flex items-center justify-center group-hover:bg-mendelu-green/15 transition-all duration-200">
                 <svg class="w-5 h-5 text-mendelu-green" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
                 </svg>
               </div>
               <div>
-                <h4 class="text-sm font-bold text-mendelu-black">Browse Catalog</h4>
-                <p class="text-xs text-mendelu-gray-dark">{{ catalog.length || 0 }} climate datasets</p>
+                <h4 class="text-sm font-bold text-mendelu-black">Manage Sources</h4>
+                <p class="text-xs text-mendelu-gray-dark">Add, update, or reprocess data sources</p>
               </div>
               <svg class="w-5 h-5 text-mendelu-gray-dark/30 ml-auto group-hover:translate-x-1 group-hover:text-mendelu-green transition-all" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
@@ -229,48 +226,27 @@
       </div>
     </div>
 
-    <!-- ===== Data Freshness Bar ===== -->
-    <div v-if="stats.sources?.length" class="card animate-in stagger-8">
+    <!-- ===== Region Coverage ===== -->
+    <div v-if="regionCounts.length" class="card animate-in stagger-8">
       <div class="flex items-center justify-between mb-4">
         <div class="flex items-center gap-2.5">
           <div class="w-8 h-8 rounded-lg bg-mendelu-green/10 flex items-center justify-center">
             <svg class="w-4 h-4 text-mendelu-green" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+              <path stroke-linecap="round" stroke-linejoin="round" d="M3.055 11H5a2 2 0 012 2v1a2 2 0 002 2 2 2 0 012 2v2.945M8 3.935V5.5A2.5 2.5 0 0010.5 8h.5a2 2 0 012 2 2 2 0 104 0 2 2 0 012-2h1.064M15 20.488V18a2 2 0 012-2h3.064M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
             </svg>
           </div>
           <div>
-            <h3 class="text-sm font-bold text-mendelu-black">Data Freshness</h3>
-            <p class="text-[10px] text-mendelu-gray-dark/60">Source update status (30-day threshold)</p>
+            <h3 class="text-sm font-bold text-mendelu-black">Geographic Coverage</h3>
+            <p class="text-[10px] text-mendelu-gray-dark/60">Datasets by region</p>
           </div>
         </div>
-        <div class="flex items-center gap-4 text-xs">
-          <span class="flex items-center gap-1.5">
-            <span class="w-2.5 h-2.5 rounded-sm bg-mendelu-success/80"></span>
-            <span class="text-mendelu-gray-dark">Fresh</span>
-          </span>
-          <span class="flex items-center gap-1.5">
-            <span class="w-2.5 h-2.5 rounded-sm bg-amber-400/80"></span>
-            <span class="text-mendelu-gray-dark">Stale</span>
-          </span>
-        </div>
       </div>
-
-      <!-- Freshness bar -->
-      <div class="h-4 rounded-full overflow-hidden bg-mendelu-gray-semi/30 flex">
-        <div
-          class="h-full bg-gradient-to-r from-mendelu-success to-mendelu-green transition-all duration-700 rounded-l-full"
-          :style="{ width: `${freshPercent}%` }"
-        ></div>
-        <div
-          v-if="staleSources > 0"
-          class="h-full bg-gradient-to-r from-amber-400 to-amber-500 transition-all duration-700"
-          :class="{ 'rounded-r-full': staleSources > 0 }"
-          :style="{ width: `${100 - freshPercent}%` }"
-        ></div>
-      </div>
-      <div class="flex justify-between mt-2">
-        <span class="text-[11px] font-medium text-mendelu-success data-value">{{ (stats.sources?.length || 0) - staleSources }} fresh</span>
-        <span v-if="staleSources > 0" class="text-[11px] font-medium text-amber-500 data-value">{{ staleSources }} need update</span>
+      <div class="flex flex-wrap gap-2">
+        <span v-for="r in regionCounts" :key="r.name"
+              class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium bg-mendelu-gray-light text-mendelu-black border border-mendelu-gray-semi/40">
+          {{ r.name }}
+          <span class="text-mendelu-gray-dark tabular-nums">{{ r.count }}</span>
+        </span>
       </div>
     </div>
   </div>
@@ -282,7 +258,6 @@ import { useThemeStore } from '../stores/theme'
 import StatCard from '../components/StatCard.vue'
 import DonutChart from '../components/DonutChart.vue'
 import ActivityFeed from '../components/ActivityFeed.vue'
-import PipelineViz from '../components/PipelineViz.vue'
 import ServiceHealth from '../components/ServiceHealth.vue'
 
 const themeStore = useThemeStore()
@@ -290,12 +265,10 @@ const isDark = computed(() => themeStore.theme === 'dark')
 
 const stats = ref({})
 const health = ref({ llm: 'Checking...', qdrant: false, dagster: false, llmOnline: false })
-const catalogProgress = ref(null)
-const catalog = ref([])
+const qdrantDatasets = ref([])
 const loading = ref(false)
-const staleSources = ref(0)
 
-const phaseColors = ['#79be15', '#82c55b', '#6aaa10', '#535a5d', '#dce3e4']
+const hazardColors = ['#79be15', '#82c55b', '#6aaa10', '#3d7a0a', '#535a5d', '#8b95a0', '#b8c0c5', '#dce3e4', '#4a9e2f', '#2d6b16']
 
 const greeting = computed(() => {
   const h = new Date().getHours()
@@ -311,24 +284,37 @@ const systemStatus = computed(() => {
   return 'experiencing issues'
 })
 
-const freshPercent = computed(() => {
-  const total = stats.value.sources?.length || 0
-  if (total === 0) return 100
-  return Math.round(((total - staleSources.value) / total) * 100)
+const datasetsWithData = computed(() => qdrantDatasets.value.filter(d => !d.is_metadata_only && d.chunk_count > 10).length)
+const metadataOnlyCount = computed(() => qdrantDatasets.value.filter(d => d.is_metadata_only || d.chunk_count <= 10).length)
+
+const topDatasets = computed(() => qdrantDatasets.value.filter(d => d.chunk_count > 10).slice(0, 10))
+const maxChunks = computed(() => topDatasets.value[0]?.chunk_count || 1)
+
+const hazardSegments = computed(() => {
+  const counts = {}
+  for (const ds of qdrantDatasets.value) {
+    const h = ds.hazard_type || 'Unknown'
+    counts[h] = (counts[h] || 0) + 1
+  }
+  return Object.entries(counts)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 10)
+    .map(([label, value], i) => ({
+      label,
+      value,
+      color: hazardColors[i % hazardColors.length],
+    }))
 })
 
-const phaseSegments = computed(() => {
-  const progress = catalogProgress.value
-  if (!progress?.phases || !Object.keys(progress.phases).length) {
-    return [
-      { label: 'Phase 0', value: catalog.value.length || 233, color: phaseColors[0] },
-    ]
+const regionCounts = computed(() => {
+  const counts = {}
+  for (const ds of qdrantDatasets.value) {
+    const r = ds.location_name || 'Unknown'
+    counts[r] = (counts[r] || 0) + 1
   }
-  return Object.entries(progress.phases).map(([phase, info]) => ({
-    label: `Phase ${phase}`,
-    value: info.total || 0,
-    color: phaseColors[parseInt(phase)] || '#dce3e4',
-  })).filter(s => s.value > 0)
+  return Object.entries(counts)
+    .sort((a, b) => b[1] - a[1])
+    .map(([name, count]) => ({ name, count }))
 })
 
 async function loadStats() {
@@ -357,39 +343,17 @@ async function checkHealth() {
   }
 }
 
-async function loadCatalogProgress() {
+async function loadQdrantDatasets() {
   try {
-    const resp = await fetch('/catalog/progress')
-    if (resp.ok) catalogProgress.value = await resp.json()
-  } catch (e) {}
-}
-
-async function loadCatalogCount() {
-  try {
-    const resp = await fetch('/catalog')
-    if (resp.ok) catalog.value = await resp.json()
-  } catch (e) {}
-}
-
-async function loadSourceFreshness() {
-  try {
-    const resp = await fetch('/sources?active_only=true')
-    if (resp.ok) {
-      const sources = await resp.json()
-      const thirtyDaysAgo = Date.now() - 30 * 24 * 60 * 60 * 1000
-      staleSources.value = sources.filter(s => {
-        if (s.processing_status !== 'completed') return false
-        if (!s.last_processed) return true
-        return new Date(s.last_processed).getTime() < thirtyDaysAgo
-      }).length
-    }
+    const resp = await fetch('/qdrant/datasets')
+    if (resp.ok) qdrantDatasets.value = await resp.json()
   } catch (e) {}
 }
 
 async function refreshAll() {
   loading.value = true
   try {
-    await Promise.all([loadStats(), checkHealth(), loadCatalogProgress(), loadCatalogCount(), loadSourceFreshness()])
+    await Promise.all([loadStats(), checkHealth(), loadQdrantDatasets()])
   } finally {
     loading.value = false
   }
