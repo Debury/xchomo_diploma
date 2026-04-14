@@ -35,19 +35,17 @@ logger = logging.getLogger(__name__)
     minimum_interval_seconds=60,
 )
 def source_schedule_sensor(context: SensorEvaluationContext):
-    """Check for sources due for scheduled processing."""
+    """Check for sources and datasets due for scheduled processing."""
     try:
         from src.database.source_store import SourceStore
         store = SourceStore()
+        triggered = 0
+
+        # 1. Per-source schedules
         due_schedules = store.get_due_schedules()
-
-        if not due_schedules:
-            return SkipReason("No sources due for scheduled processing")
-
         for sched in due_schedules:
             source_id = sched["source_id"]
-            context.log.info(f"Triggering scheduled ETL for {source_id}")
-
+            context.log.info(f"Triggering scheduled ETL for source {source_id}")
             yield RunRequest(
                 run_key=f"schedule_{source_id}_{datetime.utcnow().strftime('%Y%m%d_%H%M')}",
                 tags={
@@ -56,9 +54,33 @@ def source_schedule_sensor(context: SensorEvaluationContext):
                     "cron": sched.get("cron_expression", ""),
                 },
             )
-
-            # Advance schedule to next occurrence
             store.advance_schedule(source_id)
+            triggered += 1
+
+        # 2. Dataset-level schedules — trigger ALL sources under the dataset
+        due_dataset_scheds = store.get_due_dataset_schedules()
+        for ds_sched in due_dataset_scheds:
+            dataset_name = ds_sched["dataset_name"]
+            source_ids = store.get_sources_for_dataset(dataset_name)
+            context.log.info(
+                f"Dataset schedule '{ds_sched['name']}' triggered for "
+                f"{dataset_name}: {len(source_ids)} sources"
+            )
+            for source_id in source_ids:
+                yield RunRequest(
+                    run_key=f"ds_sched_{source_id}_{datetime.utcnow().strftime('%Y%m%d_%H%M')}",
+                    tags={
+                        "source_id": source_id,
+                        "trigger_type": "dataset_schedule",
+                        "dataset_schedule": ds_sched["name"],
+                        "dataset_name": dataset_name,
+                    },
+                )
+                triggered += 1
+            store.advance_dataset_schedule(ds_sched["id"])
+
+        if triggered == 0:
+            return SkipReason("No sources or datasets due for scheduled processing")
 
     except ImportError:
         return SkipReason("PostgreSQL store not available")

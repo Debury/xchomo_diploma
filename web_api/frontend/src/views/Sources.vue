@@ -256,8 +256,7 @@
           </div>
 
           <div class="border-t border-mendelu-gray-semi pt-4">
-            <label class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-1">Schedule (cron)</label>
-            <input v-model="editForm.schedule_cron" type="text" class="input-field font-mono" placeholder="e.g. 0 2 * * 0 (weekly Sunday 2am)" />
+            <CronPicker v-model="editForm.schedule_cron" label="Schedule" />
           </div>
 
           <div class="flex gap-3 pt-2">
@@ -274,6 +273,7 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import PageHeader from '../components/PageHeader.vue'
 import ProcessingHistory from '../components/ProcessingHistory.vue'
+import CronPicker from '../components/CronPicker.vue'
 
 const sources = ref([])
 const loading = ref(true)

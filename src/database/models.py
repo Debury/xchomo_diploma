@@ -140,6 +140,32 @@ class SourceSchedule(Base):
         }
 
 
+class DatasetSchedule(Base):
+    """Dataset-level schedule — triggers ALL sources under a dataset_name."""
+    __tablename__ = "dataset_schedules"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(255), unique=True, nullable=False)
+    dataset_name = Column(String(255), nullable=False, index=True)
+    cron_expression = Column(String(100), nullable=False)
+    is_enabled = Column(Boolean, default=True, nullable=False)
+    last_triggered_at = Column(DateTime, nullable=True)
+    next_run_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "name": self.name,
+            "dataset_name": self.dataset_name,
+            "cron_expression": self.cron_expression,
+            "is_enabled": self.is_enabled,
+            "last_triggered_at": self.last_triggered_at.isoformat() if self.last_triggered_at else None,
+            "next_run_at": self.next_run_at.isoformat() if self.next_run_at else None,
+        }
+
+
 class ProcessingRun(Base):
     __tablename__ = "processing_runs"
 

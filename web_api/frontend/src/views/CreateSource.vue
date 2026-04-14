@@ -286,10 +286,37 @@
         <div v-show="step === 4" class="space-y-5">
           <p class="page-subtitle">Set up automatic re-processing schedule (optional)</p>
 
+          <!-- Existing dataset schedules -->
+          <div v-if="datasetSchedules.length > 0">
+            <label class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-2">Use existing dataset schedule</label>
+            <div class="space-y-2">
+              <div v-for="ds in datasetSchedules" :key="ds.id"
+                   class="flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-all duration-150"
+                   :class="form.useDatasetSchedule === ds.name ? 'border-mendelu-green bg-mendelu-green/5' : 'border-mendelu-gray-semi hover:border-mendelu-green/30'"
+                   @click="form.useDatasetSchedule = form.useDatasetSchedule === ds.name ? '' : ds.name; form.enableSchedule = false">
+                <span class="w-4 h-4 rounded-full border-2 flex items-center justify-center flex-shrink-0"
+                      :class="form.useDatasetSchedule === ds.name ? 'border-mendelu-green' : 'border-mendelu-gray-semi'">
+                  <span v-if="form.useDatasetSchedule === ds.name" class="w-2 h-2 rounded-full bg-mendelu-green"></span>
+                </span>
+                <div class="flex-1">
+                  <span class="text-sm font-medium text-mendelu-black">{{ ds.name }}</span>
+                  <span class="text-xs text-mendelu-gray-dark ml-2">{{ ds.dataset_name }}</span>
+                </div>
+                <code class="text-xs font-mono text-mendelu-gray-dark">{{ ds.cron_expression }}</code>
+              </div>
+            </div>
+          </div>
+
+          <div class="flex items-center gap-3 text-xs text-mendelu-gray-dark">
+            <div class="flex-1 border-t border-mendelu-gray-semi"></div>
+            <span>or set per-source schedule</span>
+            <div class="flex-1 border-t border-mendelu-gray-semi"></div>
+          </div>
+
           <div class="space-y-3">
             <label class="flex items-center space-x-3 cursor-pointer">
-              <input v-model="form.enableSchedule" type="checkbox" class="form-checkbox">
-              <span class="text-sm text-mendelu-black">Enable scheduled updates</span>
+              <input v-model="form.enableSchedule" type="checkbox" class="form-checkbox" @change="onEnableCustomSchedule">
+              <span class="text-sm text-mendelu-black">Custom per-source schedule</span>
             </label>
           </div>
 
@@ -297,7 +324,7 @@
             <CronPicker v-model="form.schedule_cron" label="Update Schedule" />
           </div>
 
-          <div class="space-y-3">
+          <div class="space-y-3 pt-3 border-t border-mendelu-gray-semi">
             <label class="flex items-center space-x-3 cursor-pointer">
               <input v-model="form.autoEmbed" type="checkbox" class="form-checkbox">
               <span class="text-sm text-mendelu-black">Auto-generate embeddings after import</span>
@@ -368,7 +395,7 @@ const stepLabels = ['URL', 'Auth', 'Config', 'Schedule', 'Review']
 const form = ref({
   name: '', type: 'netcdf', url: '', variables: '',
   startYear: null, endYear: null, description: '',
-  autoEmbed: true, enableSchedule: false, schedule_cron: '0 2 * * 0',
+  autoEmbed: true, enableSchedule: false, schedule_cron: '0 2 * * 0', useDatasetSchedule: '',
   auth_method: 'none', auth_api_key: '', auth_token: '',
   auth_username: '', auth_password: '', portal: '',
   hazard_type: '', region_country: '', spatial_coverage: '', impact_sector: '',
@@ -385,6 +412,7 @@ const reviewConnectionResult = ref(null)
 
 // Global credential status — fetched from Settings API
 const globalCredentials = ref({})
+const datasetSchedules = ref([])
 
 const PORTAL_AUTH_MAP = {
   CDS: 'api_key', NASA: 'basic', MARINE: 'basic', ESGF: 'none', NOAA: 'none'
@@ -409,10 +437,18 @@ const portalHasGlobalCreds = computed(() => {
 
 onMounted(async () => {
   try {
-    const resp = await fetch('/settings/credentials')
-    if (resp.ok) globalCredentials.value = await resp.json()
+    const [credResp, schedResp] = await Promise.all([
+      fetch('/settings/credentials'),
+      fetch('/schedules/datasets'),
+    ])
+    if (credResp.ok) globalCredentials.value = await credResp.json()
+    if (schedResp.ok) datasetSchedules.value = await schedResp.json()
   } catch (e) { /* ignore */ }
 })
+
+function onEnableCustomSchedule() {
+  if (form.value.enableSchedule) form.value.useDatasetSchedule = ''
+}
 
 function useMatchedDataset() {
   if (urlAnalysis.value?.matched_dataset) {

@@ -290,6 +290,105 @@ class SourceStore:
             sched.updated_at = datetime.utcnow()
 
 
+    # ------------------------------------------------------------------ #
+    # Dataset-level schedules
+    # ------------------------------------------------------------------ #
+
+    def create_dataset_schedule(self, name: str, dataset_name: str,
+                                cron_expression: str, is_enabled: bool = True) -> Dict[str, Any]:
+        from croniter import croniter
+        from src.database.models import DatasetSchedule
+
+        with get_db_session() as session:
+            existing = session.query(DatasetSchedule).filter(DatasetSchedule.name == name).first()
+            if existing:
+                existing.dataset_name = dataset_name
+                existing.cron_expression = cron_expression
+                existing.is_enabled = is_enabled
+                existing.next_run_at = croniter(cron_expression, datetime.utcnow()).get_next(datetime)
+                existing.updated_at = datetime.utcnow()
+                session.flush()
+                return existing.to_dict()
+
+            sched = DatasetSchedule(
+                name=name,
+                dataset_name=dataset_name,
+                cron_expression=cron_expression,
+                is_enabled=is_enabled,
+                next_run_at=croniter(cron_expression, datetime.utcnow()).get_next(datetime),
+            )
+            session.add(sched)
+            session.flush()
+            return sched.to_dict()
+
+    def list_dataset_schedules(self) -> List[Dict[str, Any]]:
+        from src.database.models import DatasetSchedule
+
+        with get_db_session() as session:
+            return [s.to_dict() for s in session.query(DatasetSchedule).all()]
+
+    def delete_dataset_schedule(self, schedule_id: int) -> bool:
+        from src.database.models import DatasetSchedule
+
+        with get_db_session() as session:
+            sched = session.query(DatasetSchedule).filter(DatasetSchedule.id == schedule_id).first()
+            if not sched:
+                return False
+            session.delete(sched)
+            return True
+
+    def get_due_dataset_schedules(self) -> List[Dict[str, Any]]:
+        from src.database.models import DatasetSchedule
+
+        with get_db_session() as session:
+            now = datetime.utcnow()
+            schedules = (
+                session.query(DatasetSchedule)
+                .filter(DatasetSchedule.is_enabled == True, DatasetSchedule.next_run_at <= now)
+                .all()
+            )
+            return [s.to_dict() for s in schedules]
+
+    def advance_dataset_schedule(self, schedule_id: int):
+        from croniter import croniter
+        from src.database.models import DatasetSchedule
+
+        with get_db_session() as session:
+            sched = session.query(DatasetSchedule).filter(DatasetSchedule.id == schedule_id).first()
+            if not sched:
+                return
+            sched.last_triggered_at = datetime.utcnow()
+            sched.next_run_at = croniter(sched.cron_expression, datetime.utcnow()).get_next(datetime)
+            sched.updated_at = datetime.utcnow()
+
+    def get_sources_for_dataset(self, dataset_name: str) -> List[str]:
+        """Get all source_ids that belong to a dataset_name (from Qdrant)."""
+        try:
+            import httpx
+            import os
+            qdrant_host = os.getenv("QDRANT_HOST", "localhost")
+            qdrant_port = os.getenv("QDRANT_REST_PORT", "6333")
+
+            resp = httpx.post(
+                f"http://{qdrant_host}:{qdrant_port}/collections/climate_data/facet",
+                json={"key": "source_id", "limit": 500,
+                       "filter": {"must": [{"key": "dataset_name", "match": {"value": dataset_name}}]}},
+                timeout=30.0,
+            )
+            if resp.status_code == 200:
+                return [h["value"] for h in resp.json().get("result", {}).get("hits", [])]
+        except Exception:
+            pass
+
+        # Fallback: match by source_id prefix
+        with get_db_session() as session:
+            prefix = f"catalog_{dataset_name.replace(' ', '_').replace('-', '_')}"
+            sources = session.query(Source.source_id).filter(
+                Source.source_id.like(f"{prefix}%")
+            ).all()
+            return [s[0] for s in sources]
+
+
 def _to_dto(row: Source) -> ClimateDataSource:
     """Convert a SQLAlchemy Source row to a ClimateDataSource dataclass."""
     return ClimateDataSource(
