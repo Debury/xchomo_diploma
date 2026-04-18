@@ -59,7 +59,7 @@
           </div>
         </div>
         <div>
-          <input :value="modelValue" @input="$emit('update:modelValue', $event.target.value)" type="text" class="input-field font-mono !text-xs" placeholder="0 2 * * *" />
+          <input :value="modelValue" @input="$emit('update:modelValue', ($event.target as HTMLInputElement).value)" type="text" class="input-field font-mono !text-xs" placeholder="0 2 * * *" />
         </div>
       </div>
     </details>
@@ -74,7 +74,7 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { ref, computed } from 'vue'
 
 const props = defineProps({
@@ -94,7 +94,7 @@ const presets = [
   { label: 'Monthly', desc: '1st of each month', cron: '0 0 1 * *' },
 ]
 
-const custom = ref({ frequency: 'daily', hour: 2, dayOfWeek: 2, dayOfMonth: 1, hours: 6 })
+const custom = ref<any>({ frequency: 'daily', hour: 2, dayOfWeek: 2, dayOfMonth: 1, hours: 6 })
 
 function selectPreset(preset) {
   emit('update:modelValue', preset.cron)

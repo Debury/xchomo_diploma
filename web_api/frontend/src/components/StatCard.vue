@@ -41,9 +41,9 @@
   </div>
 </template>
 
-<script setup>
-import { computed, toRef } from 'vue'
-import { useCountUp } from '../composables/useCountUp.js'
+<script setup lang="ts">
+import { computed, toRef, type PropType } from 'vue'
+import { useCountUp } from '../composables/useCountUp'
 import SparkLine from './SparkLine.vue'
 
 const props = defineProps({
@@ -54,7 +54,7 @@ const props = defineProps({
   description: { type: String, default: '' },
   suffix: { type: String, default: '' },
   loading: { type: Boolean, default: false },
-  sparkData: { type: Array, default: () => [] },
+  sparkData: { type: Array as PropType<number[]>, default: () => [] },
   variant: { type: String, default: 'default' },
 })
 

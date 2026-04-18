@@ -252,20 +252,21 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { useThemeStore } from '../stores/theme'
 import StatCard from '../components/StatCard.vue'
 import DonutChart from '../components/DonutChart.vue'
 import ActivityFeed from '../components/ActivityFeed.vue'
 import ServiceHealth from '../components/ServiceHealth.vue'
+import { apiFetch } from '../api'
 
 const themeStore = useThemeStore()
 const isDark = computed(() => themeStore.theme === 'dark')
 
-const stats = ref({})
-const health = ref({ llm: 'Checking...', qdrant: false, dagster: false, llmOnline: false })
-const qdrantDatasets = ref([])
+const stats = ref<any>({})
+const health = ref<any>({ llm: 'Checking...', qdrant: false, dagster: false, llmOnline: false })
+const qdrantDatasets = ref<any[]>([])
 const loading = ref(false)
 
 const hazardColors = ['#79be15', '#82c55b', '#6aaa10', '#3d7a0a', '#535a5d', '#8b95a0', '#b8c0c5', '#dce3e4', '#4a9e2f', '#2d6b16']
@@ -291,7 +292,7 @@ const topDatasets = computed(() => qdrantDatasets.value.filter(d => d.chunk_coun
 const maxChunks = computed(() => topDatasets.value[0]?.chunk_count || 1)
 
 const hazardSegments = computed(() => {
-  const counts = {}
+  const counts: Record<string, number> = {}
   for (const ds of qdrantDatasets.value) {
     const h = ds.hazard_type || 'Unknown'
     counts[h] = (counts[h] || 0) + 1
@@ -307,7 +308,7 @@ const hazardSegments = computed(() => {
 })
 
 const regionCounts = computed(() => {
-  const counts = {}
+  const counts: Record<string, number> = {}
   for (const ds of qdrantDatasets.value) {
     const r = ds.location_name || 'Unknown'
     counts[r] = (counts[r] || 0) + 1
@@ -319,7 +320,7 @@ const regionCounts = computed(() => {
 
 async function loadStats() {
   try {
-    const resp = await fetch(`/rag/info?t=${Date.now()}`)
+    const resp = await apiFetch(`/rag/info?t=${Date.now()}`)
     if (resp.ok) {
       stats.value = await resp.json()
       health.value.qdrant = true
@@ -331,7 +332,7 @@ async function loadStats() {
 
 async function checkHealth() {
   try {
-    const resp = await fetch(`/health?t=${Date.now()}`)
+    const resp = await apiFetch(`/health?t=${Date.now()}`)
     if (resp.ok) {
       const data = await resp.json()
       health.value.dagster = data.dagster_available
@@ -345,7 +346,7 @@ async function checkHealth() {
 
 async function loadQdrantDatasets() {
   try {
-    const resp = await fetch('/qdrant/datasets')
+    const resp = await apiFetch('/qdrant/datasets')
     if (resp.ok) qdrantDatasets.value = await resp.json()
   } catch (e) {}
 }

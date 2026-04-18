@@ -29,7 +29,7 @@
 
     <!-- Filters -->
     <div class="flex gap-3 flex-wrap">
-      <input v-model="filters.search" type="text" placeholder="Search sources..." class="input-field !w-56" />
+      <input v-model="searchInput" type="text" placeholder="Search sources..." class="input-field !w-56" />
       <select v-model="filters.status" class="input-field !w-auto">
         <option value="">All Statuses</option>
         <option value="completed">With Data</option>
@@ -269,24 +269,36 @@
   </div>
 </template>
 
-<script setup>
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+<script setup lang="ts">
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import PageHeader from '../components/PageHeader.vue'
 import ProcessingHistory from '../components/ProcessingHistory.vue'
 import CronPicker from '../components/CronPicker.vue'
+import { apiFetch } from '../api'
 
-const sources = ref([])
+const sources = ref<any[]>([])
 const loading = ref(true)
 const selectedSource = ref(null)
 const editingSource = ref(null)
 const saving = ref(false)
-const editForm = ref({ source_id: '', url: '', description: '', hazard_type: '', location_name: '', impact_sector: '', keywords: '', schedule_cron: '' })
+const editForm = ref<any>({ source_id: '', url: '', description: '', hazard_type: '', location_name: '', impact_sector: '', keywords: '', schedule_cron: '' })
 
-const filters = ref({ search: '', status: '', hazard: '', region: '' })
+const filters = ref<any>({ search: '', status: '', hazard: '', region: '' })
+// Debounce the free-text search so filteredSources doesn't recompute on every
+// keystroke (which re-runs through every source + re-builds hazardTypes/regions).
+const searchInput = ref('')
+let searchDebounce: ReturnType<typeof setTimeout> | null = null
+watch(searchInput, (val) => {
+  if (searchDebounce) clearTimeout(searchDebounce)
+  searchDebounce = setTimeout(() => {
+    filters.value.search = val
+  }, 250)
+})
+
 const sortField = ref('embedding_count')
 const sortAsc = ref(false)
 
-let statusPollInterval = null
+let statusPollInterval: ReturnType<typeof setInterval> | null = null
 
 const withDataCount = computed(() => sources.value.filter(s => s.embedding_count > 10).length)
 const metadataOnlyCount = computed(() => sources.value.filter(s => s.embedding_count > 0 && s.embedding_count <= 10).length)
@@ -346,7 +358,7 @@ function formatDate(d) { return d ? new Date(d).toLocaleString() : '--' }
 async function loadSources() {
   loading.value = true
   try {
-    const resp = await fetch('/sources/')
+    const resp = await apiFetch('/sources/')
     if (!resp.ok) throw new Error(resp.statusText)
     sources.value = await resp.json()
   } catch (e) {
@@ -359,7 +371,7 @@ async function loadSources() {
 async function reprocessSource(source) {
   source._reprocessing = true
   try {
-    const resp = await fetch(`/sources/${source.source_id}/trigger`, {
+    const resp = await apiFetch(`/sources/${source.source_id}/trigger`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' }
     })
     if (resp.ok) {
@@ -378,9 +390,9 @@ async function reprocessSource(source) {
 async function deleteSourceEmbeddings(source) {
   if (!confirm(`Delete all embeddings for "${source.dataset_name || source.source_id}"? This cannot be undone.`)) return
   try {
-    const resp = await fetch(`/sources/${source.source_id}/embeddings?confirm=true`, { method: 'DELETE' })
+    const resp = await apiFetch(`/sources/${source.source_id}/embeddings?confirm=true`, { method: 'DELETE' })
     if (resp.ok) {
-      await fetch('/qdrant/cache/clear', { method: 'POST' })
+      await apiFetch('/qdrant/cache/clear', { method: 'POST' })
       selectedSource.value = null
       await loadSources()
     }
@@ -415,7 +427,7 @@ async function saveEdit() {
       impact_sector: editForm.value.impact_sector || null,
       keywords: editForm.value.keywords || null,
     }
-    const resp = await fetch(`/sources/${editForm.value.source_id}/metadata`, {
+    const resp = await apiFetch(`/sources/${editForm.value.source_id}/metadata`, {
       method: 'PUT', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(metadata)
     })
@@ -425,12 +437,20 @@ async function saveEdit() {
     }
     const result = await resp.json()
 
-    // Set schedule if provided
-    if (editForm.value.schedule_cron) {
-      await fetch(`/sources/${editForm.value.source_id}/schedule`, {
+    // Update or remove schedule based on cron field
+    const hadSchedule = Boolean(selectedSource.value?.schedule)
+    const newCron = (editForm.value.schedule_cron || '').trim()
+    if (newCron) {
+      const schedResp = await apiFetch(`/sources/${editForm.value.source_id}/schedule`, {
         method: 'PUT', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ cron_expression: editForm.value.schedule_cron, is_enabled: true })
+        body: JSON.stringify({ cron_expression: newCron, is_enabled: true })
       })
+      if (!schedResp.ok) {
+        const err = await schedResp.json().catch(() => ({}))
+        throw new Error(err.detail || `Schedule update failed (HTTP ${schedResp.status})`)
+      }
+    } else if (hadSchedule) {
+      await apiFetch(`/sources/${editForm.value.source_id}/schedule`, { method: 'DELETE' })
     }
 
     editingSource.value = null

@@ -156,7 +156,14 @@ async def get_catalog_progress():
 
         data["thread_alive"] = thread_alive
         data["thread_crashed"] = thread_crashed
-        data["thread_error"] = _batch_thread_error if thread_crashed else None
+        # Never leak internal tracebacks / file paths via the public API.
+        # The full error is already in the server logs; the UI only needs to
+        # know *that* the batch crashed so it can surface the "Restart" button.
+        if thread_crashed:
+            logger.error(f"Batch thread crashed: {_batch_thread_error}")
+            data["thread_error"] = "Batch processing crashed. Check server logs for details."
+        else:
+            data["thread_error"] = None
 
         return data
     except Exception as e:

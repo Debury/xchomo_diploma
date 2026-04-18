@@ -244,12 +244,13 @@
   </div>
 </template>
 
-<script setup>
-import { ref, computed, onMounted } from 'vue'
+<script setup lang="ts">
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import PageHeader from '../components/PageHeader.vue'
+import { apiFetch } from '../api'
 
-const catalog = ref([])
-const qdrantDatasets = ref([])
+const catalog = ref<any[]>([])
+const qdrantDatasets = ref<any[]>([])
 const phaseStats = ref(null)
 const progress = ref(null)
 const loading = ref(false)
@@ -257,7 +258,7 @@ const processing = ref(false)
 const restarting = ref(false)
 const selectedEntry = ref(null)
 
-const filters = ref({ search: '', phase: '', access: '', dataType: '', status: '', qdrant: '' })
+const filters = ref<any>({ search: '', phase: '', access: '', dataType: '', status: '', qdrant: '' })
 const sortField = ref('dataset_name')
 const sortAsc = ref(true)
 
@@ -352,7 +353,7 @@ function formatFieldName(key) { return key.replace(/_/g, ' ').replace(/\b\w/g, c
 
 async function loadQdrantDatasets() {
   try {
-    const resp = await fetch('/qdrant/datasets')
+    const resp = await apiFetch('/qdrant/datasets')
     if (resp.ok) qdrantDatasets.value = await resp.json()
   } catch (e) { console.error('Failed to load Qdrant datasets:', e) }
 }
@@ -360,7 +361,7 @@ async function loadQdrantDatasets() {
 async function refreshCatalog() {
   loading.value = true
   try {
-    const [catResp, progResp] = await Promise.all([fetch('/catalog'), fetch('/catalog/progress'), loadQdrantDatasets()])
+    const [catResp, progResp] = await Promise.all([apiFetch('/catalog'), apiFetch('/catalog/progress'), loadQdrantDatasets()])
     if (catResp.ok) catalog.value = await catResp.json()
     if (progResp.ok) progress.value = await progResp.json()
   } catch (e) { console.error('Failed to load catalog:', e) }
@@ -370,7 +371,7 @@ async function refreshCatalog() {
 async function classifyCatalog() {
   loading.value = true
   try {
-    const resp = await fetch('/catalog/classify', { method: 'POST' })
+    const resp = await apiFetch('/catalog/classify', { method: 'POST' })
     if (resp.ok) phaseStats.value = await resp.json()
   } catch (e) { console.error('Failed to classify:', e) }
   finally { loading.value = false }
@@ -379,7 +380,7 @@ async function classifyCatalog() {
 async function triggerProcessing(phases) {
   processing.value = true
   try {
-    const resp = await fetch('/catalog/process', {
+    const resp = await apiFetch('/catalog/process', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ phases }),
     })
@@ -392,12 +393,12 @@ async function triggerSourceReprocess(entry) {
   if (!entry.source_id) return
   entry.reprocessing = true
   try {
-    const resp = await fetch(`/sources/${entry.source_id}/trigger`, {
+    const resp = await apiFetch(`/sources/${entry.source_id}/trigger`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' }
     })
     if (!resp.ok) {
       // Source might not exist in store yet, try catalog reprocess
-      const catResp = await fetch('/catalog/process', {
+      const catResp = await apiFetch('/catalog/process', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ source_ids: [entry.source_id], force_reprocess: true }),
       })
@@ -412,10 +413,10 @@ async function deleteDatasetEmbeddings(entry) {
   if (!sourceId) return
   if (!confirm(`Delete all embeddings for "${entry.dataset_name}"? This cannot be undone.`)) return
   try {
-    const resp = await fetch(`/sources/${sourceId}/embeddings?confirm=true`, { method: 'DELETE' })
+    const resp = await apiFetch(`/sources/${sourceId}/embeddings?confirm=true`, { method: 'DELETE' })
     if (resp.ok) {
       // Clear cache and refresh
-      await fetch('/qdrant/cache/clear', { method: 'POST' })
+      await apiFetch('/qdrant/cache/clear', { method: 'POST' })
       await loadQdrantDatasets()
       selectedEntry.value = null
     }
@@ -425,7 +426,7 @@ async function deleteDatasetEmbeddings(entry) {
 async function autoRestart() {
   restarting.value = true
   try {
-    const resp = await fetch('/catalog/auto-restart', { method: 'POST' })
+    const resp = await apiFetch('/catalog/auto-restart', { method: 'POST' })
     if (resp.ok) pollProgress()
     else { const data = await resp.json(); console.error('Auto-restart failed:', data.detail || data) }
   } catch (e) { console.error('Auto-restart error:', e) }
@@ -433,20 +434,48 @@ async function autoRestart() {
 }
 
 let progressInterval = null
+let progressTickCount = 0
+const MAX_POLL_TICKS = 400  // ~20 min of 3-second polls — hard cap so a stuck
+                            // batch (thread_alive=false but pending>0) can't
+                            // keep firing requests forever.
+
+function stopProgressPolling() {
+  if (progressInterval) {
+    clearInterval(progressInterval)
+    progressInterval = null
+  }
+  progressTickCount = 0
+}
+
 function pollProgress() {
   if (progressInterval) return
+  progressTickCount = 0
   progressInterval = setInterval(async () => {
+    progressTickCount += 1
+    if (progressTickCount > MAX_POLL_TICKS) {
+      stopProgressPolling()
+      return
+    }
     try {
-      const resp = await fetch('/catalog/progress')
+      const resp = await apiFetch('/catalog/progress')
       if (resp.ok) {
         progress.value = await resp.json()
-        if (!progress.value.thread_alive && progress.value.pending === 0) {
-          clearInterval(progressInterval); progressInterval = null; refreshCatalog()
+        // Stop polling when the batch is finished OR stalled (no thread, no pending).
+        if (!progress.value.thread_alive && (progress.value.pending || 0) === 0) {
+          stopProgressPolling()
+          refreshCatalog()
+        }
+        // Also stop if the thread crashed — don't keep spamming.
+        if (progress.value.thread_crashed) {
+          stopProgressPolling()
         }
       }
-    } catch (e) { clearInterval(progressInterval); progressInterval = null }
+    } catch (e) {
+      stopProgressPolling()
+    }
   }, 3000)
 }
 
 onMounted(() => { refreshCatalog(); classifyCatalog().catch(() => {}) })
+onUnmounted(() => stopProgressPolling())
 </script>

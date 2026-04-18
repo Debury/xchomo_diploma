@@ -59,10 +59,11 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { ref, onMounted, onUnmounted } from 'vue'
+import { apiFetch } from '../api'
 
-const events = ref([])
+const events = ref<any[]>([])
 let intervalId = null
 let eventCounter = 0
 let prevProgress = null
@@ -96,8 +97,8 @@ function addEvent(type, message) {
 async function poll() {
   try {
     const [healthResp, progressResp] = await Promise.all([
-      fetch(`/health?t=${Date.now()}`).catch(() => null),
-      fetch('/catalog/progress').catch(() => null),
+      apiFetch(`/health?t=${Date.now()}`).catch(() => null),
+      apiFetch('/catalog/progress').catch(() => null),
     ])
 
     if (healthResp?.ok) {
@@ -131,13 +132,36 @@ async function poll() {
   } catch (e) {}
 }
 
+function stopPolling(): void {
+  if (intervalId) {
+    clearInterval(intervalId)
+    intervalId = null
+  }
+}
+
+function startPolling(): void {
+  stopPolling()
+  intervalId = setInterval(poll, 15000)
+}
+
+function onVisibilityChange(): void {
+  if (document.hidden) {
+    stopPolling()
+  } else {
+    poll()
+    startPolling()
+  }
+}
+
 onMounted(() => {
   poll()
-  intervalId = setInterval(poll, 15000)
+  startPolling()
+  document.addEventListener('visibilitychange', onVisibilityChange)
 })
 
 onUnmounted(() => {
-  if (intervalId) clearInterval(intervalId)
+  stopPolling()
+  document.removeEventListener('visibilitychange', onVisibilityChange)
 })
 </script>
 

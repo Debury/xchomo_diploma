@@ -75,7 +75,13 @@ def process_single_source_op(context: OpExecutionContext) -> Dict[str, Any]:
     # Process
     start_time = time.time()
     try:
-        store.update_processing_status(source_id, "processing")
+        try:
+            store.update_processing_status(source_id, "processing")
+        except Exception as status_err:
+            # Never let a DB hiccup here orphan the run before we've started
+            # real work. The failure handler below also wraps updates so the
+            # source can still be marked "failed" on downstream errors.
+            logger.warning(f"Could not set processing status for {source_id}: {status_err}")
 
         # Import heavy dependencies lazily
         from src.climate_embeddings.loaders.raster_pipeline import load_raster_auto
@@ -315,7 +321,15 @@ def process_single_source_op(context: OpExecutionContext) -> Dict[str, Any]:
         error_msg = str(e)
         logger.error(f"Failed {source_id}: {error_msg}")
         logger.error(traceback.format_exc())
-        store.update_processing_status(source_id, "failed", error_message=error_msg)
+        try:
+            store.update_processing_status(source_id, "failed", error_message=error_msg)
+        except Exception as status_err:
+            # Last-ditch attempt to avoid leaving the source stuck in
+            # "processing" — log loudly and carry on.
+            logger.error(
+                f"Could not mark {source_id} as failed after error ({error_msg}): "
+                f"{status_err}"
+            )
 
         if run_record_id:
             try:

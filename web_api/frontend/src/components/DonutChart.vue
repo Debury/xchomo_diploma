@@ -59,11 +59,17 @@
   </div>
 </template>
 
-<script setup>
-import { computed, ref, onMounted } from 'vue'
+<script setup lang="ts">
+import { computed, ref, onMounted, type PropType } from 'vue'
+
+interface DonutSegment {
+  label: string
+  value: number
+  color: string
+}
 
 const props = defineProps({
-  segments: { type: Array, default: () => [] },
+  segments: { type: Array as PropType<DonutSegment[]>, default: () => [] },
   size: { type: Number, default: 160 },
   label: { type: String, default: 'total' },
 })

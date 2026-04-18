@@ -259,9 +259,10 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { ref, computed, reactive, onMounted } from 'vue'
 import PageHeader from '../components/PageHeader.vue'
+import { apiFetch } from '../api'
 
 const settings = ref(null)
 const embeddingStats = ref(null)
@@ -281,32 +282,46 @@ const quickModels = [
   { id: 'openai/gpt-4o-mini', label: 'GPT-4o Mini' },
 ]
 
-const editableSettings = reactive({
+interface EditableSettings {
+  model: string
+  temperature: number
+  top_k: number
+  use_reranker: boolean
+  batch_size?: number
+}
+
+const editableSettings = reactive<EditableSettings>({
   model: '',
   temperature: 0.1,
   top_k: 10,
-  use_reranker: true
+  use_reranker: true,
 })
 
 async function testConnection() {
   testingConnection.value = true
   connectionStatus.value = ''
+  // Use a 30s abort controller so the test button can't hang indefinitely
+  // if the LLM provider is down. 30s covers our observed p99 (~22s end-to-end).
+  const controller = new AbortController()
+  const abortTimer = setTimeout(() => controller.abort(), 30_000)
   try {
-    const resp = await fetch('/rag/query', {
+    const resp = await apiFetch('/rag/query', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ question: 'test connection', top_k: 1, use_llm: true, use_reranker: false, timeout: 15 })
+      body: JSON.stringify({ question: 'test connection', top_k: 1, use_llm: true, use_reranker: false }),
+      signal: controller.signal,
     })
     connectionStatus.value = resp.ok ? 'ok' : 'fail'
   } catch {
     connectionStatus.value = 'fail'
   } finally {
+    clearTimeout(abortTimer)
     testingConnection.value = false
     setTimeout(() => { connectionStatus.value = '' }, 5000)
   }
 }
 
-const originalSettings = ref({})
+const originalSettings = ref<any>({})
 const hasChanges = computed(() => {
   return editableSettings.model !== originalSettings.value.model ||
     editableSettings.temperature !== originalSettings.value.temperature ||
@@ -314,8 +329,8 @@ const hasChanges = computed(() => {
     editableSettings.use_reranker !== originalSettings.value.use_reranker
 })
 
-const credentials = ref({})
-const revealedKeys = reactive({})
+const credentials = ref<Record<string, { configured?: boolean; masked?: string }>>({})
+const revealedKeys = reactive<Record<string, boolean>>({})
 
 async function toggleReveal(key) {
   if (revealedKeys[key]) {
@@ -331,7 +346,7 @@ async function toggleReveal(key) {
   }
   // Fetch full value from backend
   try {
-    const resp = await fetch(`/settings/credentials/${key}`)
+    const resp = await apiFetch(`/settings/credentials/${key}`)
     if (resp.ok) {
       const data = await resp.json()
       credentialEdits[key] = data.value
@@ -436,7 +451,7 @@ async function refreshSettings() {
   loading.value = true
   try {
     const [sysResp, embResp, credResp] = await Promise.all([
-      fetch('/settings/system'), fetch('/embeddings/stats'), fetch('/settings/credentials'),
+      apiFetch('/settings/system'), apiFetch('/embeddings/stats'), apiFetch('/settings/credentials'),
     ])
     if (sysResp.ok) {
       settings.value = await sysResp.json()
@@ -463,7 +478,7 @@ async function refreshSettings() {
 async function saveSettings() {
   saving.value = true
   try {
-    const resp = await fetch('/settings/system', {
+    const resp = await apiFetch('/settings/system', {
       method: 'PUT', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         model: editableSettings.model, temperature: editableSettings.temperature,
@@ -492,7 +507,7 @@ async function saveCredentials() {
     const payload = {}
     Object.entries(credentialEdits).forEach(([k, v]) => { if (v !== '') payload[k] = v })
     if (Object.keys(payload).length === 0) return
-    const resp = await fetch('/settings/credentials', {
+    const resp = await apiFetch('/settings/credentials', {
       method: 'PUT', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
     })

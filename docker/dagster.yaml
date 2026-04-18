@@ -1,0 +1,48 @@
+# Dagster instance configuration used by the dagit + dagster-daemon containers.
+# Placed at /opt/dagster/dagster_home/dagster.yaml via a bind mount so both
+# services share the same metadata storage and event log.
+#
+# Note: we use the default sqlite-based storage (placed inside DAGSTER_HOME,
+# which is a shared named volume between dagit and dagster-daemon). Postgres
+# storage would require the optional `dagster-postgres` pip package.
+
+run_coordinator:
+  module: dagster.core.run_coordinator
+  class: QueuedRunCoordinator
+  config:
+    max_concurrent_runs: 2
+
+run_launcher:
+  module: dagster.core.launcher
+  class: DefaultRunLauncher
+
+compute_logs:
+  module: dagster.core.storage.compute_log_manager
+  class: LocalComputeLogManager
+  config:
+    base_dir: /opt/dagster/dagster_home/compute_logs
+
+local_artifact_storage:
+  module: dagster.core.storage.root
+  class: LocalArtifactStorage
+  config:
+    base_dir: /opt/dagster/dagster_home/artifacts
+
+telemetry:
+  enabled: false
+
+retention:
+  schedule:
+    purge_after_days: 30
+  sensor:
+    purge_after_days:
+      skipped: 7
+      failure: 30
+      success: 1
+
+# Quiet down the gRPC code-server heartbeat churn — bump the interval well
+# above the 20s default that triggers "No heartbeat received" warnings on
+# slower machines.
+code_servers:
+  local_startup_timeout: 180
+  reload_timeout: 180

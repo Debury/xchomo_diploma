@@ -35,52 +35,48 @@ logger = logging.getLogger(__name__)
     minimum_interval_seconds=60,
 )
 def source_schedule_sensor(context: SensorEvaluationContext):
-    """Check for sources and datasets due for scheduled processing."""
+    """Check for sources due for scheduled processing (per-source schedules only).
+
+    run_key is derived from the scheduled `next_run_at` so the same scheduled
+    slot produces the same key on retry — Dagster's run-key dedup then
+    protects us if this sensor is re-evaluated between the yield and the
+    advance_schedule call below.
+    """
     try:
         from src.database.source_store import SourceStore
         store = SourceStore()
         triggered = 0
 
-        # 1. Per-source schedules
         due_schedules = store.get_due_schedules()
         for sched in due_schedules:
             source_id = sched["source_id"]
-            context.log.info(f"Triggering scheduled ETL for source {source_id}")
+            next_run_at = sched.get("next_run_at")
+            slot_key = (
+                next_run_at.strftime("%Y%m%dT%H%M%S")
+                if hasattr(next_run_at, "strftime")
+                else datetime.utcnow().strftime("%Y%m%dT%H%M%S")
+            )
+            context.log.info(f"Triggering scheduled ETL for source {source_id} @ {slot_key}")
             yield RunRequest(
-                run_key=f"schedule_{source_id}_{datetime.utcnow().strftime('%Y%m%d_%H%M')}",
+                run_key=f"schedule_{source_id}_{slot_key}",
                 tags={
                     "source_id": source_id,
                     "trigger_type": "schedule",
                     "cron": sched.get("cron_expression", ""),
+                    "scheduled_for": slot_key,
                 },
             )
-            store.advance_schedule(source_id)
+            try:
+                store.advance_schedule(source_id)
+            except Exception as advance_err:
+                # If the advance fails, Dagster's run-key dedup still prevents a
+                # duplicate run on the next sensor tick as long as the slot_key
+                # is stable (next_run_at hasn't been bumped yet).
+                context.log.error(f"advance_schedule({source_id}) failed: {advance_err}")
             triggered += 1
 
-        # 2. Dataset-level schedules — trigger ALL sources under the dataset
-        due_dataset_scheds = store.get_due_dataset_schedules()
-        for ds_sched in due_dataset_scheds:
-            dataset_name = ds_sched["dataset_name"]
-            source_ids = store.get_sources_for_dataset(dataset_name)
-            context.log.info(
-                f"Dataset schedule '{ds_sched['name']}' triggered for "
-                f"{dataset_name}: {len(source_ids)} sources"
-            )
-            for source_id in source_ids:
-                yield RunRequest(
-                    run_key=f"ds_sched_{source_id}_{datetime.utcnow().strftime('%Y%m%d_%H%M')}",
-                    tags={
-                        "source_id": source_id,
-                        "trigger_type": "dataset_schedule",
-                        "dataset_schedule": ds_sched["name"],
-                        "dataset_name": dataset_name,
-                    },
-                )
-                triggered += 1
-            store.advance_dataset_schedule(ds_sched["id"])
-
         if triggered == 0:
-            return SkipReason("No sources or datasets due for scheduled processing")
+            return SkipReason("No sources due for scheduled processing")
 
     except ImportError:
         return SkipReason("PostgreSQL store not available")

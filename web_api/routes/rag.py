@@ -44,6 +44,9 @@ async def rag_info():
 @router.post("/chat", response_model=RAGChatResponse)
 async def rag_chat_legacy(request: RAGChatRequest):
     """Legacy chat endpoint - delegates to optimized rag_query()."""
+    if not (request.question or "").strip():
+        raise HTTPException(400, "Question is required")
+
     try:
         rag_req = RAGRequest(
             question=request.question,
@@ -55,27 +58,30 @@ async def rag_chat_legacy(request: RAGChatRequest):
             variable=getattr(request, "variable", None),
         )
         result = await rag_query(rag_req)
-
-        chunks_model = []
-        for c in result.chunks:
-            meta = c.get("metadata", {})
-            chunks_model.append(
-                RAGChunk(
-                    source_id=c.get("source_id", "unknown"),
-                    variable=c.get("variable", "unknown"),
-                    similarity=c.get("score", 0.0),
-                    text=c.get("text", "")[:200],
-                    metadata=meta,
-                )
-            )
-
-        return RAGChatResponse(
-            question=result.question,
-            answer=result.answer,
-            references=result.references,
-            chunks=chunks_model,
-            llm_used=result.llm_used,
-        )
+    except HTTPException:
+        # Preserve original status codes raised by rag_query (e.g. 400 on empty query).
+        raise
     except Exception as e:
         logger.error(f"RAG chat error: {e}", exc_info=True)
         raise HTTPException(500, str(e))
+
+    chunks_model = []
+    for c in result.chunks:
+        meta = c.get("metadata", {})
+        chunks_model.append(
+            RAGChunk(
+                source_id=c.get("source_id", "unknown"),
+                variable=c.get("variable", "unknown"),
+                similarity=c.get("score", 0.0),
+                text=c.get("text", "")[:200],
+                metadata=meta,
+            )
+        )
+
+    return RAGChatResponse(
+        question=result.question,
+        answer=result.answer,
+        references=result.references,
+        chunks=chunks_model,
+        llm_used=result.llm_used,
+    )

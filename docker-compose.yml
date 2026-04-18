@@ -34,16 +34,12 @@ services:
       - ./data:/app/data
       - ./logs:/app/logs
       - ./.env:/app/.env:ro
+      - ./docker/dagster.yaml:/opt/dagster/dagster_home/dagster.yaml:ro
       - dagster-home:/opt/dagster/dagster_home
     env_file:
       - .env
     environment:
       - DAGSTER_HOME=/opt/dagster/dagster_home
-      - DAGSTER_POSTGRES_USER=dagster
-      - DAGSTER_POSTGRES_PASSWORD=dagster
-      - DAGSTER_POSTGRES_DB=dagster
-      - DAGSTER_POSTGRES_HOST=dagster-postgres
-      - DAGSTER_POSTGRES_PORT=5432
       - PYTHONPATH=/app
       - PYTHONUNBUFFERED=1
       - PYTHONDONTWRITEBYTECODE=1
@@ -62,7 +58,7 @@ services:
     restart: unless-stopped
 
   qdrant:
-    image: qdrant/qdrant:latest
+    image: qdrant/qdrant:v1.17.1
     container_name: climate-qdrant
     ports:
       - "6333:6333"
@@ -73,11 +69,11 @@ services:
       - climate-net
     restart: unless-stopped
 
-  # Dagit Web UI
+  # Dagster webserver (formerly dagit)
   dagit:
     build: .
     container_name: dagit
-    command: dagit -h 0.0.0.0 -p 3000 -w dagster_project/workspace.yaml
+    command: dagster-webserver -h 0.0.0.0 -p 3000 -w dagster_project/workspace.yaml
     ports:
       - "3000:3000"
     volumes:
@@ -87,14 +83,10 @@ services:
       - ./data:/app/data
       - ./logs:/app/logs
       - ./.env:/app/.env:ro
+      - ./docker/dagster.yaml:/opt/dagster/dagster_home/dagster.yaml:ro
       - dagster-home:/opt/dagster/dagster_home
     environment:
       - DAGSTER_HOME=/opt/dagster/dagster_home
-      - DAGSTER_POSTGRES_USER=dagster
-      - DAGSTER_POSTGRES_PASSWORD=dagster
-      - DAGSTER_POSTGRES_DB=dagster
-      - DAGSTER_POSTGRES_HOST=dagster-postgres
-      - DAGSTER_POSTGRES_PORT=5432
       - PYTHONPATH=/app
       - PYTHONUNBUFFERED=1
       - PYTHONDONTWRITEBYTECODE=1
@@ -110,12 +102,25 @@ services:
     networks:
       - climate-net
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:3000', timeout=3).status == 200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
 
   # FastAPI Web Service
   web-api:
     build: .
     container_name: climate-web-api
-    command: uvicorn web_api.main:app --host 0.0.0.0 --port 8000 --reload --reload-dir /app/web_api --reload-dir /app/src
+    # --reload is convenient during thesis work; for production set
+    # UVICORN_RELOAD=0 in the environment to disable it.
+    command: >
+      sh -c "if [ \"${UVICORN_RELOAD:-1}\" = \"0\" ]; then
+               uvicorn web_api.main:app --host 0.0.0.0 --port 8000 --workers 1;
+             else
+               uvicorn web_api.main:app --host 0.0.0.0 --port 8000 --reload --reload-dir /app/web_api --reload-dir /app/src;
+             fi"
     ports:
       - "8000:8000"
     volumes:
@@ -152,7 +157,7 @@ services:
       - CEDA_TOKEN=${CEDA_TOKEN:-}
     depends_on:
       dagit:
-        condition: service_started
+        condition: service_healthy
       qdrant:
         condition: service_started
     networks:
@@ -180,7 +185,8 @@ services:
   # Optional: Jupyter notebook for interactive analysis
   # Start manually with: docker compose --profile jupyter up jupyter
   jupyter:
-    image: jupyter/scipy-notebook:latest
+    # Pinned to a reproducible tag so presentation/demo doesn't surprise us.
+    image: jupyter/scipy-notebook:2024-04-15
     container_name: climate-jupyter
     ports:
       - "8888:8888"

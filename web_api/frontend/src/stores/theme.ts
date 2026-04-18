@@ -1,14 +1,21 @@
 import { defineStore } from 'pinia'
 import { ref, watch } from 'vue'
 
-export const useThemeStore = defineStore('theme', () => {
-  const theme = ref(localStorage.getItem('theme') || 'light')
+export type Theme = 'light' | 'dark'
 
-  function apply(t) {
+function readTheme(): Theme {
+  const raw = localStorage.getItem('theme')
+  return raw === 'dark' ? 'dark' : 'light'
+}
+
+export const useThemeStore = defineStore('theme', () => {
+  const theme = ref<Theme>(readTheme())
+
+  function apply(t: Theme): void {
     document.documentElement.classList.toggle('dark', t === 'dark')
   }
 
-  function toggle() {
+  function toggle(): void {
     theme.value = theme.value === 'dark' ? 'light' : 'dark'
   }
 

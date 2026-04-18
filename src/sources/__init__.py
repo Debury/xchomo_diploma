@@ -135,7 +135,7 @@ if not _USE_POSTGRES:
                     if error_message:
                         source.error_message = error_message
                     db[source_id] = source
-                    print(f"[SourceStore] Updated {source_id} -> {status}")
+                    logger.info(f"[SourceStore-shelve] Updated {source_id} -> {status}")
                     return True
             return False
 

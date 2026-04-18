@@ -9,9 +9,8 @@ import os
 import logging
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
 
 from web_api.config import restore_settings_to_env
 from web_api.routes import health, auth, frontend, embeddings, sources, rag, catalog, schedules, admin, qdrant_datasets
@@ -30,18 +29,24 @@ admin.init_runtime_settings(_runtime_settings)
 
 app = FastAPI(title="Climate ETL Pipeline API", version="2.0.0")
 
+# Browsers refuse credentialed requests when the allowed origin is "*", so we
+# only enable allow_credentials when CORS_ORIGINS lists one or more explicit
+# origins. For local dev we default to same-origin (no CORS needed at all).
+_cors_origins_raw = os.getenv("CORS_ORIGINS", "").strip()
+if _cors_origins_raw:
+    _cors_origins = [o.strip() for o in _cors_origins_raw.split(",") if o.strip()]
+    _cors_use_credentials = "*" not in _cors_origins
+else:
+    _cors_origins = []  # same-origin only — no CORS headers will be added
+    _cors_use_credentials = False
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=os.getenv("CORS_ORIGINS", "*").split(","),
-    allow_credentials=True,
+    allow_origins=_cors_origins,
+    allow_credentials=_cors_use_credentials,
     allow_methods=["*"],
-    allow_headers=["*"],
+    allow_headers=["*", "Authorization"],
 )
-
-# Static file serving for legacy frontend
-FRONTEND_DIR = Path(__file__).parent / "frontend"
-if FRONTEND_DIR.exists():
-    app.mount("/ui/static", StaticFiles(directory=FRONTEND_DIR, html=False), name="rag-ui-static")
 
 # Ensure data directories exist
 SAMPLE_DATA_DIR = Path(__file__).parent.parent / "data" / "raw"
@@ -50,17 +55,28 @@ SAMPLE_DATA_DIR.mkdir(parents=True, exist_ok=True)
 # ====================================================================================
 # REGISTER ROUTERS
 # ====================================================================================
+#
+# Public routers (no auth required):
+#   - frontend  → serves the Vue SPA + static assets + root redirect
+#   - health    → /health for uptime monitoring
+#   - auth      → login / logout / verify themselves
+#
+# Protected routers use Depends(auth.require_auth), which enforces a valid
+# Bearer token in the Authorization header. If AUTH_PASSWORD is not set, the
+# dependency no-ops so local dev without secrets still works.
+
+_protected = [Depends(auth.require_auth)]
 
 app.include_router(frontend.router)
 app.include_router(health.router)
 app.include_router(auth.router)
-app.include_router(embeddings.router)
-app.include_router(sources.router)
-app.include_router(rag.router)
-app.include_router(catalog.router)
-app.include_router(schedules.router)
-app.include_router(admin.router)
-app.include_router(qdrant_datasets.router)
+app.include_router(embeddings.router, dependencies=_protected)
+app.include_router(sources.router, dependencies=_protected)
+app.include_router(rag.router, dependencies=_protected)
+app.include_router(catalog.router, dependencies=_protected)
+app.include_router(schedules.router, dependencies=_protected)
+app.include_router(admin.router, dependencies=_protected)
+app.include_router(qdrant_datasets.router, dependencies=_protected)
 
 
 if __name__ == "__main__":

@@ -122,17 +122,20 @@
     <!-- Page Content -->
     <main class="flex-1 overflow-auto p-4 md:p-6 lg:p-8 relative">
       <div class="max-w-7xl mx-auto">
-        <router-view />
+        <ErrorBoundary>
+          <router-view />
+        </ErrorBoundary>
       </div>
     </main>
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
 import { useThemeStore } from '../stores/theme'
+import ErrorBoundary from '../components/ErrorBoundary.vue'
 
 const router = useRouter()
 const route = useRoute()
@@ -142,14 +145,28 @@ const themeStore = useThemeStore()
 const isDark = computed(() => themeStore.theme === 'dark')
 const mobileOpen = ref(false)
 const apiHealthy = ref(true)
-let healthInterval = null
+let healthInterval: ReturnType<typeof setInterval> | null = null
 
-function isActive(path) {
+function stopHealthPolling(): void {
+  if (healthInterval) {
+    clearInterval(healthInterval)
+    healthInterval = null
+  }
+}
+
+function startHealthPolling(): void {
+  stopHealthPolling()
+  checkHealth()
+  healthInterval = setInterval(checkHealth, 30000)
+}
+
+function isActive(path: string): boolean {
   if (path === '/') return route.path === '/' || route.path === ''
   return route.path.startsWith(path)
 }
 
-async function checkHealth() {
+async function checkHealth(): Promise<void> {
+  if (typeof document !== 'undefined' && document.hidden) return  // idle tab skip
   try {
     const resp = await fetch(`/health?t=${Date.now()}`)
     apiHealthy.value = resp.ok
@@ -158,25 +175,37 @@ async function checkHealth() {
   }
 }
 
+function onVisibilityChange(): void {
+  if (document.hidden) {
+    stopHealthPolling()
+  } else {
+    startHealthPolling()
+  }
+}
+
 onMounted(() => {
-  checkHealth()
-  healthInterval = setInterval(checkHealth, 30000)
+  startHealthPolling()
+  document.addEventListener('visibilitychange', onVisibilityChange)
 })
 
 onUnmounted(() => {
-  if (healthInterval) clearInterval(healthInterval)
+  stopHealthPolling()
+  document.removeEventListener('visibilitychange', onVisibilityChange)
 })
 
 const navItems = [
   { path: '/', label: 'Dashboard' },
   { path: '/chat', label: 'Chat' },
   { path: '/sources', label: 'Sources' },
+  { path: '/catalog', label: 'Catalog' },
   { path: '/etl', label: 'ETL Monitor' },
   { path: '/schedules', label: 'Schedules' },
   { path: '/settings', label: 'Settings' },
 ]
 
-function handleLogout() {
+function handleLogout(): void {
+  stopHealthPolling()
+  document.removeEventListener('visibilitychange', onVisibilityChange)
   authStore.logout()
   router.push('/login')
 }

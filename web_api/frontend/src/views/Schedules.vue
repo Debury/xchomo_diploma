@@ -1,84 +1,56 @@
 <template>
   <div class="space-y-6">
-    <PageHeader title="Schedules" subtitle="Manage dataset and per-source update schedules">
+    <PageHeader title="Schedules" subtitle="Manage per-source update schedules">
       <template #actions>
         <button @click="refreshAll" :disabled="loading" class="btn-ghost disabled:opacity-50">Refresh</button>
-        <button @click="showCreateModal = true" class="btn-primary">Create Schedule</button>
+        <button @click="openCreateModal" class="btn-primary">Create Schedule</button>
       </template>
     </PageHeader>
-
-    <!-- Dataset Schedules -->
-    <div class="card">
-      <div class="flex items-center justify-between mb-4">
-        <div>
-          <h3 class="text-sm font-bold text-mendelu-black">Dataset Schedules</h3>
-          <p class="text-xs text-mendelu-gray-dark mt-0.5">Reprocesses all sources under a dataset on a cron schedule</p>
-        </div>
-      </div>
-
-      <div v-if="datasetSchedules.length === 0" class="text-center py-6 text-mendelu-gray-dark text-sm">
-        No dataset schedules configured
-      </div>
-
-      <div v-else class="space-y-3">
-        <div v-for="sched in datasetSchedules" :key="sched.id"
-             class="bg-mendelu-gray-light rounded-lg p-4 hover:bg-mendelu-gray-semi/50 transition-all duration-150">
-          <div class="flex items-center justify-between">
-            <div class="flex-1">
-              <div class="flex items-center gap-2 mb-1">
-                <span class="text-sm font-medium text-mendelu-black">{{ sched.name }}</span>
-                <span :class="sched.is_enabled ? 'badge-success' : 'badge-neutral'">
-                  {{ sched.is_enabled ? 'Active' : 'Paused' }}
-                </span>
-              </div>
-              <div class="flex gap-4 text-xs text-mendelu-gray-dark">
-                <span>Dataset: <span class="text-mendelu-black font-medium">{{ sched.dataset_name }}</span></span>
-                <span>Cron: <code class="text-mendelu-black font-mono bg-white px-1.5 py-0.5 rounded border border-mendelu-gray-semi">{{ sched.cron_expression }}</code></span>
-                <span v-if="sched.next_run_at">Next: {{ formatTime(sched.next_run_at) }}</span>
-                <span v-if="sched.last_triggered_at">Last: {{ formatTime(sched.last_triggered_at) }}</span>
-              </div>
-            </div>
-            <button @click="deleteDatasetSchedule(sched.id, sched.name)" class="btn-ghost text-xs text-mendelu-alert hover:bg-mendelu-alert/10">Remove</button>
-          </div>
-        </div>
-      </div>
-    </div>
 
     <!-- Per-Source Schedules -->
     <div class="card">
       <div class="flex items-center justify-between mb-4">
         <div>
           <h3 class="text-sm font-bold text-mendelu-black">Source Schedules</h3>
-          <p class="text-xs text-mendelu-gray-dark mt-0.5">Per-source cron schedules — set via the Sources page or the edit modal</p>
+          <p class="text-xs text-mendelu-gray-dark mt-0.5">Each schedule fires the ETL job for a single source on a cron expression.</p>
         </div>
       </div>
 
-      <div v-if="sourceSchedules.length === 0" class="text-center py-6">
-        <p class="text-mendelu-gray-dark text-sm">No source schedules configured</p>
-        <router-link to="/sources" class="text-xs text-mendelu-green hover:text-mendelu-green-hover mt-1 inline-block">
-          Configure on the Sources page
-        </router-link>
+      <div v-if="loading && sourceSchedules.length === 0" class="text-center py-6 text-mendelu-gray-dark text-sm">
+        Loading schedules…
+      </div>
+
+      <div v-else-if="errorMessage" class="p-3 border-l-2 border-mendelu-alert bg-mendelu-alert/5 rounded text-sm text-mendelu-alert">
+        {{ errorMessage }}
+      </div>
+
+      <div v-else-if="sourceSchedules.length === 0" class="text-center py-6">
+        <p class="text-mendelu-gray-dark text-sm">No schedules configured yet.</p>
+        <button @click="openCreateModal" class="text-xs text-mendelu-green hover:text-mendelu-green-hover mt-1 inline-block">
+          Create your first schedule
+        </button>
       </div>
 
       <div v-else class="space-y-3">
         <div v-for="sched in sourceSchedules" :key="sched.source_id"
              class="bg-mendelu-gray-light rounded-lg p-4 hover:bg-mendelu-gray-semi/50 transition-all duration-150">
           <div class="flex items-center justify-between">
-            <div class="flex-1">
+            <div class="flex-1 min-w-0">
               <div class="flex items-center gap-2">
-                <span class="text-sm font-medium text-mendelu-black">{{ sched.source_id }}</span>
+                <span class="text-sm font-medium text-mendelu-black truncate">{{ sched.dataset_name || sched.source_id }}</span>
                 <span :class="sched.is_enabled ? 'badge-success' : 'badge-neutral'">
                   {{ sched.is_enabled ? 'Active' : 'Paused' }}
                 </span>
               </div>
-              <div class="flex gap-3 mt-1 text-xs text-mendelu-gray-dark">
+              <div class="flex flex-wrap gap-3 mt-1 text-xs text-mendelu-gray-dark">
+                <span v-if="sched.dataset_name">Source: <span class="text-mendelu-black font-mono">{{ sched.source_id }}</span></span>
                 <span>Cron: <code class="text-mendelu-black font-mono bg-white px-1.5 py-0.5 rounded border border-mendelu-gray-semi">{{ sched.cron_expression }}</code></span>
                 <span v-if="sched.next_run_at">Next: {{ formatTime(sched.next_run_at) }}</span>
                 <span v-if="sched.last_triggered_at">Last: {{ formatTime(sched.last_triggered_at) }}</span>
               </div>
             </div>
             <div class="flex gap-2 items-center">
-              <button @click="editSourceSchedule(sched)" class="btn-ghost text-xs">Edit</button>
+              <button @click="openEditModal(sched)" class="btn-ghost text-xs">Edit</button>
               <button @click="deleteSourceSchedule(sched.source_id)" class="btn-ghost text-xs text-mendelu-alert hover:bg-mendelu-alert/10">Remove</button>
             </div>
           </div>
@@ -103,58 +75,49 @@
       </div>
     </div>
 
-    <!-- Create Dataset Schedule Modal -->
-    <div v-if="showCreateModal" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50" @click.self="showCreateModal = false">
+    <!-- Create / Edit Source Schedule Modal -->
+    <div v-if="showModal" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50" @click.self="closeModal">
       <div class="bg-white border border-mendelu-gray-semi rounded-xl p-6 max-w-md w-full mx-4 shadow-lg">
         <div class="flex items-center justify-between mb-6">
-          <h2 class="text-lg font-semibold text-mendelu-black">Create Dataset Schedule</h2>
-          <button @click="showCreateModal = false" class="btn-ghost !px-2 !py-1">&times;</button>
+          <h2 class="text-lg font-semibold text-mendelu-black">
+            {{ editingId ? `Edit: ${editingId}` : 'Create Source Schedule' }}
+          </h2>
+          <button @click="closeModal" class="btn-ghost !px-2 !py-1">&times;</button>
         </div>
 
-        <form @submit.prevent="createDatasetSchedule" class="space-y-4">
-          <div>
-            <label class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-1">Schedule Name</label>
-            <input v-model="createForm.name" type="text" class="input-field" placeholder="e.g., Weekly NCEP update" required />
-          </div>
-          <div>
-            <label class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-1">Dataset</label>
-            <select v-model="createForm.dataset_name" class="input-field" required>
-              <option value="">Select dataset...</option>
-              <option v-for="ds in availableDatasets" :key="ds" :value="ds">{{ ds }}</option>
+        <form @submit.prevent="saveSchedule" class="space-y-4">
+          <div v-if="!editingId">
+            <label class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-1">Source</label>
+            <select v-model="form.source_id" class="input-field" required>
+              <option value="" disabled>Select a source…</option>
+              <option v-for="s in availableSources" :key="s.source_id" :value="s.source_id">
+                {{ s.dataset_name || s.source_id }}<span v-if="s.source_id !== (s.dataset_name || s.source_id)"> ({{ s.source_id }})</span>
+              </option>
             </select>
+            <p v-if="availableSources.length === 0" class="text-xs text-mendelu-gray-dark mt-1">
+              No sources available. Add a source first on the Sources page.
+            </p>
           </div>
-          <CronPicker v-model="createForm.cron_expression" label="Schedule" />
-          <div class="flex gap-3 pt-2">
-            <button type="submit" :disabled="creating" class="btn-primary flex-1 disabled:opacity-50">
-              {{ creating ? 'Creating...' : 'Create' }}
-            </button>
-            <button type="button" @click="showCreateModal = false" class="btn-secondary flex-1">Cancel</button>
-          </div>
-        </form>
-      </div>
-    </div>
 
-    <!-- Edit Source Schedule Modal -->
-    <div v-if="editingSched" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50" @click.self="editingSched = null">
-      <div class="bg-white border border-mendelu-gray-semi rounded-xl p-6 max-w-md w-full mx-4 shadow-lg">
-        <div class="flex items-center justify-between mb-6">
-          <h2 class="text-lg font-semibold text-mendelu-black">Edit: {{ editingSched.source_id }}</h2>
-          <button @click="editingSched = null" class="btn-ghost !px-2 !py-1">&times;</button>
-        </div>
-        <form @submit.prevent="saveSourceSchedule" class="space-y-4">
-          <CronPicker v-model="editSchedCron" />
+          <CronPicker v-model="form.cron_expression" label="Schedule" />
+
           <div class="flex items-center gap-3">
             <label class="relative inline-flex items-center cursor-pointer">
-              <input type="checkbox" v-model="editSchedEnabled" class="sr-only peer">
+              <input type="checkbox" v-model="form.is_enabled" class="sr-only peer">
               <div class="w-9 h-5 bg-mendelu-gray-semi rounded-full peer peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-mendelu-green"></div>
             </label>
             <span class="text-sm text-mendelu-black">Enabled</span>
           </div>
+
+          <div v-if="formError" class="p-3 border-l-2 border-mendelu-alert bg-mendelu-alert/5 rounded text-sm text-mendelu-alert">
+            {{ formError }}
+          </div>
+
           <div class="flex gap-3 pt-2">
-            <button type="submit" :disabled="savingSched" class="btn-primary flex-1 disabled:opacity-50">
-              {{ savingSched ? 'Saving...' : 'Save' }}
+            <button type="submit" :disabled="saving || (!editingId && !form.source_id) || !form.cron_expression" class="btn-primary flex-1 disabled:opacity-50">
+              {{ saving ? 'Saving…' : (editingId ? 'Save' : 'Create') }}
             </button>
-            <button type="button" @click="editingSched = null" class="btn-secondary flex-1">Cancel</button>
+            <button type="button" @click="closeModal" class="btn-secondary flex-1">Cancel</button>
           </div>
         </form>
       </div>
@@ -162,125 +125,139 @@
   </div>
 </template>
 
-<script setup>
-import { ref, onMounted } from 'vue'
+<script setup lang="ts">
+import { ref, computed, onMounted } from 'vue'
 import PageHeader from '../components/PageHeader.vue'
 import CronPicker from '../components/CronPicker.vue'
+import { apiFetch } from '../api'
 
-const datasetSchedules = ref([])
-const sourceSchedules = ref([])
-const availableDatasets = ref([])
+const sources = ref<any[]>([])
+const sourceSchedules = ref<any[]>([])
 const loading = ref(false)
+const saving = ref(false)
+const errorMessage = ref('')
 const showReference = ref(false)
-const showCreateModal = ref(false)
-const creating = ref(false)
-const createForm = ref({ name: '', dataset_name: '', cron_expression: '' })
 
-const editingSched = ref(null)
-const editSchedCron = ref('')
-const editSchedEnabled = ref(true)
-const savingSched = ref(false)
+const showModal = ref(false)
+const editingId = ref(null)
+const form = ref<any>({ source_id: '', cron_expression: '0 3 * * 0', is_enabled: true })
+const formError = ref('')
+
+const availableSources = computed(() => {
+  const scheduled = new Set(sourceSchedules.value.map(s => s.source_id))
+  return sources.value
+    .filter(s => !scheduled.has(s.source_id))
+    .sort((a, b) => (a.dataset_name || a.source_id).localeCompare(b.dataset_name || b.source_id))
+})
 
 function formatTime(ts) {
   if (!ts) return '---'
   try {
     const date = typeof ts === 'number' ? new Date(ts * 1000) : new Date(ts)
+    if (Number.isNaN(date.getTime())) return String(ts)
     return date.toLocaleString()
   } catch { return String(ts) }
 }
 
-async function refreshDatasetSchedules() {
+async function loadSources() {
   try {
-    const resp = await fetch('/schedules/datasets')
-    if (resp.ok) datasetSchedules.value = await resp.json()
-  } catch (e) { console.error('Failed to load dataset schedules:', e) }
-}
-
-async function refreshSourceSchedules() {
-  try {
-    const resp = await fetch('/sources/')
-    if (!resp.ok) return
-    const sources = await resp.json()
-    sourceSchedules.value = sources
+    const resp = await apiFetch('/sources/')
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
+    const data = await resp.json()
+    sources.value = Array.isArray(data) ? data : []
+    sourceSchedules.value = sources.value
       .filter(s => s.schedule)
-      .map(s => ({ source_id: s.source_id, ...s.schedule }))
-  } catch (e) { console.error('Failed to load source schedules:', e) }
-}
-
-async function loadAvailableDatasets() {
-  try {
-    const resp = await fetch('/qdrant/datasets')
-    if (resp.ok) {
-      const data = await resp.json()
-      availableDatasets.value = data.map(d => d.dataset_name).sort()
-    }
-  } catch (e) { console.error('Failed to load datasets:', e) }
+      .map(s => ({
+        source_id: s.source_id,
+        dataset_name: s.dataset_name,
+        ...s.schedule,
+      }))
+  } catch (e) {
+    console.error('Failed to load sources:', e)
+    errorMessage.value = `Failed to load sources: ${e.message}`
+  }
 }
 
 async function refreshAll() {
   loading.value = true
+  errorMessage.value = ''
   try {
-    await Promise.all([refreshDatasetSchedules(), refreshSourceSchedules(), loadAvailableDatasets()])
+    await loadSources()
   } finally {
     loading.value = false
   }
 }
 
-async function createDatasetSchedule() {
-  creating.value = true
+function openCreateModal() {
+  editingId.value = null
+  form.value = { source_id: '', cron_expression: '0 3 * * 0', is_enabled: true }
+  formError.value = ''
+  showModal.value = true
+}
+
+function openEditModal(sched) {
+  editingId.value = sched.source_id
+  form.value = {
+    source_id: sched.source_id,
+    cron_expression: sched.cron_expression || '0 3 * * 0',
+    is_enabled: sched.is_enabled !== false,
+  }
+  formError.value = ''
+  showModal.value = true
+}
+
+function closeModal() {
+  showModal.value = false
+  editingId.value = null
+  formError.value = ''
+}
+
+async function saveSchedule() {
+  const sourceId = editingId.value || form.value.source_id
+  if (!sourceId) {
+    formError.value = 'Please select a source.'
+    return
+  }
+  if (!form.value.cron_expression) {
+    formError.value = 'Please provide a cron expression.'
+    return
+  }
+  saving.value = true
+  formError.value = ''
   try {
-    const resp = await fetch('/schedules/datasets', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(createForm.value),
+    const resp = await apiFetch(`/sources/${encodeURIComponent(sourceId)}/schedule`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        cron_expression: form.value.cron_expression,
+        is_enabled: form.value.is_enabled,
+      }),
     })
     if (!resp.ok) {
-      const err = await resp.json().catch(() => ({ detail: 'Error' }))
+      const err = await resp.json().catch(() => ({}))
       throw new Error(err.detail || `HTTP ${resp.status}`)
     }
-    showCreateModal.value = false
-    createForm.value = { name: '', dataset_name: '', cron_expression: '' }
-    await refreshDatasetSchedules()
+    closeModal()
+    await loadSources()
   } catch (e) {
-    alert(`Error: ${e.message}`)
+    formError.value = e.message
   } finally {
-    creating.value = false
+    saving.value = false
   }
-}
-
-async function deleteDatasetSchedule(id, name) {
-  if (!confirm(`Delete schedule "${name}"?`)) return
-  try {
-    await fetch(`/schedules/datasets/${id}`, { method: 'DELETE' })
-    await refreshDatasetSchedules()
-  } catch (e) { console.error('Error:', e) }
-}
-
-function editSourceSchedule(sched) {
-  editingSched.value = sched
-  editSchedCron.value = sched.cron_expression || ''
-  editSchedEnabled.value = sched.is_enabled !== false
-}
-
-async function saveSourceSchedule() {
-  savingSched.value = true
-  try {
-    const resp = await fetch(`/sources/${editingSched.value.source_id}/schedule`, {
-      method: 'PUT', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ cron_expression: editSchedCron.value, is_enabled: editSchedEnabled.value }),
-    })
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
-    editingSched.value = null
-    await refreshSourceSchedules()
-  } catch (e) { alert(`Error: ${e.message}`) }
-  finally { savingSched.value = false }
 }
 
 async function deleteSourceSchedule(sourceId) {
   if (!confirm(`Remove schedule for "${sourceId}"?`)) return
   try {
-    await fetch(`/sources/${sourceId}/schedule`, { method: 'DELETE' })
-    await refreshSourceSchedules()
-  } catch (e) { console.error('Error:', e) }
+    const resp = await apiFetch(`/sources/${encodeURIComponent(sourceId)}/schedule`, { method: 'DELETE' })
+    if (!resp.ok && resp.status !== 404) {
+      const err = await resp.json().catch(() => ({}))
+      throw new Error(err.detail || `HTTP ${resp.status}`)
+    }
+    await loadSources()
+  } catch (e) {
+    alert(`Failed to remove schedule: ${e.message}`)
+  }
 }
 
 onMounted(refreshAll)

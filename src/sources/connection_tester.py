@@ -55,14 +55,21 @@ EXT_FORMATS = {
     ".hdf": "hdf5",
     ".h5": "hdf5",
     ".hdf5": "hdf5",
+    ".he5": "hdf5",
     ".tif": "geotiff",
     ".tiff": "geotiff",
     ".csv": "csv",
+    ".tsv": "csv",
+    ".txt": "csv",
+    ".asc": "ascii",
     ".zip": "zip",
     ".gz": "gz",
+    ".tar": "tar",
     ".grib": "grib",
     ".grib2": "grib",
     ".grb": "grib",
+    ".grb2": "grib",
+    ".zarr": "zarr",
 }
 
 

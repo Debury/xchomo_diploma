@@ -88,19 +88,41 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { ref, onMounted, onUnmounted, nextTick } from 'vue'
 import PageHeader from '../components/PageHeader.vue'
 import StatCard from '../components/StatCard.vue'
+import { apiFetch } from '../api'
 
 const progress = ref(null)
 const logs = ref('')
 const loading = ref(false)
 const logLines = ref(100)
 const logContainer = ref(null)
-let pollTimer = null
+let pollTimer: ReturnType<typeof setInterval> | null = null
 
-function pctOf(value) {
+function stopPolling(): void {
+  if (pollTimer) {
+    clearInterval(pollTimer)
+    pollTimer = null
+  }
+}
+
+function startPolling(): void {
+  stopPolling()
+  pollTimer = setInterval(fetchProgress, 5000)
+}
+
+function onVisibilityChange(): void {
+  if (document.hidden) {
+    stopPolling()
+  } else {
+    fetchProgress()
+    startPolling()
+  }
+}
+
+function pctOf(value: number): number {
   const total = progress.value?.total || 1
   return Math.min(100, Math.round((value / total) * 100))
 }
@@ -117,14 +139,14 @@ function phaseLabel(phase) {
 
 async function fetchProgress() {
   try {
-    const resp = await fetch('/catalog/progress')
+    const resp = await apiFetch('/catalog/progress')
     if (resp.ok) progress.value = await resp.json()
   } catch (e) { console.error('Failed to fetch progress:', e) }
 }
 
 async function fetchLogs() {
   try {
-    const resp = await fetch(`/logs/etl?lines=${logLines.value}`)
+    const resp = await apiFetch(`/logs/etl?lines=${logLines.value}`)
     if (resp.ok) {
       const data = await resp.json()
       logs.value = data.content || 'No logs available'
@@ -142,7 +164,7 @@ function copyLogs() {
 
 async function retryFailed() {
   try {
-    const resp = await fetch('/catalog/retry-failed', { method: 'POST' })
+    const resp = await apiFetch('/catalog/retry-failed', { method: 'POST' })
     if (resp.ok) fetchProgress()
   } catch (e) { console.error('Failed to retry:', e) }
 }
@@ -153,6 +175,13 @@ async function refreshAll() {
   finally { loading.value = false }
 }
 
-onMounted(() => { refreshAll(); pollTimer = setInterval(fetchProgress, 5000) })
-onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
+onMounted(() => {
+  refreshAll()
+  startPolling()
+  document.addEventListener('visibilitychange', onVisibilityChange)
+})
+onUnmounted(() => {
+  stopPolling()
+  document.removeEventListener('visibilitychange', onVisibilityChange)
+})
 </script>

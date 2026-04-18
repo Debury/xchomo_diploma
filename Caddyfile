@@ -1,31 +1,14 @@
 # Caddyfile for ClimateData AI Assistant
-# Automatic HTTPS with Let's Encrypt
+# Automatic HTTPS with Let's Encrypt in production; HTTP-only when used locally.
 
 climaterag.online {
-    # Reverse proxy to FastAPI backend
-    reverse_proxy web-api:8000 {
-        # Preserve original host header
-        header_up Host {host}
-        header_up X-Real-IP {remote}
-        header_up X-Forwarded-For {remote}
-        header_up X-Forwarded-Proto {scheme}
-    }
-    
-    # Optional: Redirect root to /app if needed
-    # handle_path /app* {
-    #     reverse_proxy web-api:8000
-    # }
+	reverse_proxy web-api:8000 {
+		header_up Host {host}
+		header_up X-Real-IP {remote}
+	}
 }
 
-# Optional: Redirect www to non-www
-# (Odstránené - ak chceš www, pridaj A záznam pre www v DNS paneli)
-# www.climaterag.online {
-#     redir https://climaterag.online{uri} permanent
-# }
-
-# Optional: HTTP to HTTPS redirect
+# HTTP to HTTPS redirect for the production host.
 http://climaterag.online {
-    redir https://climaterag.online{uri} permanent
+	redir https://climaterag.online{uri} permanent
 }
-
-

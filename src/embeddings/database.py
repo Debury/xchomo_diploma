@@ -59,6 +59,42 @@ class VectorDatabase:
             
         self.collection = self.collection_name
         self._ensure_collection()
+        self._ensure_payload_indices()
+
+    # Payload fields that are frequently used as exact-match filters in the
+    # RAG pipeline and the sources / catalog listings. Indexing them is a
+    # one-shot cost at collection init and dramatically speeds up filtered
+    # search on large collections.
+    _INDEXED_PAYLOAD_FIELDS = (
+        "source_id",
+        "dataset_name",
+        "hazard_type",
+        "variable",
+    )
+
+    def _ensure_payload_indices(self):
+        """Create keyword payload indices on frequently-filtered fields if missing."""
+        for field in self._INDEXED_PAYLOAD_FIELDS:
+            try:
+                if self.client:
+                    # qdrant-client raises if the index already exists — treat
+                    # that as success.
+                    self.client.create_payload_index(
+                        collection_name=self.collection,
+                        field_name=field,
+                        field_schema="keyword",
+                    )
+                    logger.debug(f"Created payload index on '{field}'")
+                else:
+                    url = f"{self.base_url}/collections/{self.collection}/index"
+                    requests.put(
+                        url,
+                        json={"field_name": field, "field_schema": "keyword"},
+                        timeout=5,
+                    )
+            except Exception as e:
+                # 4xx "already exists" or other transient errors are harmless.
+                logger.debug(f"Payload index for '{field}' skipped: {e}")
 
     def _ensure_collection(self):
         """Ensure the collection exists with correct vector size."""

@@ -121,10 +121,13 @@ async def get_credentials():
     persisted = load_settings()
     stored_creds = persisted.get("credentials", {})
 
+    # Strings matching these patterns are treated as unset placeholders.
+    PLACEHOLDER_TOKENS = ("your-", "CHANGE_ME", "REPLACE_ME", "xxx", "<", "TODO")
+
     result = {}
     for cred_key, env_var in CREDENTIAL_KEYS.items():
         value = stored_creds.get(cred_key, "") or os.getenv(env_var, "")
-        if value:
+        if value and not any(p.lower() in value.lower() for p in PLACEHOLDER_TOKENS):
             if len(value) > 10:
                 masked = value[:4] + "..." + value[-3:]
             else:

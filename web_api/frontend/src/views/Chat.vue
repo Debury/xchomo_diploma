@@ -87,15 +87,19 @@
 
       <!-- Loading indicator -->
       <div v-if="loading" class="flex justify-start">
-        <div class="bg-white border border-mendelu-gray-semi px-4 py-3 rounded-xl shadow-sm">
-          <div class="flex items-center space-x-2">
+        <div class="bg-white border border-mendelu-gray-semi px-4 py-3 rounded-xl shadow-sm min-w-[280px]">
+          <div class="flex items-center space-x-2 mb-1.5">
             <div class="flex space-x-1">
               <div class="w-2 h-2 bg-mendelu-green rounded-full animate-bounce"></div>
               <div class="w-2 h-2 bg-mendelu-green rounded-full animate-bounce" style="animation-delay: 0.1s"></div>
               <div class="w-2 h-2 bg-mendelu-green rounded-full animate-bounce" style="animation-delay: 0.2s"></div>
             </div>
-            <span class="text-mendelu-gray-dark text-sm">Thinking...</span>
+            <span class="text-mendelu-black text-sm font-medium">{{ loadingStage }}</span>
+            <span class="text-mendelu-gray-dark text-xs tabular-nums ml-auto">{{ loadingElapsed }}s</span>
           </div>
+          <p class="text-[11px] text-mendelu-gray-dark/70 leading-tight">
+            Semantic search + LLM synthesis usually takes 15–25 s. Hang on.
+          </p>
         </div>
       </div>
     </div>
@@ -137,18 +141,22 @@
   </div>
 </template>
 
-<script setup>
-import { ref, nextTick, onMounted } from 'vue'
+<script setup lang="ts">
+import { ref, nextTick, onMounted, onUnmounted } from 'vue'
 import PageHeader from '../components/PageHeader.vue'
+import { apiFetch } from '../api'
 
 const input = ref('')
-const messages = ref([])
+const messages = ref<any[]>([])
 const loading = ref(false)
+const loadingStage = ref('Searching Qdrant…')
+const loadingElapsed = ref(0)
 const messagesContainer = ref(null)
 const filterSource = ref('')
 const filterVariable = ref('')
-const availableSources = ref([])
-const availableVariables = ref([])
+const availableSources = ref<any[]>([])
+const availableVariables = ref<any[]>([])
+let loadingTimer = null
 
 const quickQuestions = [
   'What variables are available?',
@@ -159,7 +167,7 @@ const quickQuestions = [
 
 onMounted(async () => {
   try {
-    const resp = await fetch('/rag/info')
+    const resp = await apiFetch('/rag/info')
     if (resp.ok) {
       const data = await resp.json()
       availableSources.value = data.sources || []
@@ -168,6 +176,32 @@ onMounted(async () => {
   } catch (e) {}
 })
 
+onUnmounted(() => {
+  if (loadingTimer) {
+    clearInterval(loadingTimer)
+    loadingTimer = null
+  }
+})
+
+function startLoadingTimer() {
+  loadingElapsed.value = 0
+  loadingStage.value = 'Searching Qdrant…'
+  if (loadingTimer) clearInterval(loadingTimer)
+  loadingTimer = setInterval(() => {
+    loadingElapsed.value += 1
+    if (loadingElapsed.value === 3) loadingStage.value = 'Reranking results…'
+    if (loadingElapsed.value === 6) loadingStage.value = 'Asking the LLM…'
+    if (loadingElapsed.value === 25) loadingStage.value = 'Still working… long query'
+  }, 1000)
+}
+
+function stopLoadingTimer() {
+  if (loadingTimer) {
+    clearInterval(loadingTimer)
+    loadingTimer = null
+  }
+}
+
 async function sendMessage() {
   const question = input.value.trim()
   if (!question || loading.value) return
@@ -175,21 +209,27 @@ async function sendMessage() {
   messages.value.push({ role: 'user', content: question })
   input.value = ''
   loading.value = true
+  startLoadingTimer()
   await scrollToBottom()
 
   try {
-    const body = { question, limit: 5 }
+    const body: Record<string, any> = { question, limit: 5 }
     if (filterSource.value) body.source_filter = filterSource.value
     if (filterVariable.value) body.variable_filter = filterVariable.value
 
-    const resp = await fetch('/rag/chat', {
+    const resp = await apiFetch('/rag/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body)
     })
-    const data = await resp.json()
 
-    if (data.error) {
+    const data = await resp.json().catch(() => null)
+    if (!resp.ok) {
+      const errMsg = (data && (data.detail || data.error)) || `HTTP ${resp.status}`
+      messages.value.push({ role: 'assistant', content: `Error: ${errMsg}` })
+    } else if (!data) {
+      messages.value.push({ role: 'assistant', content: 'Error: malformed server response' })
+    } else if (data.error) {
       messages.value.push({ role: 'assistant', content: `Error: ${data.error}` })
     } else {
       const chunks = (data.contexts || data.results || []).map(c => ({
@@ -222,6 +262,7 @@ async function sendMessage() {
     messages.value.push({ role: 'assistant', content: `Connection error: ${e.message}` })
   } finally {
     loading.value = false
+    stopLoadingTimer()
     await scrollToBottom()
   }
 }

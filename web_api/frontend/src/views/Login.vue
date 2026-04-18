@@ -60,7 +60,7 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
@@ -79,9 +79,14 @@ async function handleLogin() {
 
   try {
     await authStore.login(username.value, password.value)
-    router.push('/')
+    try {
+      await router.replace('/')
+    } catch (navErr) {
+      // Fallback if client-side navigation is blocked by a guard mismatch
+      window.location.assign('/app/')
+    }
   } catch (err) {
-    error.value = err.message
+    error.value = err.message || 'Login failed'
   } finally {
     loading.value = false
   }

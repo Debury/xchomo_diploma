@@ -91,6 +91,9 @@ class SourceResponse(BaseModel):
     updated_at: Optional[str] = None
     created_by: Optional[str] = None
     last_processed: Optional[str] = None
+    # Populated only when POST /sources auto-triggers the ETL job.
+    etl_run_id: Optional[str] = None
+    etl_error: Optional[str] = None
 
 class SourceScheduleRequest(BaseModel):
     cron_expression: str

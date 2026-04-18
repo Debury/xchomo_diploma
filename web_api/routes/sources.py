@@ -18,10 +18,18 @@ router = APIRouter(prefix="/sources", tags=["sources"])
 @router.post("/", response_model=SourceResponse, status_code=201)
 async def create_source(source: SourceCreate):
     """Create a new data source."""
+    if not (source.source_id or "").strip():
+        raise HTTPException(400, "source_id is required")
+    if not (source.url or "").strip():
+        raise HTTPException(400, "url is required")
+
     try:
         from src.sources import get_source_store
 
         store = get_source_store()
+
+        if store.get_source(source.source_id):
+            raise HTTPException(409, f"Source '{source.source_id}' already exists")
 
         if not source.format:
             from src.climate_embeddings.loaders.detect_format import detect_format_from_url
@@ -79,7 +87,10 @@ async def create_source(source: SourceCreate):
                 source_dict["etl_error"] = str(etl_err)
 
         return source_dict
+    except HTTPException:
+        raise
     except Exception as e:
+        logger.error(f"Failed to create source {source.source_id}: {e}", exc_info=True)
         raise HTTPException(500, str(e))
 
 
@@ -408,10 +419,17 @@ async def update_source(source_id: str, updates: dict):
 
 @router.delete("/{source_id}", status_code=204)
 async def delete_source(source_id: str):
-    """Delete a source."""
+    """Delete a source. Idempotent — returns 204 even if the source was already gone."""
     from src.sources import get_source_store
 
-    get_source_store().hard_delete_source(source_id)
+    store = get_source_store()
+    try:
+        store.hard_delete_source(source_id)
+    except Exception as e:
+        # hard_delete_source can raise if the backing store is unreachable; log
+        # and surface as 500 so callers don't silently think the delete worked.
+        logger.warning(f"Delete of {source_id} encountered: {e}")
+        raise HTTPException(500, f"Failed to delete source: {e}")
     return None
 
 

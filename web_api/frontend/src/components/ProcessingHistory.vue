@@ -68,14 +68,15 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { ref, onMounted, watch } from 'vue'
+import { apiFetch } from '../api'
 
 const props = defineProps({
   sourceId: { type: String, required: true },
 })
 
-const runs = ref([])
+const runs = ref<any[]>([])
 const loading = ref(false)
 
 function formatDate(dateString) {
@@ -95,7 +96,7 @@ async function loadHistory() {
   if (!props.sourceId) return
   loading.value = true
   try {
-    const resp = await fetch(`/sources/${props.sourceId}/history`)
+    const resp = await apiFetch(`/sources/${props.sourceId}/history`)
     if (resp.ok) {
       const data = await resp.json()
       runs.value = data.runs || []

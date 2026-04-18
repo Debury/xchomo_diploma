@@ -28,11 +28,11 @@
   </svg>
 </template>
 
-<script setup>
-import { computed } from 'vue'
+<script setup lang="ts">
+import { computed, type PropType } from 'vue'
 
 const props = defineProps({
-  data: { type: Array, default: () => [] },
+  data: { type: Array as PropType<number[]>, default: () => [] },
   width: { type: Number, default: 80 },
   height: { type: Number, default: 24 },
   color: { type: String, default: '#79be15' },

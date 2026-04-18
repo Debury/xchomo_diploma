@@ -93,55 +93,6 @@ async def toggle_schedule(schedule_name: str, enable: bool = True):
 
 
 # ────────────────────────────────────────────────────────────────────
-# Dataset-level schedules
+# Dataset-level schedules were removed in favor of per-source scheduling
+# (see /sources/{source_id}/schedule in web_api.routes.sources).
 # ────────────────────────────────────────────────────────────────────
-
-@router.get("/datasets")
-async def list_dataset_schedules():
-    """List all dataset-level schedules."""
-    try:
-        from src.database.source_store import SourceStore
-        store = SourceStore()
-        return store.list_dataset_schedules()
-    except Exception as e:
-        logger.warning(f"Failed to list dataset schedules: {e}")
-        return []
-
-
-@router.post("/datasets")
-async def create_dataset_schedule(data: dict):
-    """Create or update a dataset-level schedule."""
-    name = data.get("name")
-    dataset_name = data.get("dataset_name")
-    cron_expression = data.get("cron_expression")
-
-    if not name or not dataset_name or not cron_expression:
-        raise HTTPException(400, "name, dataset_name, and cron_expression are required")
-
-    try:
-        from src.database.source_store import SourceStore
-        store = SourceStore()
-        result = store.create_dataset_schedule(
-            name=name,
-            dataset_name=dataset_name,
-            cron_expression=cron_expression,
-            is_enabled=data.get("is_enabled", True),
-        )
-        return result
-    except Exception as e:
-        raise HTTPException(500, str(e))
-
-
-@router.delete("/datasets/{schedule_id}")
-async def delete_dataset_schedule(schedule_id: int):
-    """Delete a dataset-level schedule."""
-    try:
-        from src.database.source_store import SourceStore
-        store = SourceStore()
-        if store.delete_dataset_schedule(schedule_id):
-            return {"status": "deleted"}
-        raise HTTPException(404, "Schedule not found")
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(500, str(e))
