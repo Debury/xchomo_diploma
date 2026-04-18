@@ -164,13 +164,16 @@ async def get_dataset_variables(dataset_name: str):
             collection_name=collection,
             key="variable",
             limit=200,
-            filter=Filter(
+            facet_filter=Filter(
                 must=[FieldCondition(key="dataset_name", match=MatchValue(value=dataset_name))]
             ),
         )
         return [{"name": v.value, "count": v.count} for v in var_facets.hits]
     except Exception as e:
-        raise HTTPException(500, f"Variable facet query failed: {e}")
+        # An unknown dataset or a transient Qdrant hiccup should not 500 — the
+        # caller (UI) just wants a list. Log and return empty.
+        logger.warning(f"Variable facet query failed for dataset '{dataset_name}': {e}")
+        return []
 
 
 @router.post("/cache/clear")

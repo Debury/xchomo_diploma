@@ -76,7 +76,13 @@ async def toggle_schedule(schedule_name: str, enable: bool = True):
         }}
         """
         data = await execute_graphql_query(mutation)
-        result = data.get(action, {})
+        # Dagster's startSchedule / stopRunningSchedule return `"data": null`
+        # at the top level when the schedule name doesn't exist — not a nested
+        # null — so we must guard both layers before calling `.get()`.
+        result = (data or {}).get(action) or {}
+
+        if not result:
+            raise HTTPException(404, f"Schedule not found: {schedule_name}")
 
         if result.get("__typename") == "PythonError":
             raise HTTPException(500, result.get("message", "Unknown error"))

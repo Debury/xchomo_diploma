@@ -19,12 +19,24 @@
       <StatCard label="Failed" :value="String(progress?.failed || 0)" :loading="loading" />
     </div>
 
-    <!-- Progress Bar -->
-    <div v-if="progress && progress.total > 0" class="card">
+    <!-- Idle banner — when no batch is running, make that obvious so the
+         "X pending" count from historical catalog rows doesn't read as live. -->
+    <div v-if="progress && !progress.thread_alive" class="card !py-3 flex items-center gap-3 text-sm">
+      <span class="inline-block w-2 h-2 rounded-full bg-mendelu-gray-dark"></span>
+      <span class="text-mendelu-gray-dark">
+        No ETL batch is currently running.
+        <span v-if="progress.thread_crashed" class="text-mendelu-alert font-medium ml-1">
+          Last run crashed — check the logs below.
+        </span>
+      </span>
+    </div>
+
+    <!-- Progress Bar — only shown while a batch is actually running. -->
+    <div v-if="progress && progress.thread_alive && progress.total > 0" class="card">
       <div class="flex items-center justify-between mb-2">
         <span class="text-xs text-mendelu-gray-dark">
-          Phase {{ progress.current_phase ?? '---' }}
-          <span v-if="progress.current_source" class="text-mendelu-green ml-2 font-medium">{{ progress.current_source }}</span>
+          <span v-if="progress.current_source" class="text-mendelu-green font-medium">Processing {{ progress.current_source }}</span>
+          <span v-else>Working…</span>
         </span>
         <span class="text-xs text-mendelu-black font-mono tabular-nums">
           {{ pctOf(progress.processed + (progress.metadata_only || 0)) }}%
@@ -62,9 +74,11 @@
       </div>
     </div>
 
-    <!-- Per-Phase Breakdown -->
-    <div v-if="progress && progress.phases" class="card">
-      <h3 class="text-sm font-medium text-mendelu-black mb-3">Per-Phase Breakdown</h3>
+    <!-- Per-Phase Breakdown — only shown if an *active* catalog batch is
+         running. Phases are a catalog-specific concept; they're meaningless
+         for user-added sources, so don't clutter the idle view with them. -->
+    <div v-if="progress && progress.thread_alive && progress.phases && Object.keys(progress.phases).length" class="card">
+      <h3 class="text-sm font-medium text-mendelu-black mb-3">Catalog batch — per-phase breakdown</h3>
       <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
         <div v-for="(info, phase) in progress.phases" :key="phase" class="bg-mendelu-gray-light rounded-lg p-4">
           <div class="flex items-center justify-between mb-2">

@@ -4,7 +4,9 @@ Connection tester for data sources.
 Tests reachability, detects content type, and measures latency.
 """
 
+import ipaddress
 import logging
+import socket
 import time
 from typing import Dict, Any, Optional
 from urllib.parse import urlparse
@@ -12,6 +14,82 @@ from urllib.parse import urlparse
 import requests
 
 logger = logging.getLogger(__name__)
+
+
+class UnsafeURLError(ValueError):
+    """Raised when a URL points at an internal/private/non-HTTP target (SSRF guard)."""
+
+
+def _is_private_ip(ip_str: str) -> bool:
+    """Return True if the IP is loopback, private, link-local, reserved, or multicast."""
+    try:
+        ip = ipaddress.ip_address(ip_str)
+    except ValueError:
+        return True  # unparseable → treat as unsafe
+    return (
+        ip.is_private
+        or ip.is_loopback
+        or ip.is_link_local
+        or ip.is_reserved
+        or ip.is_multicast
+        or ip.is_unspecified
+    )
+
+
+def validate_public_url(url: str) -> None:
+    """Raise UnsafeURLError if `url` is something the server must not fetch.
+
+    Blocks:
+      * non-http(s) schemes (file://, gopher://, ftp://, ...)
+      * missing hostname
+      * hostnames that resolve to RFC1918 / loopback / link-local / metadata
+        ranges — e.g. 127.0.0.1, 169.254.169.254 (cloud metadata), qdrant,
+        dagster-postgres, etc.
+
+    Callers should invoke this *before* any outbound request the user controls
+    (scan-metadata, analyze-url, test-connection).
+    """
+    if not url or not isinstance(url, str):
+        raise UnsafeURLError("URL is empty")
+
+    parsed = urlparse(url.strip())
+    scheme = (parsed.scheme or "").lower()
+    if scheme not in ("http", "https"):
+        raise UnsafeURLError(f"URL scheme '{scheme or '(none)'}' is not allowed; use http or https")
+
+    hostname = parsed.hostname
+    if not hostname:
+        raise UnsafeURLError("URL is missing a hostname")
+
+    # Block explicit textual references that never make sense on a public URL.
+    lowered = hostname.lower()
+    if lowered in ("localhost", "localhost.localdomain", "ip6-localhost", "ip6-loopback"):
+        raise UnsafeURLError(f"Hostname '{hostname}' is not a public target")
+
+    # If the hostname is already an IP literal, check it directly.
+    try:
+        ip = ipaddress.ip_address(lowered)
+    except ValueError:
+        ip = None
+    if ip is not None:
+        if _is_private_ip(str(ip)):
+            raise UnsafeURLError(f"IP {ip} is in a private/reserved range")
+        return
+
+    # DNS-resolve and reject if *any* A/AAAA record lands in a private range.
+    # `getaddrinfo` is synchronous — fine for our use case (one URL at a time,
+    # behind an auth gate). Time-limited by the kernel resolver.
+    try:
+        infos = socket.getaddrinfo(hostname, None)
+    except socket.gaierror as e:
+        raise UnsafeURLError(f"Could not resolve hostname '{hostname}': {e}") from e
+
+    for family, _type, _proto, _canon, sockaddr in infos:
+        addr = sockaddr[0]
+        if _is_private_ip(addr):
+            raise UnsafeURLError(
+                f"Hostname '{hostname}' resolves to private/internal address {addr}"
+            )
 
 # Known portal domains and their detection rules
 PORTAL_DOMAINS = {
@@ -102,6 +180,15 @@ def test_connection(url: str, timeout: int = 15) -> Dict[str, Any]:
 
     if not url:
         result["error"] = "Empty URL"
+        return result
+
+    # SSRF guard: reject anything resolving to an internal/private target before
+    # we issue the outbound request. An authenticated attacker would otherwise
+    # probe 169.254.169.254 (cloud metadata), qdrant:6333, etc. through us.
+    try:
+        validate_public_url(url)
+    except UnsafeURLError as e:
+        result["error"] = f"URL rejected: {e}"
         return result
 
     # Check for known portals

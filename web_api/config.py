@@ -10,7 +10,6 @@ SETTINGS_PATH = Path(__file__).parent.parent / "data" / "app_settings.json"
 # Credential keys that map to environment variables
 CREDENTIAL_KEYS: Dict[str, str] = {
     "openrouter_api_key": "OPENROUTER_API_KEY",
-    "groq_api_key": "GROQ_API_KEY",
     "cds_api_key": "CDS_API_KEY",
     "nasa_earthdata_user": "NASA_EARTHDATA_USER",
     "nasa_earthdata_password": "NASA_EARTHDATA_PASSWORD",

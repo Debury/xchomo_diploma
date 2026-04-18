@@ -2,9 +2,13 @@
 
 import os
 import logging
+import re
+import shutil
+import uuid
+from pathlib import Path
 from typing import List, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, File, HTTPException, UploadFile
 
 from web_api.models import SourceCreate, SourceResponse, SourceScheduleRequest, RunResponse
 from web_api.config import load_settings, save_settings
@@ -13,6 +17,76 @@ from web_api.dependencies import launch_dagster_run, get_qdrant_client, get_coll
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/sources", tags=["sources"])
+
+# File-upload root — bind-mounted at `./data` in docker-compose, so uploaded
+# files are visible both to web-api and to the Dagster workers.
+_UPLOAD_ROOT = Path(__file__).resolve().parent.parent.parent / "data" / "uploads"
+
+
+def _upload_max_bytes() -> int:
+    """Resolve the per-upload size cap from env at call time.
+
+    Driven by `UPLOAD_MAX_MB` (default 5000 MB = 5 GB). Reading at call time
+    instead of import time means operators can bump the cap by editing `.env`
+    and restarting the container, without a rebuild. Silently falls back to
+    the default if the value is unparseable or non-positive — climate datasets
+    legitimately hit multi-GB territory, so misconfiguration should err on
+    the side of "accept" rather than "reject with a cryptic error".
+    """
+    raw = os.getenv("UPLOAD_MAX_MB", "5000")
+    try:
+        mb = int(raw)
+    except ValueError:
+        logger.warning(f"UPLOAD_MAX_MB='{raw}' is not an integer; using default 5000 MB")
+        return 5000 * 1024 * 1024
+    if mb <= 0:
+        logger.warning(f"UPLOAD_MAX_MB={mb} is non-positive; using default 5000 MB")
+        return 5000 * 1024 * 1024
+    return mb * 1024 * 1024
+_ALLOWED_UPLOAD_EXT = {
+    ".nc", ".nc4", ".cdf",
+    ".hdf", ".hdf5", ".h5", ".he5",
+    ".tif", ".tiff",
+    ".grib", ".grib2", ".grb", ".grb2",
+    ".csv", ".tsv", ".txt",
+    ".zip", ".gz", ".tar",
+    ".zarr",
+    ".parquet",
+}
+# Whitelist the safe portion of the user-provided filename so a malicious
+# upload can't escape _UPLOAD_ROOT via path traversal or shell metachars.
+_SAFE_NAME = re.compile(r"[^A-Za-z0-9._-]+")
+
+# Portal → global credential keys that must be present before the ETL job can
+# be launched. Kept in sync with the frontend PORTAL_CREDENTIAL_KEYS map
+# (views/CreateSource.vue). Empty list means the portal is fully public.
+PORTAL_REQUIRED_CREDS = {
+    "CDS": ["cds_api_key"],
+    "NASA": ["nasa_earthdata_user", "nasa_earthdata_password"],
+    "MARINE": ["cmems_username", "cmems_password"],
+    "ESGF": [],
+    "NOAA": [],
+}
+
+
+def _missing_portal_credentials(portal: Optional[str], per_source_creds: Optional[dict]) -> List[str]:
+    """Return credential keys a portal source needs but doesn't have.
+
+    Checks per-source credentials first, then global credentials in
+    app_settings.json. Returns an empty list if the portal is unknown
+    (treated as public) or fully configured.
+    """
+    if not portal:
+        return []
+    required = PORTAL_REQUIRED_CREDS.get(portal.upper())
+    if not required:
+        return []
+    # Per-source auth satisfies everything: a user who pasted a bearer token
+    # or api_key directly into the form should not be blocked by global creds.
+    if per_source_creds:
+        return []
+    global_creds = load_settings().get("credentials", {}) or {}
+    return [k for k in required if not global_creds.get(k)]
 
 
 @router.post("/", response_model=SourceResponse, status_code=201)
@@ -73,6 +147,35 @@ async def create_source(source: SourceCreate):
 
         # Auto-trigger ETL job if requested
         if source.auto_embed:
+            # 1. Validate portal credentials up front. Running the job only to
+            #    have it fail 30s later with a cryptic portal error is a known
+            #    bad UX — prefer a clear 422-style signal persisted on the row.
+            missing = _missing_portal_credentials(portal, auth_credentials)
+            if missing:
+                msg = (
+                    f"Cannot start ETL: {portal} source requires credentials "
+                    f"that are not configured: {', '.join(missing)}. "
+                    f"Add them on the Settings page, or set per-source "
+                    f"credentials when creating the source."
+                )
+                logger.warning(f"Blocking auto-embed for {source.source_id}: {msg}")
+                try:
+                    store.update_processing_status(
+                        source.source_id, "failed", error_message=msg
+                    )
+                except Exception as status_err:
+                    logger.error(
+                        f"Could not persist credential-missing error for "
+                        f"{source.source_id}: {status_err}"
+                    )
+                source_dict["etl_error"] = msg
+                source_dict["processing_status"] = "failed"
+                source_dict["error_message"] = msg
+                return source_dict
+
+            # 2. Launch Dagster run. If the launch itself fails (daemon down,
+            #    queue-full, graphql error), persist the error so it survives a
+            #    page refresh — previously it was only echoed in this response.
             try:
                 run = await launch_dagster_run(
                     "single_source_etl_job",
@@ -81,10 +184,23 @@ async def create_source(source: SourceCreate):
                 )
                 store.update_processing_status(source.source_id, "processing")
                 source_dict["etl_run_id"] = run.get("runId")
+                source_dict["processing_status"] = "processing"
                 logger.info(f"Auto-embed triggered for {source.source_id}: {run.get('runId')}")
             except Exception as etl_err:
-                logger.warning(f"Auto-embed trigger failed for {source.source_id}: {etl_err}")
-                source_dict["etl_error"] = str(etl_err)
+                err_text = f"Auto-embed trigger failed: {etl_err}"
+                logger.warning(f"{err_text} (source={source.source_id})")
+                try:
+                    store.update_processing_status(
+                        source.source_id, "failed", error_message=err_text
+                    )
+                except Exception as status_err:
+                    logger.error(
+                        f"Could not persist trigger failure for {source.source_id}: "
+                        f"{status_err}"
+                    )
+                source_dict["etl_error"] = err_text
+                source_dict["processing_status"] = "failed"
+                source_dict["error_message"] = err_text
 
         return source_dict
     except HTTPException:
@@ -419,7 +535,13 @@ async def update_source(source_id: str, updates: dict):
 
 @router.delete("/{source_id}", status_code=204)
 async def delete_source(source_id: str):
-    """Delete a source. Idempotent — returns 204 even if the source was already gone."""
+    """Delete a source. Idempotent — returns 204 even if the source was already gone.
+
+    Also best-effort deletes matching points from Qdrant and clears any stored
+    per-source credentials. Without the Qdrant sweep a deleted source would
+    reappear in `GET /sources/` on the next refresh because that endpoint
+    merges DB sources with Qdrant payload groups.
+    """
     from src.sources import get_source_store
 
     store = get_source_store()
@@ -430,6 +552,36 @@ async def delete_source(source_id: str):
         # and surface as 500 so callers don't silently think the delete worked.
         logger.warning(f"Delete of {source_id} encountered: {e}")
         raise HTTPException(500, f"Failed to delete source: {e}")
+
+    # Drop Qdrant points for this source. Best-effort — a Qdrant hiccup here
+    # shouldn't fail the DB delete the user already saw succeed.
+    try:
+        from qdrant_client import models as qmodels
+
+        client = get_qdrant_client()
+        collection_name = get_collection_name()
+        collections = client.get_collections().collections
+        if any(c.name == collection_name for c in collections):
+            client.delete(
+                collection_name=collection_name,
+                points_selector=qmodels.Filter(
+                    must=[qmodels.FieldCondition(key="source_id", match=qmodels.MatchValue(value=source_id))]
+                ),
+            )
+            logger.info(f"Deleted Qdrant points for source: {source_id}")
+    except Exception as e:
+        logger.warning(f"Failed to delete Qdrant points for {source_id}: {e}")
+
+    # Drop persisted per-source credentials so a later source with the same id
+    # doesn't silently inherit them.
+    try:
+        persisted = load_settings()
+        if source_id in persisted.get("source_credentials", {}):
+            persisted["source_credentials"].pop(source_id, None)
+            save_settings(persisted)
+    except Exception as e:
+        logger.warning(f"Failed to clear stored credentials for {source_id}: {e}")
+
     return None
 
 
@@ -524,6 +676,29 @@ async def scan_source_metadata(data: dict):
     if not url:
         raise HTTPException(400, "URL is required")
 
+    # Uploaded files live under _UPLOAD_ROOT and are referenced by their
+    # local container path. Resolve and verify the path is inside the upload
+    # root before treating it as a trusted local file — no SSRF, no download.
+    uploaded_local_path: Optional[Path] = None
+    if not url.lower().startswith(("http://", "https://")):
+        try:
+            candidate = Path(url).resolve()
+            if candidate.is_relative_to(_UPLOAD_ROOT.resolve()) and candidate.is_file():
+                uploaded_local_path = candidate
+        except (OSError, ValueError):
+            pass
+        if uploaded_local_path is None:
+            raise HTTPException(400, "URL must be http(s) or a path to an uploaded file")
+    else:
+        # SSRF guard — same reasoning as in /test-connection. Runs before any
+        # outbound request so we don't get tricked into fetching cloud metadata
+        # or internal service ports via user-supplied URLs.
+        from src.sources.connection_tester import validate_public_url, UnsafeURLError
+        try:
+            validate_public_url(url)
+        except UnsafeURLError as e:
+            raise HTTPException(400, f"URL rejected: {e}")
+
     import asyncio
     loop = asyncio.get_event_loop()
 
@@ -541,31 +716,41 @@ async def scan_source_metadata(data: dict):
             import tempfile
             import requests as req
 
-            # Download to temp file (netcdf4 can't open URLs directly)
-            tmp = tempfile.NamedTemporaryFile(suffix=".nc", delete=False)
-            try:
-                resp = req.get(url, stream=True, timeout=(10, 60), headers={"User-Agent": "ClimateRAG/1.0"})
-                resp.raise_for_status()
-                # Check size from Content-Length, skip files over 200MB
-                content_length = int(resp.headers.get("Content-Length", 0))
-                if content_length > 200 * 1024 * 1024:
+            # For uploaded files, skip the download and read the local file
+            # path directly. Otherwise, stream the remote file to a temp path.
+            downloaded_tmp: Optional[str] = None
+            if uploaded_local_path is not None:
+                tmp_path = str(uploaded_local_path)
+            else:
+                tmp = tempfile.NamedTemporaryFile(suffix=".nc", delete=False)
+                downloaded_tmp = tmp.name
+                tmp_path = tmp.name
+                try:
+                    resp = req.get(url, stream=True, timeout=(10, 60), headers={"User-Agent": "ClimateRAG/1.0"})
+                    resp.raise_for_status()
+                    # Check size from Content-Length, skip files over 200MB
+                    content_length = int(resp.headers.get("Content-Length", 0))
+                    if content_length > 200 * 1024 * 1024:
+                        tmp.close()
+                        import os
+                        os.unlink(downloaded_tmp)
+                        result["error"] = f"File too large for scan ({content_length // 1024 // 1024}MB). Add the source and let the pipeline process it."
+                        return result
+
+                    for chunk in resp.iter_content(chunk_size=65536):
+                        tmp.write(chunk)
+                    tmp.close()
+                except Exception as dl_err:
                     tmp.close()
                     import os
-                    os.unlink(tmp.name)
-                    result["error"] = f"File too large for scan ({content_length // 1024 // 1024}MB). Add the source and let the pipeline process it."
+                    try:
+                        os.unlink(downloaded_tmp)
+                    except Exception:
+                        pass
+                    result["error"] = f"Download failed: {dl_err}"
                     return result
 
-                for chunk in resp.iter_content(chunk_size=65536):
-                    tmp.write(chunk)
-                tmp.close()
-            except Exception as dl_err:
-                tmp.close()
-                import os
-                os.unlink(tmp.name)
-                result["error"] = f"Download failed: {dl_err}"
-                return result
-
-            ds = xr.open_dataset(tmp.name)
+            ds = xr.open_dataset(tmp_path)
 
             # Variables
             for var_name in ds.data_vars:
@@ -619,20 +804,99 @@ async def scan_source_metadata(data: dict):
             result["description"] = ". ".join(parts) if parts else None
 
             ds.close()
-            import os
-            os.unlink(tmp.name)
-        except Exception as e:
-            result["error"] = str(e)[:500]
-            # Clean up temp file
-            try:
+            # Only remove the temp file for remote downloads — don't touch the
+            # user's uploaded file, that's still referenced by the source.
+            if downloaded_tmp:
                 import os
-                os.unlink(tmp.name)
-            except Exception:
-                pass
+                try:
+                    os.unlink(downloaded_tmp)
+                except Exception:
+                    pass
+        except Exception as e:
+            import traceback
+            logger.warning(f"scan-file failed for {url}: {e}\n{traceback.format_exc()}")
+            result["error"] = str(e)[:2000]
+            if downloaded_tmp:
+                try:
+                    import os
+                    os.unlink(downloaded_tmp)
+                except Exception:
+                    pass
         return result
 
     result = await loop.run_in_executor(None, _scan)
     return result
+
+
+@router.post("/upload")
+async def upload_source_file(file: UploadFile = File(...)):
+    """Save an uploaded raster/NetCDF/CSV file to `data/uploads/` and return a
+    local path the caller can then use as the `url` of a new source.
+
+    Why this exists: the source wizard previously required a public URL. For
+    one-off files (a raster the user has locally, private/proprietary data,
+    etc.) they now have a way in without spinning up an HTTP host. The saved
+    file lives on the shared `./data` bind-mount so the Dagster workers can
+    read it directly via its file path.
+    """
+    if not file or not file.filename:
+        raise HTTPException(400, "No file provided")
+
+    # Validate extension — blocks `.py`, `.sh`, etc. at the door.
+    ext = Path(file.filename).suffix.lower()
+    if ext not in _ALLOWED_UPLOAD_EXT:
+        raise HTTPException(
+            400,
+            f"File type '{ext or 'unknown'}' is not allowed. "
+            f"Supported: {', '.join(sorted(_ALLOWED_UPLOAD_EXT))}",
+        )
+
+    # Build a safe filename and a per-upload subdir so concurrent uploads of
+    # the same name don't collide.
+    safe_name = _SAFE_NAME.sub("_", file.filename).strip("._") or "upload"
+    upload_id = uuid.uuid4().hex[:12]
+    target_dir = _UPLOAD_ROOT / upload_id
+    target_dir.mkdir(parents=True, exist_ok=True)
+    target_path = target_dir / safe_name
+
+    # Stream to disk with a running size check so a huge upload can't exhaust
+    # the container's tmp space. We abort & clean up the partial file if the
+    # cap is exceeded.
+    max_bytes = _upload_max_bytes()
+    size = 0
+    try:
+        with open(target_path, "wb") as out:
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > max_bytes:
+                    out.close()
+                    shutil.rmtree(target_dir, ignore_errors=True)
+                    raise HTTPException(
+                        413,
+                        f"Upload exceeds {max_bytes // (1024 * 1024)} MB limit "
+                        f"(UPLOAD_MAX_MB env var)",
+                    )
+                out.write(chunk)
+    except HTTPException:
+        raise
+    except Exception as e:
+        shutil.rmtree(target_dir, ignore_errors=True)
+        logger.error(f"upload failed for {file.filename}: {e}")
+        raise HTTPException(500, f"Upload failed: {e}")
+
+    # Path that both web-api and Dagster workers can resolve inside the
+    # container. The frontend pastes this into the `url` field, the raster
+    # pipeline opens it directly from disk.
+    return {
+        "upload_id": upload_id,
+        "filename": safe_name,
+        "size_bytes": size,
+        "file_path": str(target_path),
+        "message": "File uploaded. Use `file_path` as the source URL.",
+    }
 
 
 @router.post("/analyze-url")
@@ -642,7 +906,11 @@ async def analyze_source_url(data: dict):
     if not url:
         raise HTTPException(400, "URL is required")
 
-    from src.sources.connection_tester import analyze_url
+    from src.sources.connection_tester import analyze_url, validate_public_url, UnsafeURLError
+    try:
+        validate_public_url(url)
+    except UnsafeURLError as e:
+        raise HTTPException(400, f"URL rejected: {e}")
 
     # Get existing datasets for grouping suggestions (use cache, don't block)
     existing = []
@@ -666,6 +934,9 @@ async def analyze_source_url(data: dict):
 @router.get("/{source_id}/history")
 async def get_source_history(source_id: str, limit: int = 20):
     """Get processing history for a source."""
+    from src.sources import get_source_store
+    if not get_source_store().get_source(source_id):
+        raise HTTPException(404, "Source not found")
     try:
         from src.database.source_store import SourceStore
 

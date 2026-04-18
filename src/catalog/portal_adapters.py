@@ -44,6 +44,9 @@ def _process_file(file_path: str, entry: CatalogEntry, adapter_name: str = "port
     all_embeddings = []
     all_metadatas = []
 
+    from src.utils.ingestion_context import get_ingestion_run_id
+    ingestion_run_id = get_ingestion_run_id()
+
     for j, emb_data in enumerate(embeddings_data):
         meta = ClimateChunkMetadata.from_chunk_metadata(
             raw_metadata=emb_data["metadata"],
@@ -53,6 +56,8 @@ def _process_file(file_path: str, entry: CatalogEntry, adapter_name: str = "port
         )
         meta_dict = meta.to_dict()
         meta_dict["catalog_source"] = "D1.1.xlsx"
+        if ingestion_run_id:
+            meta_dict["ingestion_run_id"] = ingestion_run_id
 
         if entry.hazard:
             meta_dict["hazard_type"] = entry.hazard
@@ -89,6 +94,8 @@ def _process_file(file_path: str, entry: CatalogEntry, adapter_name: str = "port
 
         summary_meta = build_dataset_summary(all_metadatas, entry_meta)
         if summary_meta:
+            if ingestion_run_id:
+                summary_meta["ingestion_run_id"] = ingestion_run_id
             summary_text = generate_human_readable_text(summary_meta)
             summary_emb = embedder.embed_documents([summary_text])[0]
             db.add_embeddings(
@@ -817,8 +824,8 @@ class NASAAdapter(PortalAdapter):
                             nrc = _netrc_mod.netrc(str(netrc_path))
                             if nrc.authenticators("urs.earthdata.nasa.gov"):
                                 need_write = False
-                        except Exception:
-                            pass
+                        except Exception as nrc_err:
+                            logger.warning(f"NASA: could not parse existing .netrc, will overwrite: {nrc_err}")
                     if need_write:
                         with open(netrc_path, "a") as nf:
                             nf.write(f"\nmachine urs.earthdata.nasa.gov login {username} password {password}\n")

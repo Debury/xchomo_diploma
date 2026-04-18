@@ -23,7 +23,7 @@ Caddy (80/443) ──→ FastAPI (8000) + Dagit (3000)
                         ↓                ↓
                  Qdrant (6333)    PostgreSQL (5432)
                         ↓
-                 Ollama / Groq / OpenRouter (LLM)
+                 OpenRouter (LLM)
 ```
 
 **Štyri hlavné subsystémy:**
@@ -67,7 +67,7 @@ Sieť: `climate-net` (bridge). Volumes: `dagster-postgres-data`, `dagster-home`,
 - **Vektorové vyhľadávanie** v Qdrant (kosínusová podobnosť)
 - **Payloadové filtrovanie** (čas, lokalita, premenná, zdroj)
 - **Kontextová konštrukcia** (`prompt_builder.py`) — formátovanie chunk metadát pre LLM
-- **3 LLM backendy**: Ollama (lokálne, granite4:3b), Groq (cloud), OpenRouter (multi-model)
+- **LLM backend**: OpenRouter (Claude Sonnet 4.6 ako default model)
 - **Graceful fallback** — systém vráti raw výsledky ak LLM nie je dostupné
 - **Počet embeddingov v Qdrant**: ~1.53M chunks v kolekcii `climate_data`
 
@@ -220,6 +220,16 @@ Celý frontend prešiel z JavaScript na TypeScript — štandard pre moderné Vu
 - Settings.vue "Test Connection" má 30s AbortController timeout — ak LLM spadne, button sa neflacne indefinitely
 - SourceResponse pydantic model rozšírený o `etl_run_id` a `etl_error` (predtým FastAPI silently filtered ich out)
 
+### Robustness pass pre multi-source flow (Apríl 2026)
+Trojitý paralelný audit (lifecycle, concurrency, silent-errors) pred obhajobou identifikoval šesť kritických problémov v reálnom user-adds-sources flow. Všetky opravené:
+
+- **Atomic versioned re-ingest** — každý chunk má v Qdrant payload `ingestion_run_id` (= Dagster `context.run_id`). Po úspešnom upserte sa zmažú všetky stale chunky toho istého `source_id` s iným run_id. Rieši duplikátne chunky pri Reprocess aj pri scheduled refresh (doteraz každý re-run pridával kópiu bez zmazania starej). Queries počas re-ingestu vidia starú verziu; failed run nechá starú verziu nedotknutú. Implementované cez `src/utils/ingestion_context.py` (contextvars) + `VectorDatabase.delete_by_source(source_id, exclude_run_id)`.
+- **Portal adapter silent success-with-0-chunks fix** — `source_jobs.py` po návrate z portal adaptera volá `count_by_source(source_id, ingestion_run_id=current)`. Ak adaptér vrátil success ale nezapísal 0 chunks (napr. token refresh error caught internally), raise RuntimeError → outer except označí failed. Predtým sa source označoval "completed" s 0 chunks.
+- **Startup reconciliation orphaned sources** — `web_api/main.py` má lifespan hook ktorý pri boote volá `store.reset_orphaned_processing(max_age_minutes=30)`. Sources stuck v "processing" (napr. po kontejner restarte / OOM killed Dagster run) sa označia "failed" s jasnou hláškou. Pre postgres store použitý age-based filter, pre shelve fallback blanket-reset.
+- **Persist trigger errors** — v `create_source` keď `launch_dagster_run()` zlyhá (daemon down, GraphQL error), error sa zapíše do DB cez `update_processing_status("failed", error_message=...)`. Predtým bol error viditeľný iba v immediate response DTO a zmizol pri refreshi stránky.
+- **Server-side credential validation** — pred spustením Dagster jobu pre portal source (CDS, NASA, MARINE) sa skontroluje, či sú required creds v `app_settings.json` (alebo per-source). Ak chýbajú, job sa nespustí; source sa označí failed s hláškou "Cannot start ETL: {portal} source requires credentials that are not configured". Frontend `PORTAL_CREDENTIAL_KEYS` v CreateSource.vue je synced s backendom.
+- **HTTP session cleanup** — direct-HTTP download v `source_jobs.py` wrappe `requests.Session()` do `try/finally: http_session.close()`. Pod repeated add-then-fail cyklmi sa socket pool už nedostáva do FD exhaustion.
+
 ### Čistenie dead code / files
 - Odstránené `web_api/frontend/spa.html`, `styles.css` (legacy chat UI nahradené Vue SPA)
 - Odstránené `/ui`, `/chat` endpointy z `routes/frontend.py` (legacy static files už neexistujú)
@@ -263,7 +273,7 @@ Celý frontend prešiel z JavaScript na TypeScript — štandard pre moderné Vu
 | Orchestrácia | Dagster, dagit (sensor-driven scheduling) |
 | Web API | FastAPI, uvicorn, pydantic, SQLAlchemy |
 | Frontend | Vue 3, Vite 5, Pinia, Vue Router 4, Tailwind CSS |
-| LLM | OpenRouter (Claude Sonnet 4.6 default), Groq, Ollama (granite4:3b) |
+| LLM | OpenRouter (Claude Sonnet 4.6 default) |
 | Infraštruktúra | Docker Compose, PostgreSQL 15, Caddy 2, GitHub Actions |
 
 ---
@@ -273,11 +283,11 @@ Celý frontend prešiel z JavaScript na TypeScript — štandard pre moderné Vu
 | Test suite | Súbor | Pokrytie |
 |------------|-------|----------|
 | Raster pipeline | `test_raster_pipeline_flow.py` | Multi-format loading, chunking |
-| Embeddings | `test_embeddings.py` | Qdrant integration |
-| RAG components | `test_rag_components.py` | Pipeline flow |
+| Catalog | `test_catalog.py` | Excel ingest, phase classifier |
 | Text generation | `test_text_generation.py` | Metadata → text |
 | Web API | `test_web_api.py` | FastAPI endpoints |
-| Dagster | `test_dagster.py` | Job and op tests |
+| RAG claims | `test_rag_claims.py` | Grounding / citations |
+| RAG evaluation | `test_rag_evaluation.py` | RAGAS metrics (faithfulness, context recall) |
 
 **Spustenie**: `make test` / `pytest tests/ -v`
 **Celkové pokrytie**: ~21%
@@ -305,7 +315,7 @@ Celý frontend prešiel z JavaScript na TypeScript — štandard pre moderné Vu
 | Dagster schedules / sensors | `dagster_project/schedules.py` |
 | Raster pipeline | `src/climate_embeddings/loaders/raster_pipeline.py` |
 | Format detection | `src/climate_embeddings/loaders/detect_format.py`, `src/sources/connection_tester.py` |
-| RAG pipeline | `src/climate_embeddings/rag/rag_pipeline.py` |
+| RAG pipeline | `web_api/rag_endpoint.py` + `src/climate_embeddings/text_generation.py` |
 | Schéma metadát | `src/climate_embeddings/schema.py` |
 | Text generation | `src/climate_embeddings/text_generation.py` |
 | FastAPI app | `web_api/main.py` |

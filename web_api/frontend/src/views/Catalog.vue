@@ -189,13 +189,13 @@
     </div>
 
     <!-- Detail Modal -->
-    <div v-if="selectedEntry" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50" @click.self="selectedEntry = null">
-      <div class="bg-white border border-mendelu-gray-semi rounded-xl p-5 max-w-xl w-full mx-4 max-h-[80vh] overflow-y-auto shadow-lg">
-        <div class="flex items-center justify-between mb-4">
-          <h3 class="text-lg font-semibold text-mendelu-black">{{ selectedEntry.dataset_name }}</h3>
-          <button @click="selectedEntry = null" class="btn-ghost !px-2 !py-1">&times;</button>
-        </div>
-
+    <Modal
+      :open="!!selectedEntry"
+      :title="selectedEntry?.dataset_name || ''"
+      max-width="xl"
+      @close="selectedEntry = null"
+    >
+      <template v-if="selectedEntry">
         <!-- Qdrant Stats -->
         <div v-if="selectedEntry.chunk_count > 0" class="mb-4 p-3 bg-mendelu-success/5 border border-mendelu-success/20 rounded-lg">
           <div class="flex items-center justify-between mb-2">
@@ -239,15 +239,19 @@
             Delete Embeddings
           </button>
         </div>
-      </div>
-    </div>
+      </template>
+    </Modal>
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import PageHeader from '../components/PageHeader.vue'
+import Modal from '../components/Modal.vue'
 import { apiFetch } from '../api'
+import { useConfirm } from '../composables/useConfirm'
+
+const { confirm } = useConfirm()
 
 const catalog = ref<any[]>([])
 const qdrantDatasets = ref<any[]>([])
@@ -411,7 +415,13 @@ async function triggerSourceReprocess(entry) {
 async function deleteDatasetEmbeddings(entry) {
   const sourceId = entry.source_id
   if (!sourceId) return
-  if (!confirm(`Delete all embeddings for "${entry.dataset_name}"? This cannot be undone.`)) return
+  const ok = await confirm({
+    title: 'Delete embeddings?',
+    message: `Delete all embeddings for "${entry.dataset_name}"?\nThis cannot be undone.`,
+    confirmText: 'Delete',
+    danger: true,
+  })
+  if (!ok) return
   try {
     const resp = await apiFetch(`/sources/${sourceId}/embeddings?confirm=true`, { method: 'DELETE' })
     if (resp.ok) {

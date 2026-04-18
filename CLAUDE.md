@@ -15,13 +15,13 @@ Caddy (80/443) → FastAPI (8000) + Dagit (3000)
                      ↓                ↓
               Qdrant (6333)    PostgreSQL (5432)
                      ↓
-              Ollama / Groq / OpenRouter (LLM)
+              OpenRouter (LLM)
 ```
 
 **Four main subsystems:**
 - **`web_api/`** — FastAPI REST API + Vue.js frontend. `main.py` is the central file with source CRUD, RAG endpoints, catalog processing, scheduling, job triggering, and static file serving.
 - **`dagster_project/`** — ETL orchestration. `dynamic_jobs.py` defines the main pipeline job. `catalog_jobs.py` defines `batch_catalog_etl_job` and `catalog_metadata_only_job`. `repository.py` is the Dagster entry point.
-- **`src/`** — Core logic. `climate_embeddings/` handles multi-format loading, embedding, and RAG. `llm/` contains clients for Ollama, Groq, and OpenRouter.
+- **`src/`** — Core logic. `climate_embeddings/` handles multi-format loading, embedding, and RAG. `llm/` contains the OpenRouter client used by the RAG pipeline.
 - **`src/catalog/`** — Batch catalog processing module for the D1.1.xlsx Excel catalog (233 entries, 69 unique datasets).
 
 **Key design patterns:**
@@ -96,9 +96,7 @@ make dagit                        # Start Dagster UI + daemon on port 3000
 # Testing
 make test                         # Run all tests (pytest tests/ -v)
 make test-raster                  # Raster pipeline tests only
-make test-rag                     # RAG component tests only
 make test-api                     # API endpoint tests only
-make test-dagster                 # Dagster job tests only
 make test-coverage                # Tests with coverage report
 pytest tests/test_raster_pipeline_flow.py::TestClassName::test_name -v  # Single test
 

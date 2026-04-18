@@ -17,9 +17,10 @@
       </div>
       <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
         <div>
-          <label class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-1">OpenRouter API Key</label>
+          <label for="settings-openrouter-key" class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-1">OpenRouter API Key</label>
           <div class="relative">
             <input
+              id="settings-openrouter-key"
               :type="revealedKeys.openrouter_api_key ? 'text' : 'password'"
               v-model="credentialEdits.openrouter_api_key"
               :placeholder="credentials.openrouter_api_key?.configured ? credentials.openrouter_api_key?.masked : 'sk-or-v1-...'"
@@ -40,9 +41,9 @@
           </div>
         </div>
         <div>
-          <label class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-1">LLM Model</label>
+          <label for="settings-llm-model" class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-1">LLM Model</label>
           <div class="flex gap-2">
-            <input type="text" v-model="editableSettings.model" placeholder="anthropic/claude-sonnet-4.6" class="input-field flex-1" />
+            <input id="settings-llm-model" type="text" v-model="editableSettings.model" placeholder="anthropic/claude-sonnet-4.6" class="input-field flex-1" />
             <button @click="testConnection" :disabled="testingConnection" class="btn-secondary !py-1.5 !text-xs whitespace-nowrap disabled:opacity-50">
               {{ testingConnection ? 'Testing...' : connectionStatus === 'ok' ? '✓ OK' : connectionStatus === 'fail' ? '✗ Fail' : 'Test' }}
             </button>
@@ -56,22 +57,33 @@
           </div>
         </div>
         <div>
-          <label class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-1">Temperature: {{ editableSettings.temperature }}</label>
-          <input type="range" v-model.number="editableSettings.temperature" min="0" max="1" step="0.1" class="w-full h-2 bg-mendelu-gray-semi rounded-lg appearance-none cursor-pointer accent-mendelu-green" />
+          <label for="settings-temperature" class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-1">Temperature: {{ editableSettings.temperature }}</label>
+          <input id="settings-temperature" type="range" v-model.number="editableSettings.temperature" min="0" max="1" step="0.1" class="w-full h-2 bg-mendelu-gray-semi rounded-lg appearance-none cursor-pointer accent-mendelu-green" />
           <div class="flex justify-between text-[10px] text-mendelu-gray-dark mt-1">
             <span>Precise (0)</span>
             <span>Creative (1)</span>
           </div>
         </div>
         <div>
-          <label class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-1">Top-K Results</label>
-          <input type="number" v-model.number="editableSettings.top_k" min="1" max="50" class="input-field" />
+          <label for="settings-top-k" class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-1">Top-K Results</label>
+          <input id="settings-top-k" type="number" v-model.number="editableSettings.top_k" min="1" max="50" class="input-field" />
         </div>
         <div>
-          <label class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-1">Use Reranker</label>
-          <div class="flex items-center gap-2 mt-2">
-            <input type="checkbox" v-model="editableSettings.use_reranker" class="w-4 h-4 accent-mendelu-green" />
-            <span class="text-sm text-mendelu-black">Cross-encoder reranking (BAAI/bge-reranker-v2-m3)</span>
+          <label for="settings-reranker" class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-1">Cross-encoder reranker</label>
+          <div class="flex items-start gap-2 mt-2">
+            <input id="settings-reranker" type="checkbox" v-model="editableSettings.use_reranker" class="w-4 h-4 accent-mendelu-green mt-0.5" />
+            <div class="text-sm">
+              <div class="text-mendelu-black">Re-rank retrieved chunks with <span class="font-mono text-xs">BAAI/bge-reranker-v2-m3</span></div>
+              <p class="text-xs text-mendelu-gray-dark mt-1 leading-snug">
+                <span class="font-medium text-mendelu-alert">Off by default — it is slower.</span>
+                Turning it on adds roughly 2–4&nbsp;seconds per query (cross-encoder
+                inference runs on top of the vector search). On our golden-query
+                evaluation (see <span class="font-mono">docs/rag_eval_v2_*.md</span>) the no-reranker
+                pipeline already matches or beats the reranked one on Faithfulness
+                (95–100%) and Answer Correctness (78–85%), so the trade-off rarely pays off.
+                Enable if you notice the top chunks look noisy on a specific query.
+              </p>
+            </div>
           </div>
         </div>
       </div>
@@ -139,11 +151,12 @@
               <div v-for="field in adapter.fields" :key="field.key">
                 <div class="flex items-center gap-2 mb-1">
                   <span class="w-1.5 h-1.5 rounded-full" :class="credentials[field.key]?.configured ? 'bg-mendelu-success' : 'bg-mendelu-gray-semi'"></span>
-                  <label class="text-xs font-medium text-mendelu-gray-dark">{{ field.label }}</label>
+                  <label :for="`settings-cred-${field.key}`" class="text-xs font-medium text-mendelu-gray-dark">{{ field.label }}</label>
                   <span v-if="credentials[field.key]?.configured" class="text-[9px] text-mendelu-success font-medium ml-auto" style="font-family: var(--font-mono);">configured</span>
                 </div>
                 <div class="relative">
                   <input
+                    :id="`settings-cred-${field.key}`"
                     :type="revealedKeys[field.key] ? 'text' : 'password'"
                     v-model="credentialEdits[field.key]"
                     :placeholder="credentials[field.key]?.configured ? credentials[field.key]?.masked : 'Not configured'"
@@ -263,6 +276,9 @@
 import { ref, computed, reactive, onMounted } from 'vue'
 import PageHeader from '../components/PageHeader.vue'
 import { apiFetch } from '../api'
+import { useToast } from '../composables/useToast'
+
+const toast = useToast()
 
 const settings = ref(null)
 const embeddingStats = ref(null)
@@ -294,7 +310,7 @@ const editableSettings = reactive<EditableSettings>({
   model: '',
   temperature: 0.1,
   top_k: 10,
-  use_reranker: true,
+  use_reranker: false,
 })
 
 async function testConnection() {
@@ -459,7 +475,7 @@ async function refreshSettings() {
         editableSettings.model = settings.value.llm.model || 'anthropic/claude-sonnet-4.6'
         editableSettings.temperature = settings.value.llm.temperature ?? 0.1
         editableSettings.top_k = settings.value.llm.top_k ?? 10
-        editableSettings.use_reranker = settings.value.llm.use_reranker ?? true
+        editableSettings.use_reranker = settings.value.llm.use_reranker ?? false
       }
       originalSettings.value = { ...editableSettings }
     }
@@ -482,7 +498,8 @@ async function saveSettings() {
       method: 'PUT', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         model: editableSettings.model, temperature: editableSettings.temperature,
-        top_k: editableSettings.top_k, batch_size: editableSettings.batch_size
+        top_k: editableSettings.top_k, batch_size: editableSettings.batch_size,
+        use_reranker: editableSettings.use_reranker,
       })
     })
     if (resp.ok) {
@@ -495,7 +512,7 @@ async function saveSettings() {
     }
   } catch (e) {
     console.error('Failed to save settings:', e)
-    alert(`Error: ${e.message}`)
+    toast.error(`Error: ${e.message}`)
   } finally {
     saving.value = false
   }
@@ -519,7 +536,7 @@ async function saveCredentials() {
     }
   } catch (e) {
     console.error('Failed to save credentials:', e)
-    alert(`Error: ${e.message}`)
+    toast.error(`Error: ${e.message}`)
   } finally {
     savingCredentials.value = false
   }

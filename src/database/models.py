@@ -52,6 +52,15 @@ class Source(Base):
     portal = Column(String(50), nullable=True)
     catalog_row_index = Column(Integer, nullable=True)
 
+    # User-supplied taxonomy (hazard/region/sector/spatial). Added 2026-04 after
+    # an audit found they were accepted by the API and shown in the UI but
+    # silently dropped before hitting PostgreSQL — so RAG filtering by these
+    # facets never worked for non-catalog sources.
+    hazard_type = Column(String(100), nullable=True)
+    region_country = Column(String(255), nullable=True)
+    spatial_coverage = Column(Text, nullable=True)
+    impact_sector = Column(String(255), nullable=True)
+
     # Timestamps
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -84,6 +93,10 @@ class Source(Base):
             "auth_method": self.auth_method,
             "portal": self.portal,
             "catalog_row_index": self.catalog_row_index,
+            "hazard_type": self.hazard_type,
+            "region_country": self.region_country,
+            "spatial_coverage": self.spatial_coverage,
+            "impact_sector": self.impact_sector,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
             "last_processed": self.last_processed_at.isoformat() if self.last_processed_at else None,

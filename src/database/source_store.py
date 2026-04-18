@@ -89,6 +89,38 @@ class SourceStore:
             logger.info(f"[SourceStore] Updated {source_id} -> {status}")
             return True
 
+    def reset_orphaned_processing(self, max_age_minutes: int = 30) -> List[str]:
+        """Reset sources stuck in 'processing' whose updated_at is older than
+        max_age_minutes. Called at web-api startup to reconcile state left
+        behind by container restarts or killed Dagster runs. Returns the list
+        of source_ids that were reset.
+        """
+        cutoff = datetime.utcnow() - timedelta(minutes=max_age_minutes)
+        reset_ids: List[str] = []
+        with get_db_session() as session:
+            stale = (
+                session.query(Source)
+                .filter(
+                    Source.processing_status == "processing",
+                    Source.updated_at < cutoff,
+                )
+                .all()
+            )
+            for row in stale:
+                row.processing_status = "failed"
+                row.error_message = (
+                    f"Processing interrupted (orphaned from a previous run — "
+                    f"no progress for >{max_age_minutes} min). Click Reprocess to retry."
+                )
+                row.updated_at = datetime.utcnow()
+                reset_ids.append(row.source_id)
+            if reset_ids:
+                logger.warning(
+                    f"[SourceStore] Reset {len(reset_ids)} orphaned 'processing' sources: "
+                    f"{reset_ids}"
+                )
+        return reset_ids
+
     def delete_source(self, source_id: str) -> bool:
         """Soft delete (set is_active=False)."""
         with get_db_session() as session:
@@ -324,6 +356,12 @@ def _to_dto(row: Source) -> "ClimateDataSource":
         tags=row.tags,
         keywords=row.keywords,
         custom_metadata=row.custom_metadata,
+        portal=row.portal,
+        auth_method=row.auth_method,
+        hazard_type=row.hazard_type,
+        region_country=row.region_country,
+        spatial_coverage=row.spatial_coverage,
+        impact_sector=row.impact_sector,
         created_at=row.created_at.isoformat() if row.created_at else None,
         updated_at=row.updated_at.isoformat() if row.updated_at else None,
         processing_status=row.processing_status or "pending",

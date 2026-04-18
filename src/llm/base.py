@@ -4,7 +4,7 @@ from abc import ABC, abstractmethod
 
 
 class BaseLLMClient(ABC):
-    """Base class for all LLM clients (Ollama, Groq, OpenRouter)."""
+    """Base class for LLM clients (currently only OpenRouter)."""
 
     @abstractmethod
     def generate(

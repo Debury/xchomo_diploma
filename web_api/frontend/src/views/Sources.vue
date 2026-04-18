@@ -126,16 +126,14 @@
     </div>
 
     <!-- Detail Modal -->
-    <div v-if="selectedSource" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50" @click.self="selectedSource = null">
-      <div class="bg-white border border-mendelu-gray-semi rounded-xl p-6 max-w-2xl w-full mx-4 max-h-[80vh] overflow-y-auto shadow-lg">
-        <div class="flex items-center justify-between mb-6">
-          <div>
-            <h2 class="text-lg font-semibold text-mendelu-black">{{ selectedSource.dataset_name || selectedSource.source_id }}</h2>
-            <p v-if="selectedSource.hazard_type" class="text-xs text-mendelu-gray-dark mt-0.5">{{ selectedSource.hazard_type }}</p>
-          </div>
-          <button @click="selectedSource = null" class="btn-ghost !px-2 !py-1">&times;</button>
-        </div>
-
+    <Modal
+      :open="!!selectedSource"
+      :title="selectedSource?.dataset_name || selectedSource?.source_id || ''"
+      :subtitle="selectedSource?.hazard_type || ''"
+      max-width="2xl"
+      @close="selectedSource = null"
+    >
+      <template v-if="selectedSource">
         <div class="space-y-5">
           <!-- Qdrant Stats -->
           <div v-if="selectedSource.embedding_count > 0"
@@ -207,31 +205,30 @@
             </div>
           </div>
         </div>
-      </div>
-    </div>
+      </template>
+    </Modal>
 
     <!-- Edit Modal -->
-    <div v-if="editingSource" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50" @click.self="editingSource = null">
-      <div class="bg-white border border-mendelu-gray-semi rounded-xl p-6 max-w-lg w-full mx-4 max-h-[80vh] overflow-y-auto shadow-lg">
-        <div class="flex items-center justify-between mb-6">
-          <div>
-            <h2 class="text-lg font-semibold text-mendelu-black">Edit Source</h2>
-            <p class="text-xs text-mendelu-gray-dark mt-0.5">Changes to metadata update all chunks in Qdrant instantly</p>
-          </div>
-          <button @click="editingSource = null" class="btn-ghost !px-2 !py-1">&times;</button>
-        </div>
+    <Modal
+      :open="!!editingSource"
+      title="Edit Source"
+      subtitle="Changes to metadata update all chunks in Qdrant instantly"
+      max-width="lg"
+      @close="editingSource = null"
+    >
+      <template v-if="editingSource">
         <form @submit.prevent="saveEdit" class="space-y-4">
           <div>
-            <label class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-1">Source ID</label>
-            <input :value="editForm.source_id" type="text" class="input-field" disabled />
+            <label for="src-edit-id" class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-1">Source ID</label>
+            <input id="src-edit-id" :value="editForm.source_id" type="text" class="input-field" disabled />
           </div>
           <div>
-            <label class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-1">URL</label>
-            <input v-model="editForm.url" type="text" class="input-field" />
+            <label for="src-edit-url" class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-1">URL</label>
+            <input id="src-edit-url" v-model="editForm.url" type="text" class="input-field" />
           </div>
           <div>
-            <label class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-1">Description</label>
-            <textarea v-model="editForm.description" rows="2" class="input-field resize-none"></textarea>
+            <label for="src-edit-description" class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-1">Description</label>
+            <textarea id="src-edit-description" v-model="editForm.description" rows="2" class="input-field resize-none"></textarea>
           </div>
 
           <div class="border-t border-mendelu-gray-semi pt-4">
@@ -239,20 +236,20 @@
           </div>
 
           <div>
-            <label class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-1">Hazard Type</label>
-            <input v-model="editForm.hazard_type" type="text" class="input-field" placeholder="e.g., Drought, Extreme heat, River flood" />
+            <label for="src-edit-hazard" class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-1">Hazard Type</label>
+            <input id="src-edit-hazard" v-model="editForm.hazard_type" type="text" class="input-field" placeholder="e.g., Drought, Extreme heat, River flood" />
           </div>
           <div>
-            <label class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-1">Region</label>
-            <input v-model="editForm.location_name" type="text" class="input-field" placeholder="e.g., Global, Europe, Mediterranean" />
+            <label for="src-edit-region" class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-1">Region</label>
+            <input id="src-edit-region" v-model="editForm.location_name" type="text" class="input-field" placeholder="e.g., Global, Europe, Mediterranean" />
           </div>
           <div>
-            <label class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-1">Impact Sector</label>
-            <input v-model="editForm.impact_sector" type="text" class="input-field" placeholder="e.g., Agriculture, Health, Energy" />
+            <label for="src-edit-sector" class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-1">Impact Sector</label>
+            <input id="src-edit-sector" v-model="editForm.impact_sector" type="text" class="input-field" placeholder="e.g., Agriculture, Health, Energy" />
           </div>
           <div>
-            <label class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-1">Keywords (comma separated)</label>
-            <input v-model="editForm.keywords" type="text" class="input-field" placeholder="e.g., temperature, reanalysis, ERA5" />
+            <label for="src-edit-keywords" class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-1">Keywords (comma separated)</label>
+            <input id="src-edit-keywords" v-model="editForm.keywords" type="text" class="input-field" placeholder="e.g., temperature, reanalysis, ERA5" />
           </div>
 
           <div class="border-t border-mendelu-gray-semi pt-4">
@@ -264,8 +261,8 @@
             <button type="button" @click="editingSource = null" class="btn-secondary flex-1">Cancel</button>
           </div>
         </form>
-      </div>
-    </div>
+      </template>
+    </Modal>
   </div>
 </template>
 
@@ -274,7 +271,13 @@ import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import PageHeader from '../components/PageHeader.vue'
 import ProcessingHistory from '../components/ProcessingHistory.vue'
 import CronPicker from '../components/CronPicker.vue'
+import Modal from '../components/Modal.vue'
 import { apiFetch } from '../api'
+import { useToast } from '../composables/useToast'
+import { useConfirm } from '../composables/useConfirm'
+
+const toast = useToast()
+const { confirm } = useConfirm()
 
 const sources = ref<any[]>([])
 const loading = ref(true)
@@ -378,7 +381,7 @@ async function reprocessSource(source) {
       source.processing_status = 'processing'
     } else {
       const err = await resp.json().catch(() => ({}))
-      alert(err.detail || 'Failed to trigger reprocessing')
+      toast.error(err.detail || 'Failed to trigger reprocessing')
     }
   } catch (e) {
     console.error('Reprocess failed:', e)
@@ -388,7 +391,13 @@ async function reprocessSource(source) {
 }
 
 async function deleteSourceEmbeddings(source) {
-  if (!confirm(`Delete all embeddings for "${source.dataset_name || source.source_id}"? This cannot be undone.`)) return
+  const ok = await confirm({
+    title: 'Delete embeddings?',
+    message: `Delete all embeddings for "${source.dataset_name || source.source_id}"?\nThis cannot be undone.`,
+    confirmText: 'Delete',
+    danger: true,
+  })
+  if (!ok) return
   try {
     const resp = await apiFetch(`/sources/${source.source_id}/embeddings?confirm=true`, { method: 'DELETE' })
     if (resp.ok) {
@@ -457,7 +466,7 @@ async function saveEdit() {
     selectedSource.value = null
     await loadSources()
   } catch (e) {
-    alert(`Error: ${e.message}`)
+    toast.error(`Error: ${e.message}`)
   } finally {
     saving.value = false
   }

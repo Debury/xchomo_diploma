@@ -340,6 +340,22 @@ def score_faithfulness(answer: str, chunks: List[Dict]) -> Dict[str, Any]:
         except ValueError:
             pass
 
+    # Unit-conversion aliases: the LLM is asked to convert Kelvin to Celsius
+    # for a European audience (see web_api/prompt_builder.py). The grader must
+    # recognise the converted values as grounded; otherwise every temperature
+    # answer loses faithfulness points for numbers it derived correctly from
+    # the source data.
+    #
+    # Range check (200 K < x < 330 K) avoids accidentally converting unrelated
+    # values that happen to sit in plausible temperature territory.
+    CELSIUS_OFFSET = 273.15
+    equivalent_floats = set(context_floats)
+    for cv in context_floats:
+        if 200.0 < cv < 330.0:  # Kelvin range for Earth-surface temperatures
+            equivalent_floats.add(cv - CELSIUS_OFFSET)       # K → °C
+        if -100.0 < cv < 60.0:  # Celsius range (some sources already in °C)
+            equivalent_floats.add(cv + CELSIUS_OFFSET)       # °C → K
+
     grounded_numbers = 0
     total_significant_numbers = 0
     for num in answer_numbers:
@@ -357,11 +373,12 @@ def score_faithfulness(answer: str, chunks: List[Dict]) -> Dict[str, Any]:
         if num in all_context:
             grounded_numbers += 1
         else:
-            # Approximate match: answer says "422" and context has "421.6"
+            # Approximate match: answer says "422" and context has "421.6",
+            # or "-0.3 °C" derived from "272.82 K" via equivalent_floats.
             try:
                 num_val = float(num)
                 if any(abs(cv - num_val) / max(abs(num_val), 0.01) < 0.03
-                       for cv in context_floats):
+                       for cv in equivalent_floats):
                     grounded_numbers += 1
             except (ValueError, ZeroDivisionError):
                 pass

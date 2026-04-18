@@ -81,7 +81,7 @@ Caddy (80/443) ──→ FastAPI (8000) + Dagster webserver (3000)
                   Qdrant (6333)  ←──   Embeddings (1024-dim, COSINE)
                        │
                        ▼
-         OpenRouter / Groq / Ollama  (LLM, pluggable)
+         OpenRouter (LLM)
 ```
 
 **Six Docker services:**
@@ -117,23 +117,21 @@ xchomo_diploma/
 ├── src/
 │   ├── climate_embeddings/
 │   │   ├── loaders/       # raster_pipeline.py (multi-format streaming)
-│   │   ├── rag/           # rag_pipeline.py
 │   │   ├── schema.py      # ClimateChunkMetadata
 │   │   └── text_generation.py
 │   ├── catalog/           # D1.1.xlsx ingest + phase classifier + portal adapters
 │   ├── database/          # SQLAlchemy models, SourceStore (Postgres)
 │   ├── embeddings/        # VectorDatabase (Qdrant wrapper)
-│   ├── llm/               # OpenRouter, Groq, Ollama clients
+│   ├── llm/               # OpenRouter client
 │   └── sources/           # ClimateDataSource DTO + shim
 ├── config/
-│   ├── pipeline_config.yaml
-│   └── era5_config.yaml
+│   └── pipeline_config.yaml
 ├── docker/
 │   ├── dagster.yaml       # Dagster instance config (sqlite storage in DAGSTER_HOME)
 │   └── init-db.sh         # Creates climate_app DB in postgres on first boot
 ├── scripts/qdrant/        # snapshot.sh, restore.sh
 ├── backups/qdrant/        # .snapshot files + restore README
-├── tests/                 # pytest suites (raster, embeddings, RAG, API, Dagster)
+├── tests/                 # pytest suites (raster, catalog, text-gen, API, RAG eval)
 ├── Caddyfile
 ├── docker-compose.yml
 ├── Dockerfile             # Python 3.11 + GDAL/PROJ/GEOS + Node.js (frontend build)
@@ -183,7 +181,7 @@ npm run build                  # rebuild dist/ (docker compose serves this)
 - **Per-source scheduling.** `source_schedule_sensor` polls the `source_schedules` table
   every 60 s and dispatches `single_source_etl_job` runs. Dataset-level scheduling was
   intentionally removed (advisor decision).
-- **Pluggable LLM.** `src/llm/` implements OpenRouter (default), Groq, and Ollama; RAG
+- **LLM backend.** `src/llm/` implements an OpenRouter client; RAG
   gracefully returns raw hits if no LLM is configured.
 - **Graceful cold start.** `web-api` waits for `dagit` healthcheck before starting,
   eliminating the "Dagster GraphQL error: All connection attempts failed" boot-time race.
@@ -213,9 +211,7 @@ message so you know to configure it.
 ```bash
 make test                  # all suites
 make test-raster           # raster pipeline only
-make test-rag              # RAG components only
 make test-api              # FastAPI endpoints
-make test-dagster          # Dagster jobs + ops
 make test-coverage         # coverage report
 
 # Single test

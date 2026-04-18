@@ -1,3 +1,7 @@
+# NOTE: Makefile targets are Windows-oriented dev conveniences. The supported,
+# cross-platform way to run the project is `docker compose up -d` (see README).
+# Some targets may assume a local Python venv and will not work inside Docker.
+
 .PHONY: help install install-dev setup download transform visualize test test-coverage lint format clean run-all docker-build docker-run type-check
 
 # Variables
@@ -49,22 +53,7 @@ setup: ## Set up environment and directories
 	@if not exist ".env" copy ".env.example" ".env" && echo "$(YELLOW)⚠ Created .env file - please edit with your credentials$(NC)"
 	@echo "$(GREEN)✓ Environment setup complete$(NC)"
 
-##@ Data Pipeline (via Dagster/API)
-
-run-etl: ## Trigger ETL job via API (requires API running)
-	@echo "$(BLUE)Triggering ETL job via API...$(NC)"
-	@curl -X POST http://localhost:8000/jobs/dynamic_source_etl_job/run -H "Content-Type: application/json" -d "{}" || echo "$(YELLOW)⚠ API not running. Start with 'make api' first$(NC)"
-	@echo "$(GREEN)✓ ETL job triggered$(NC)"
-
-run-embeddings: ## Generate embeddings from raster data
-	@echo "$(BLUE)Running embedding generation...$(NC)"
-	@curl -X POST http://localhost:8000/jobs/embedding_job/run -H "Content-Type: application/json" -d "{}" || echo "$(YELLOW)⚠ API not running. Start with 'make api' first$(NC)"
-	@echo "$(GREEN)✓ Embedding job triggered$(NC)"
-
-cli-generate: ## Generate embeddings using CLI (climate_embeddings)
-	@echo "$(BLUE)Generating embeddings with CLI...$(NC)"
-	$(PYTHON) -m climate_embeddings.cli.main generate --help
-	@echo "$(YELLOW)Usage: python -m climate_embeddings.cli.main generate <file>$(NC)"
+##@ Data Pipeline
 
 run-all: docker-compose-up ## Start all services with docker compose
 	@echo "$(GREEN)✓ All services started$(NC)"
@@ -91,21 +80,6 @@ test-raster: ## Run raster pipeline tests
 	$(PYTEST) $(TEST_DIR)/test_raster_pipeline_flow.py -v
 	@echo "$(GREEN)✓ Raster tests complete$(NC)"
 
-test-rag: ## Run RAG component tests
-	@echo "$(BLUE)Running RAG tests...$(NC)"
-	$(PYTEST) $(TEST_DIR)/test_rag_components.py -v
-	@echo "$(GREEN)✓ RAG tests complete$(NC)"
-
-test-embeddings: ## Run embedding tests (Qdrant integration)
-	@echo "$(BLUE)Running embedding tests...$(NC)"
-	$(PYTEST) $(TEST_DIR)/test_embeddings.py -v
-	@echo "$(GREEN)✓ Embedding tests complete$(NC)"
-
-test-dagster: ## Run Dagster tests
-	@echo "$(BLUE)Running Dagster tests...$(NC)"
-	$(PYTEST) $(TEST_DIR)/test_dagster.py -v
-	@echo "$(GREEN)✓ Dagster tests complete$(NC)"
-
 test-api: ## Run API tests
 	@echo "$(BLUE)Running API tests...$(NC)"
 	$(PYTEST) $(TEST_DIR)/test_web_api.py -v
@@ -114,7 +88,7 @@ test-api: ## Run API tests
 test-watch: ## Run tests in watch mode
 	$(PYTEST) $(TEST_DIR) -v --looponfail
 
-test-all: test-raster test-rag test-embeddings test-dagster test-api ## Run all test suites
+test-all: test-raster test-api ## Run all test suites
 	@echo "$(GREEN)✓ All test suites complete$(NC)"
 
 ##@ Code Quality
@@ -242,20 +216,12 @@ check-qdrant: ## Check Qdrant status
 	@echo "$(BLUE)Checking Qdrant vector database...$(NC)"
 	@curl -s http://localhost:6333/health || echo "$(YELLOW)⚠ Qdrant not running$(NC)"
 
-check-ollama: ## Check Ollama LLM status
-	@echo "$(BLUE)Checking Ollama...$(NC)"
-	@curl -s http://localhost:11434/api/tags || echo "$(YELLOW)⚠ Ollama not running$(NC)"
-
-verify-services: check-qdrant check-ollama api-health ## Verify all services are running
+verify-services: check-qdrant api-health ## Verify all services are running
 	@echo "$(GREEN)✓ Service verification complete$(NC)"
 
 show-collections: ## Show Qdrant collections
 	@echo "$(BLUE)Qdrant collections:$(NC)"
 	@curl -s http://localhost:6333/collections | $(PYTHON) -m json.tool
-
-show-models: ## Show Ollama models
-	@echo "$(BLUE)Ollama models:$(NC)"
-	@curl -s http://localhost:11434/api/tags | $(PYTHON) -m json.tool
 
 ##@ Phase 4: Orchestration & Web UI
 
@@ -301,57 +267,9 @@ dagster-stop: ## Stop all Dagster services
 dagster-logs: ## Show Dagster service logs
 	docker compose logs -f dagit dagster-daemon web-api
 
-test-phase4: ## Run Phase 4 tests (Dagster + API) - ALIAS for test-dagster
-	@echo "$(BLUE)Running Phase 4 tests...$(NC)"
-	$(PYTEST) $(TEST_DIR)/test_dagster.py $(TEST_DIR)/test_web_api.py -v
-	@echo "$(GREEN)✓ Phase 4 tests complete$(NC)"
-
-verify-phase4: ## Verify Phase 4 implementation
-	@echo "$(BLUE)Verifying Phase 4 structure...$(NC)"
-	@echo ""
-	@echo "Checking Dagster project files:"
-	@if exist "dagster_project\__init__.py" (echo "  [✓] __init__.py") else (echo "  [✗] __init__.py")
-	@if exist "dagster_project\workspace.yaml" (echo "  [✓] workspace.yaml") else (echo "  [✗] workspace.yaml")
-	@if exist "dagster_project\dagster.yaml" (echo "  [✓] dagster.yaml") else (echo "  [✗] dagster.yaml")
-	@if exist "dagster_project\resources.py" (echo "  [✓] resources.py") else (echo "  [✗] resources.py")
-	@if exist "dagster_project\jobs.py" (echo "  [✓] jobs.py") else (echo "  [✗] jobs.py")
-	@if exist "dagster_project\schedules.py" (echo "  [✓] schedules.py") else (echo "  [✗] schedules.py")
-	@if exist "dagster_project\repository.py" (echo "  [✓] repository.py") else (echo "  [✗] repository.py")
-	@echo ""
-	@echo "Checking ops:"
-	@if exist "dagster_project\ops\__init__.py" (echo "  [✓] ops\__init__.py") else (echo "  [✗] ops\__init__.py")
-	@if exist "dagster_project\ops\dynamic_source_ops.py" (echo "  [✓] ops\dynamic_source_ops.py") else (echo "  [✗] ops\dynamic_source_ops.py")
-	@if exist "dagster_project\ops\embedding_ops.py" (echo "  [✓] ops\embedding_ops.py") else (echo "  [✗] ops\embedding_ops.py")
-	@echo ""
-	@echo "Checking Web API:"
-	@if exist "web_api\__init__.py" (echo "  [✓] web_api\__init__.py") else (echo "  [✗] web_api\__init__.py")
-	@if exist "web_api\main.py" (echo "  [✓] web_api\main.py") else (echo "  [✗] web_api\main.py")
-	@echo ""
-	@echo "Checking tests:"
-	@if exist "tests\test_dagster.py" (echo "  [✓] test_dagster.py") else (echo "  [✗] test_dagster.py")
-	@if exist "tests\test_web_api.py" (echo "  [✓] test_web_api.py") else (echo "  [✗] test_web_api.py")
-	@echo ""
-	@echo "Checking documentation:"
-	@if exist "docs\PHASE4_USAGE.md" (echo "  [✓] PHASE4_USAGE.md") else (echo "  [✗] PHASE4_USAGE.md")
-	@if exist "docs\PHASE4_SUMMARY.md" (echo "  [✓] PHASE4_SUMMARY.md") else (echo "  [✗] PHASE4_SUMMARY.md")
-	@echo ""
-	@echo "$(GREEN)✓ Phase 4 verification complete$(NC)"
-
 api-health: ## Check API health status
 	@echo "$(BLUE)Checking API health...$(NC)"
 	@curl -s http://localhost:8000/health || echo "API not running"
-
-api-list-jobs: ## List available Dagster jobs via API
-	@echo "$(BLUE)Listing jobs...$(NC)"
-	@curl -s http://localhost:8000/jobs | $(PYTHON) -m json.tool
-
-trigger-etl: ## Trigger dynamic source ETL job via API
-	@echo "$(BLUE)Triggering dynamic_source_etl_job...$(NC)"
-	@curl -X POST http://localhost:8000/jobs/dynamic_source_etl_job/run -H "Content-Type: application/json" -d "{}"
-
-trigger-embeddings: ## Trigger embedding job via API
-	@echo "$(BLUE)Triggering embedding_job...$(NC)"
-	@curl -X POST http://localhost:8000/jobs/embedding_job/run -H "Content-Type: application/json" -d "{}"
 
 rag-query: ## Query RAG system via API (example)
 	@echo "$(BLUE)Querying RAG system...$(NC)"

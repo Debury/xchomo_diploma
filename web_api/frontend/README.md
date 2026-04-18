@@ -4,12 +4,12 @@ Vue 3 Single Page Application for the Climate Data ETL Pipeline.
 
 ## Features
 
-- 🌙 Dark mode UI with TailwindCSS
-- 📊 Dashboard with stats overview
-- 💬 AI-powered chat with RAG
-- 📁 Data source management
-- 🔢 Embedding statistics
-- 🔐 Simple authentication
+- Dark mode UI with TailwindCSS
+- Dashboard with stats overview
+- AI-powered chat with RAG
+- Data source management (list, create, edit, schedule)
+- Catalog browser + ETL monitor
+- Simple authentication
 
 ## Tech Stack
 
@@ -68,7 +68,10 @@ AUTH_PASSWORD=climate2024
 | `/app/chat` | RAG Chat Interface |
 | `/app/sources` | Data Sources List |
 | `/app/sources/create` | Create New Source |
-| `/app/embeddings` | Embedding Stats |
+| `/app/catalog` | D1.1 catalog browser |
+| `/app/etl` | ETL monitor |
+| `/app/schedules` | Per-source schedules |
+| `/app/settings` | System + credentials |
 | `/app/login` | Login Page |
 
 ## API Proxy (Development)
@@ -76,7 +79,10 @@ AUTH_PASSWORD=climate2024
 During development, Vite proxies these paths to the FastAPI backend:
 
 - `/rag/*` → RAG endpoints
-- `/embeddings/*` → Embedding endpoints
+- `/embeddings/*` → Embedding stats
 - `/sources/*` → Source management
+- `/catalog/*` → Catalog batch processing
+- `/schedules/*` → Dagster schedules
+- `/settings/*` → System + credential settings
 - `/auth/*` → Authentication
 - `/health` → Health check

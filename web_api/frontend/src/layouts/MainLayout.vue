@@ -183,9 +183,27 @@ function onVisibilityChange(): void {
   }
 }
 
+function prefetchRoutes(): void {
+  const chunks = [
+    () => import('../views/Chat.vue'),
+    () => import('../views/Sources.vue'),
+    () => import('../views/Catalog.vue'),
+    () => import('../views/ETLMonitor.vue'),
+    () => import('../views/Schedules.vue'),
+    () => import('../views/Settings.vue'),
+  ]
+  const schedule = (fn: () => void) => {
+    const ric = (window as any).requestIdleCallback
+    if (typeof ric === 'function') ric(fn, { timeout: 2000 })
+    else setTimeout(fn, 200)
+  }
+  for (const load of chunks) schedule(() => { load().catch(() => { /* ignore prefetch errors */ }) })
+}
+
 onMounted(() => {
   startHealthPolling()
   document.addEventListener('visibilitychange', onVisibilityChange)
+  prefetchRoutes()
 })
 
 onUnmounted(() => {

@@ -76,19 +76,18 @@
     </div>
 
     <!-- Create / Edit Source Schedule Modal -->
-    <div v-if="showModal" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50" @click.self="closeModal">
-      <div class="bg-white border border-mendelu-gray-semi rounded-xl p-6 max-w-md w-full mx-4 shadow-lg">
-        <div class="flex items-center justify-between mb-6">
-          <h2 class="text-lg font-semibold text-mendelu-black">
-            {{ editingId ? `Edit: ${editingId}` : 'Create Source Schedule' }}
-          </h2>
-          <button @click="closeModal" class="btn-ghost !px-2 !py-1">&times;</button>
-        </div>
-
+    <Modal
+      :open="showModal"
+      :title="editingId ? `Edit: ${editingId}` : 'Create Source Schedule'"
+      max-width="md"
+      :scrollable="false"
+      @close="closeModal"
+    >
+      <template v-if="showModal">
         <form @submit.prevent="saveSchedule" class="space-y-4">
           <div v-if="!editingId">
-            <label class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-1">Source</label>
-            <select v-model="form.source_id" class="input-field" required>
+            <label for="sched-source" class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-1">Source</label>
+            <select id="sched-source" v-model="form.source_id" class="input-field" required>
               <option value="" disabled>Select a source…</option>
               <option v-for="s in availableSources" :key="s.source_id" :value="s.source_id">
                 {{ s.dataset_name || s.source_id }}<span v-if="s.source_id !== (s.dataset_name || s.source_id)"> ({{ s.source_id }})</span>
@@ -120,8 +119,8 @@
             <button type="button" @click="closeModal" class="btn-secondary flex-1">Cancel</button>
           </div>
         </form>
-      </div>
-    </div>
+      </template>
+    </Modal>
   </div>
 </template>
 
@@ -129,7 +128,13 @@
 import { ref, computed, onMounted } from 'vue'
 import PageHeader from '../components/PageHeader.vue'
 import CronPicker from '../components/CronPicker.vue'
+import Modal from '../components/Modal.vue'
 import { apiFetch } from '../api'
+import { useToast } from '../composables/useToast'
+import { useConfirm } from '../composables/useConfirm'
+
+const toast = useToast()
+const { confirm } = useConfirm()
 
 const sources = ref<any[]>([])
 const sourceSchedules = ref<any[]>([])
@@ -247,7 +252,13 @@ async function saveSchedule() {
 }
 
 async function deleteSourceSchedule(sourceId) {
-  if (!confirm(`Remove schedule for "${sourceId}"?`)) return
+  const ok = await confirm({
+    title: 'Remove schedule?',
+    message: `Remove schedule for "${sourceId}"?`,
+    confirmText: 'Remove',
+    danger: true,
+  })
+  if (!ok) return
   try {
     const resp = await apiFetch(`/sources/${encodeURIComponent(sourceId)}/schedule`, { method: 'DELETE' })
     if (!resp.ok && resp.status !== 404) {
@@ -256,7 +267,7 @@ async function deleteSourceSchedule(sourceId) {
     }
     await loadSources()
   } catch (e) {
-    alert(`Failed to remove schedule: ${e.message}`)
+    toast.error(`Failed to remove schedule: ${e.message}`)
   }
 }
 

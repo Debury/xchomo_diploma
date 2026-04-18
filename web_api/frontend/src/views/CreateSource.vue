@@ -31,22 +31,78 @@
           <p class="page-subtitle">Enter the data source URL</p>
 
           <div>
-            <label class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-1">Source Name</label>
-            <input v-model="form.name" type="text" class="input-field" placeholder="e.g., ERA5, CMIP6" required />
+            <label for="cs-name" class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-1">Source Name</label>
+            <input id="cs-name" v-model="form.name" type="text" class="input-field" placeholder="e.g., ERA5, CMIP6" required />
           </div>
 
           <div>
-            <label class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-1">Data URL / Path</label>
-            <div class="flex gap-2">
-              <input v-model="form.url" type="text" class="input-field flex-1" placeholder="https://..." />
+            <label class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-1">Data Source</label>
+            <div class="inline-flex rounded-lg border border-mendelu-gray-semi overflow-hidden mb-3 text-xs">
               <button
                 type="button"
-                @click="analyzeUrl"
-                :disabled="!form.url || analyzing"
-                class="btn-secondary !py-2 !px-4 !text-xs disabled:opacity-50 whitespace-nowrap"
-              >
-                {{ analyzing ? 'Analyzing...' : 'Auto-detect' }}
-              </button>
+                @click="sourceMode = 'url'"
+                :class="sourceMode === 'url' ? 'bg-mendelu-green text-white' : 'bg-white text-mendelu-gray-dark hover:bg-mendelu-gray-light'"
+                class="px-4 py-1.5 font-medium transition-colors"
+              >URL / link</button>
+              <button
+                type="button"
+                @click="sourceMode = 'upload'"
+                :class="sourceMode === 'upload' ? 'bg-mendelu-green text-white' : 'bg-white text-mendelu-gray-dark hover:bg-mendelu-gray-light'"
+                class="px-4 py-1.5 font-medium transition-colors border-l border-mendelu-gray-semi"
+              >Upload file</button>
+            </div>
+
+            <!-- URL mode -->
+            <div v-if="sourceMode === 'url'">
+              <div class="flex gap-2">
+                <input id="cs-url" v-model="form.url" type="text" class="input-field flex-1" placeholder="https://..." />
+                <button
+                  type="button"
+                  @click="analyzeUrl"
+                  :disabled="!form.url || analyzing"
+                  class="btn-secondary !py-2 !px-4 !text-xs disabled:opacity-50 whitespace-nowrap"
+                >
+                  {{ analyzing ? 'Analyzing...' : 'Auto-detect' }}
+                </button>
+              </div>
+            </div>
+
+            <!-- Upload mode -->
+            <div v-else class="space-y-2">
+              <div class="flex items-center gap-2">
+                <label
+                  for="cs-file"
+                  class="btn-secondary !py-2 !px-4 !text-xs cursor-pointer whitespace-nowrap"
+                  :class="{ 'opacity-50 cursor-wait': uploading }"
+                >
+                  {{ uploading ? 'Uploading…' : (uploadedFile ? 'Choose another file' : 'Choose file…') }}
+                </label>
+                <input
+                  id="cs-file"
+                  type="file"
+                  class="hidden"
+                  accept=".nc,.nc4,.cdf,.hdf,.hdf5,.h5,.he5,.tif,.tiff,.grib,.grib2,.grb,.grb2,.csv,.tsv,.txt,.zip,.gz,.tar,.zarr,.parquet"
+                  @change="handleFileUpload"
+                  :disabled="uploading"
+                />
+                <span v-if="uploadedFile" class="text-xs text-mendelu-gray-dark truncate">
+                  <span class="text-mendelu-success font-medium">✓</span>
+                  {{ uploadedFile.filename }}
+                  <span class="text-mendelu-gray-dark">({{ formatBytes(uploadedFile.size_bytes) }})</span>
+                </span>
+              </div>
+              <p class="text-xs text-mendelu-gray-dark">
+                Max {{ uploadMaxMb }} MB per file
+                (<span class="font-mono">UPLOAD_MAX_MB</span> env var).
+                Accepted: NetCDF, GRIB, HDF5, GeoTIFF, CSV, Parquet, Zarr, zip/gz/tar.
+                The file stays on the server and the pipeline reads it in place.
+              </p>
+              <p v-if="uploadError" class="text-xs text-mendelu-alert">{{ uploadError }}</p>
+              <!-- Mirror of the path stored in form.url, shown so the user
+                   knows what URL will be sent with the create request. -->
+              <div v-if="uploadedFile" class="text-[11px] font-mono text-mendelu-gray-dark break-all">
+                path: {{ form.url }}
+              </div>
             </div>
           </div>
 
@@ -86,8 +142,8 @@
           </div>
 
           <div>
-            <label class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-1">Data Format</label>
-            <select v-model="form.type" class="input-field">
+            <label for="cs-type" class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-1">Data Format</label>
+            <select id="cs-type" v-model="form.type" class="input-field">
               <option value="netcdf">NetCDF (.nc, .nc4)</option>
               <option value="grib">GRIB (.grib, .grib2)</option>
               <option value="hdf5">HDF5 (.h5, .hdf, .he5)</option>
@@ -105,8 +161,8 @@
           <p class="page-subtitle">Configure authentication (optional)</p>
 
           <div>
-            <label class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-1">Portal Preset</label>
-            <select v-model="form.portal" @change="onPortalChange" class="input-field">
+            <label for="cs-portal" class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-1">Portal Preset</label>
+            <select id="cs-portal" v-model="form.portal" @change="onPortalChange" class="input-field">
               <option value="">Custom / None</option>
               <option value="CDS">Copernicus CDS</option>
               <option value="NASA">NASA Earthdata</option>
@@ -137,8 +193,8 @@
           <!-- Manual auth (show when no portal or portal creds missing) -->
           <template v-if="!form.portal || !portalHasGlobalCreds">
             <div>
-              <label class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-1">Authentication Method</label>
-              <select v-model="form.auth_method" class="input-field">
+              <label for="cs-auth-method" class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-1">Authentication Method</label>
+              <select id="cs-auth-method" v-model="form.auth_method" class="input-field">
                 <option value="none">None (Open Access)</option>
                 <option value="api_key">API Key</option>
                 <option value="bearer_token">Bearer Token</option>
@@ -147,21 +203,21 @@
             </div>
 
             <div v-if="form.auth_method === 'api_key'">
-              <label class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-1">API Key</label>
-              <input type="password" v-model="form.auth_api_key" class="input-field" placeholder="Enter API key" />
+              <label for="cs-auth-api-key" class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-1">API Key</label>
+              <input id="cs-auth-api-key" type="password" v-model="form.auth_api_key" class="input-field" placeholder="Enter API key" />
             </div>
             <div v-if="form.auth_method === 'bearer_token'">
-              <label class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-1">Bearer Token</label>
-              <input type="password" v-model="form.auth_token" class="input-field" placeholder="Enter bearer token" />
+              <label for="cs-auth-token" class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-1">Bearer Token</label>
+              <input id="cs-auth-token" type="password" v-model="form.auth_token" class="input-field" placeholder="Enter bearer token" />
             </div>
             <div v-if="form.auth_method === 'basic'" class="space-y-3">
               <div>
-                <label class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-1">Username</label>
-                <input type="text" v-model="form.auth_username" class="input-field" />
+                <label for="cs-auth-username" class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-1">Username</label>
+                <input id="cs-auth-username" type="text" v-model="form.auth_username" class="input-field" />
               </div>
               <div>
-                <label class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-1">Password</label>
-                <input type="password" v-model="form.auth_password" class="input-field" />
+                <label for="cs-auth-password" class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-1">Password</label>
+                <input id="cs-auth-password" type="password" v-model="form.auth_password" class="input-field" />
               </div>
             </div>
           </template>
@@ -229,24 +285,24 @@
             </summary>
             <div class="mt-3 space-y-4">
               <div>
-                <label class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-1">Variables (comma separated)</label>
-                <input v-model="form.variables" type="text" class="input-field" placeholder="Auto-filled from scan" />
+                <label for="cs-variables" class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-1">Variables (comma separated)</label>
+                <input id="cs-variables" v-model="form.variables" type="text" class="input-field" placeholder="Auto-filled from scan" />
               </div>
 
               <div class="grid grid-cols-2 gap-4">
                 <div>
-                  <label class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-1">Start Year</label>
-                  <input v-model.number="form.startYear" type="number" min="1900" max="2100" class="input-field" />
+                  <label for="cs-start-year" class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-1">Start Year</label>
+                  <input id="cs-start-year" v-model.number="form.startYear" type="number" min="1900" max="2100" class="input-field" />
                 </div>
                 <div>
-                  <label class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-1">End Year</label>
-                  <input v-model.number="form.endYear" type="number" min="1900" max="2100" class="input-field" />
+                  <label for="cs-end-year" class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-1">End Year</label>
+                  <input id="cs-end-year" v-model.number="form.endYear" type="number" min="1900" max="2100" class="input-field" />
                 </div>
               </div>
 
               <div>
-                <label class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-1">Hazard Type</label>
-                <select v-model="form.hazard_type" class="input-field">
+                <label for="cs-hazard" class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-1">Hazard Type</label>
+                <select id="cs-hazard" v-model="form.hazard_type" class="input-field">
                   <option value="">Not specified</option>
                   <option value="Drought">Drought</option>
                   <option value="Flood">Flood</option>
@@ -260,23 +316,23 @@
               </div>
 
               <div>
-                <label class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-1">Region / Country</label>
-                <input v-model="form.region_country" type="text" class="input-field" placeholder="Auto-detected from coordinates" />
+                <label for="cs-region" class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-1">Region / Country</label>
+                <input id="cs-region" v-model="form.region_country" type="text" class="input-field" placeholder="Auto-detected from coordinates" />
               </div>
 
               <div>
-                <label class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-1">Description</label>
-                <textarea v-model="form.description" rows="3" class="input-field resize-none" placeholder="Auto-generated from file metadata"></textarea>
+                <label for="cs-description" class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-1">Description</label>
+                <textarea id="cs-description" v-model="form.description" rows="3" class="input-field resize-none" placeholder="Auto-generated from file metadata"></textarea>
               </div>
 
               <div>
-                <label class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-1">Keywords (comma separated)</label>
-                <input v-model="form.keywords" type="text" class="input-field" placeholder="Auto-generated from variables and attributes" />
+                <label for="cs-keywords" class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-1">Keywords (comma separated)</label>
+                <input id="cs-keywords" v-model="form.keywords" type="text" class="input-field" placeholder="Auto-generated from variables and attributes" />
               </div>
 
               <div>
-                <label class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-1">Custom Metadata</label>
-                <textarea v-model="form.custom_metadata_raw" rows="2" class="input-field resize-none" placeholder='e.g., institution=ECMWF, project=Copernicus'></textarea>
+                <label for="cs-custom-meta" class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-1">Custom Metadata</label>
+                <textarea id="cs-custom-meta" v-model="form.custom_metadata_raw" rows="2" class="input-field resize-none" placeholder='e.g., institution=ECMWF, project=Copernicus'></textarea>
               </div>
             </div>
           </details>
@@ -362,6 +418,9 @@ import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import CronPicker from '../components/CronPicker.vue'
 import { apiFetch } from '../api'
+import { useToast } from '../composables/useToast'
+
+const toast = useToast()
 
 const router = useRouter()
 
@@ -386,6 +445,71 @@ const scanning = ref(false)
 const scanResult = ref(null)
 const testingConnection = ref(false)
 const reviewConnectionResult = ref(null)
+
+// URL vs local-file upload mode for the data source. When 'upload', the file
+// is pushed to POST /sources/upload, saved under data/uploads/, and its
+// server path is used as form.url — keeps the rest of the create flow
+// untouched.
+const sourceMode = ref<'url' | 'upload'>('url')
+const uploading = ref(false)
+const uploadedFile = ref<any>(null)
+const uploadError = ref<string>('')
+// Fetched from /settings/system so the hint below the file picker matches
+// whatever the backend's UPLOAD_MAX_MB is actually set to. 5000 MB (5 GB) is
+// the default, but operators can raise/lower it without a rebuild.
+const uploadMaxMb = ref<number>(5000)
+
+function formatBytes(n: number): string {
+  if (!n) return '0 B'
+  const units = ['B', 'KB', 'MB', 'GB']
+  let i = 0
+  let size = n
+  while (size >= 1024 && i < units.length - 1) { size /= 1024; i++ }
+  return `${size.toFixed(size >= 10 || i === 0 ? 0 : 1)} ${units[i]}`
+}
+
+async function handleFileUpload(event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  if (!file) return
+
+  uploadError.value = ''
+  uploading.value = true
+  try {
+    const fd = new FormData()
+    fd.append('file', file)
+    const resp = await apiFetch('/sources/upload', { method: 'POST', body: fd })
+    const body = await resp.json().catch(() => ({}))
+    if (!resp.ok) {
+      const msg = Array.isArray(body.detail)
+        ? body.detail.map((d: any) => d.msg || JSON.stringify(d)).join('; ')
+        : (body.detail || `HTTP ${resp.status}`)
+      throw new Error(msg)
+    }
+    uploadedFile.value = body
+    form.value.url = body.file_path
+    // Format hint from the extension — makes the next step's defaults sensible.
+    const ext = (body.filename || '').toLowerCase().split('.').pop()
+    const fmtByExt: Record<string, string> = {
+      nc: 'netcdf', nc4: 'netcdf', cdf: 'netcdf',
+      h5: 'hdf5', hdf: 'hdf5', hdf5: 'hdf5', he5: 'hdf5',
+      tif: 'geotiff', tiff: 'geotiff',
+      grib: 'grib', grib2: 'grib', grb: 'grib', grb2: 'grib',
+      csv: 'csv', tsv: 'csv', txt: 'csv',
+      zip: 'zip', gz: 'zip', tar: 'zip',
+      zarr: 'zarr',
+    }
+    if (ext && fmtByExt[ext] && !form.value.type) form.value.type = fmtByExt[ext]
+    toast.success(`Uploaded ${body.filename} (${formatBytes(body.size_bytes)})`)
+  } catch (e: any) {
+    uploadError.value = e?.message || 'Upload failed'
+    toast.error(`Upload failed: ${uploadError.value}`)
+  } finally {
+    uploading.value = false
+    // Allow re-picking the same file after a failure.
+    input.value = ''
+  }
+}
 
 // Global credential status — fetched from Settings API
 const globalCredentials = ref<any>({})
@@ -416,6 +540,13 @@ onMounted(async () => {
     const credResp = await apiFetch('/settings/credentials')
     if (credResp.ok) globalCredentials.value = await credResp.json()
   } catch (e) { /* ignore */ }
+  try {
+    const sysResp = await apiFetch('/settings/system')
+    if (sysResp.ok) {
+      const sys = await sysResp.json()
+      if (sys?.uploads?.max_mb) uploadMaxMb.value = sys.uploads.max_mb
+    }
+  } catch (e) { /* ignore — keep default 5000 */ }
 })
 
 function useMatchedDataset() {
@@ -489,7 +620,7 @@ function onPortalChange() {
 
 function nextStep() {
   if (step.value === 1 && (!form.value.name || !form.value.url)) {
-    alert('Please fill in Source Name and Data URL')
+    toast.error('Please fill in Source Name and Data URL')
     return
   }
   step.value++
@@ -560,7 +691,7 @@ async function handleSubmit() {
       time_range: (form.value.startYear || form.value.endYear)
         ? { ...(form.value.startYear && { start: `${form.value.startYear}-01-01` }), ...(form.value.endYear && { end: `${form.value.endYear}-12-31` }) } : null,
       is_active: true,
-      embedding_model: "all-MiniLM-L6-v2",
+      embedding_model: "BAAI/bge-large-en-v1.5",
       auth_method: form.value.auth_method !== 'none' ? form.value.auth_method : null,
       auth_credentials: authCredentials,
       portal: form.value.portal || null,
@@ -595,12 +726,29 @@ async function handleSubmit() {
     })
     if (!resp.ok) {
       const err = await resp.json().catch(() => ({ detail: 'Unknown error' }))
-      throw new Error(err.detail || `HTTP ${resp.status}`)
+      // FastAPI validation failures return `detail` as an array of
+      // `{loc, msg, type}` objects — join them instead of letting JS render
+      // "[object Object]" in the toast.
+      const msg = Array.isArray(err.detail)
+        ? err.detail.map(d => d.msg || JSON.stringify(d)).join('; ')
+        : (err.detail || `HTTP ${resp.status}`)
+      throw new Error(msg)
+    }
+    // The backend creates the source row synchronously and may have tried to
+    // kick off auto-embed inline. If that failed, the response still returns
+    // 201 but with `etl_error` or `error_message` populated — don't navigate
+    // away silently, the user needs to know the ingest didn't start.
+    const body = await resp.json().catch(() => ({}))
+    const etlErr = body.etl_error || body.error_message
+    if (etlErr) {
+      toast.error(`Source created but ingestion did not start: ${etlErr}`)
+    } else {
+      toast.success(`Source "${body.source_id || sourceConfig.source_id}" created`)
     }
     router.push('/sources')
   } catch (e) {
     console.error('Error creating source:', e)
-    alert(`Error creating source: ${e.message}`)
+    toast.error(`Error creating source: ${e.message}`)
   } finally {
     submitting.value = false
   }

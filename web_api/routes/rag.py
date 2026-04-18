@@ -47,12 +47,18 @@ async def rag_chat_legacy(request: RAGChatRequest):
     if not (request.question or "").strip():
         raise HTTPException(400, "Question is required")
 
+    # Honour the runtime default for `use_reranker` (toggled in Settings)
+    # rather than hardcoding True — that was why turning it off in the UI
+    # didn't actually speed up the chat.
+    from web_api.routes.admin import _runtime_settings
+    default_reranker = bool(_runtime_settings.get("use_reranker", False))
+
     try:
         rag_req = RAGRequest(
             question=request.question,
             top_k=request.top_k or 10,
             use_llm=request.use_llm if request.use_llm is not None else True,
-            use_reranker=True,
+            use_reranker=default_reranker,
             temperature=request.temperature or 0.3,
             source_id=getattr(request, "source_id", None),
             variable=getattr(request, "variable", None),

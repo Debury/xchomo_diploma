@@ -4,7 +4,7 @@ import os
 import logging
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 
 from web_api.config import CREDENTIAL_KEYS, load_settings, save_settings
 from web_api.dependencies import get_qdrant_client
@@ -28,7 +28,7 @@ def init_runtime_settings(settings: dict) -> None:
 
 
 @router.get("/logs/etl")
-async def get_etl_logs(lines: int = 100):
+async def get_etl_logs(lines: int = Query(100, ge=1, le=10000)):
     """Get the last N lines of the ETL log file."""
     log_paths = [
         _PROJECT_ROOT / "logs" / "catalog_pipeline.log",
@@ -68,14 +68,15 @@ async def get_system_settings():
         "llm": {
             "providers": {
                 "openrouter": bool(os.getenv("OPENROUTER_API_KEY")),
-                "groq": bool(os.getenv("GROQ_API_KEY")),
-                "ollama": os.getenv("OLLAMA_URL", os.getenv("OLLAMA_HOST", "http://localhost:11434")),
             },
             "model": _runtime_settings.get("model", os.getenv("OPENROUTER_MODEL", "anthropic/claude-sonnet-4.6")),
             "fast_model": os.getenv("OPENROUTER_FAST_MODEL", "anthropic/claude-sonnet-4.6"),
             "temperature": _runtime_settings.get("temperature", 0.1),
             "top_k": _runtime_settings.get("top_k", 10),
             "batch_size": _runtime_settings.get("batch_size", 512),
+            # Cross-encoder reranker default. Off unless the operator opts in —
+            # adds 2–4s per query for marginal quality gain on the golden set.
+            "use_reranker": bool(_runtime_settings.get("use_reranker", False)),
         },
         "embedding_model": {
             "name": os.getenv("EMBEDDING_MODEL", "BAAI/bge-large-en-v1.5"),
@@ -91,14 +92,22 @@ async def get_system_settings():
             "used_gb": round(disk.used / (1024**3), 1),
             "free_gb": round(disk.free / (1024**3), 1),
         },
+        "uploads": {
+            # Surfaced so the CreateSource UI can show the real cap instead of
+            # hardcoding "500 MB". Parsed loosely — any bad env value falls back
+            # to 5000 MB to match the backend's behaviour.
+            "max_mb": max(1, int(os.getenv("UPLOAD_MAX_MB", "5000")) if os.getenv("UPLOAD_MAX_MB", "5000").lstrip("-").isdigit() else 5000),
+        },
     }
 
 
 @router.put("/settings/system")
 async def update_system_settings(settings: dict):
-    """Update runtime LLM settings (model, temperature, top_k, batch_size)."""
-    allowed = {"model", "temperature", "top_k", "batch_size"}
+    """Update runtime LLM settings (model, temperature, top_k, batch_size, use_reranker)."""
+    allowed = {"model", "temperature", "top_k", "batch_size", "use_reranker"}
     filtered = {k: v for k, v in settings.items() if k in allowed}
+    if "use_reranker" in filtered:
+        filtered["use_reranker"] = bool(filtered["use_reranker"])
     if not filtered:
         raise HTTPException(400, "No valid fields to update")
 

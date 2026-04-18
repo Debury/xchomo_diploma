@@ -1,7 +1,7 @@
 """Pydantic request/response models for the Climate ETL Pipeline API."""
 
 from typing import List, Dict, Any, Optional
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 # --- Jobs & Runs ---
@@ -47,7 +47,10 @@ class SourceCreate(BaseModel):
     spatial_bbox: Optional[List[float]] = None
     time_range: Optional[Dict[str, str]] = None
     is_active: bool = True
-    embedding_model: Optional[str] = "all-MiniLM-L6-v2"
+    # Kept for API compatibility, but the ETL pipeline always uses the model
+    # from `config/pipeline_config.yaml` (BAAI/bge-large-en-v1.5, 1024-dim).
+    # Changing this field per-source does NOT change the actual embedder.
+    embedding_model: Optional[str] = "BAAI/bge-large-en-v1.5"
     description: Optional[str] = None
     tags: Optional[List[str]] = None
     auth_method: Optional[str] = None
@@ -186,7 +189,9 @@ class CatalogEntryResponse(BaseModel):
     processing_status: Optional[str] = None
 
 class CatalogProcessRequest(BaseModel):
-    phases: Optional[List[int]] = [0]
+    # `phases` is required so an empty POST body does not accidentally kick off
+    # a background batch (Phase-0 used to be the silent default).
+    phases: List[int] = Field(..., min_length=1)
     source_ids: Optional[List[str]] = None
     dry_run: bool = False
     force_reprocess: bool = False

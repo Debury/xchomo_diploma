@@ -7,6 +7,7 @@ managing data sources, and querying climate data via RAG.
 
 import os
 import logging
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import Depends, FastAPI
@@ -27,7 +28,37 @@ admin.init_runtime_settings(_runtime_settings)
 # APPLICATION SETUP
 # ====================================================================================
 
-app = FastAPI(title="Climate ETL Pipeline API", version="2.0.0")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Startup/shutdown hooks.
+
+    On boot we reconcile any source stuck in 'processing' that was orphaned by
+    a previous container restart or killed Dagster run — otherwise those rows
+    sit indefinitely with no way for the user to retry, which was the single
+    worst demo failure mode identified in the pre-defense audit.
+    """
+    try:
+        from src.sources import get_source_store
+
+        store = get_source_store()
+        if hasattr(store, "reset_orphaned_processing"):
+            # 30 min is well above the longest legitimate ETL run we've
+            # observed; anything older is safely orphaned.
+            reset_ids = store.reset_orphaned_processing(max_age_minutes=30)
+            if reset_ids:
+                logger.warning(
+                    f"Startup: reset {len(reset_ids)} orphaned processing sources."
+                )
+    except Exception as e:
+        # Never block the API boot on a reconciliation failure — log and move on.
+        logger.error(f"Startup reconciliation failed: {e}", exc_info=True)
+
+    yield
+    # no shutdown work
+
+
+app = FastAPI(title="Climate ETL Pipeline API", version="2.0.0", lifespan=lifespan)
 
 # Browsers refuse credentialed requests when the allowed origin is "*", so we
 # only enable allow_credentials when CORS_ORIGINS lists one or more explicit
@@ -44,8 +75,8 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins,
     allow_credentials=_cors_use_credentials,
-    allow_methods=["*"],
-    allow_headers=["*", "Authorization"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "Accept", "Origin", "X-Requested-With"],
 )
 
 # Ensure data directories exist

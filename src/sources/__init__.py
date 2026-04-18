@@ -37,6 +37,18 @@ class ClimateDataSource:
     keywords: Optional[List[str]] = None
     custom_metadata: Optional[Dict[str, str]] = None
 
+    # Portal / auth (needed by dagster_project.source_jobs to route to the
+    # right portal adapter — previously reachable only via app_settings.json).
+    portal: Optional[str] = None
+    auth_method: Optional[str] = None
+
+    # User-supplied taxonomy (hazard/region/sector/spatial). The backend
+    # previously accepted these via the API but dropped them before persistence.
+    hazard_type: Optional[str] = None
+    region_country: Optional[str] = None
+    spatial_coverage: Optional[str] = None
+    impact_sector: Optional[str] = None
+
     # Tracking fields
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
@@ -138,6 +150,32 @@ if not _USE_POSTGRES:
                     logger.info(f"[SourceStore-shelve] Updated {source_id} -> {status}")
                     return True
             return False
+
+        def reset_orphaned_processing(self, max_age_minutes: int = 30):
+            """Startup reconciliation: blanket-reset anything in 'processing'.
+
+            The shelve backend doesn't track updated_at on status transitions,
+            so we can't use age to distinguish live from orphaned. Called only
+            at web-api boot, when no run can legitimately be in flight yet.
+            """
+            reset_ids: List[str] = []
+            with self._get_db() as db:
+                for key in list(db.keys()):
+                    source = db[key]
+                    if getattr(source, "processing_status", None) == "processing":
+                        source.processing_status = "failed"
+                        source.error_message = (
+                            "Processing interrupted (orphaned from a previous run). "
+                            "Click Reprocess to retry."
+                        )
+                        db[key] = source
+                        reset_ids.append(key)
+            if reset_ids:
+                logger.warning(
+                    f"[SourceStore-shelve] Reset {len(reset_ids)} orphaned 'processing' sources: "
+                    f"{reset_ids}"
+                )
+            return reset_ids
 
         def delete_source(self, source_id: str) -> bool:
             with self._get_db() as db:

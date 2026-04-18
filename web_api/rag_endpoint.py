@@ -496,7 +496,12 @@ class RAGRequest(BaseModel):
     question: str
     top_k: int = 5
     use_llm: bool = True
-    use_reranker: bool = True
+    # Cross-encoder reranker (BAAI/bge-reranker-v2-m3) is OFF by default.
+    # It adds 2–4s to each query and the v2 golden-set evaluations show the
+    # no-reranker pipeline already matches or beats it on faithfulness and
+    # answer correctness. Operators who want reranking can flip it per-request
+    # or flip the runtime default in Settings.
+    use_reranker: bool = False
     temperature: float = 0.1
     source_id: Optional[str] = None
     variable: Optional[str] = None

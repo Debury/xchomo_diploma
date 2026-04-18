@@ -439,7 +439,7 @@ def _load_xarray_generic(path: Path, engine: Optional[str] = None, **kwargs) -> 
                             meta[attr_key] = attr_val
                         else:
                             meta[attr_key] = str(attr_val)
-                    except:
+                    except Exception:
                         meta[attr_key] = str(attr_val)
 
                 # Store ALL dataset-level attributes
@@ -451,7 +451,7 @@ def _load_xarray_generic(path: Path, engine: Optional[str] = None, **kwargs) -> 
                             meta[f"dataset_{attr_key}"] = attr_val
                         else:
                             meta[f"dataset_{attr_key}"] = str(attr_val)
-                    except:
+                    except Exception:
                         meta[f"dataset_{attr_key}"] = str(attr_val)
 
                 # Extract ALL coordinate dimensions
@@ -469,7 +469,7 @@ def _load_xarray_generic(path: Path, engine: Optional[str] = None, **kwargs) -> 
                                 meta["time_start"] = str(vals.min())
                                 if len(vals) > 1:
                                     meta["time_end"] = str(vals.max())
-                            except:
+                            except Exception:
                                 try:
                                     numeric_vals = vals[~np.isnan(vals)] if hasattr(vals, '__iter__') else [vals]
                                     if len(numeric_vals) > 0:
@@ -481,7 +481,7 @@ def _load_xarray_generic(path: Path, engine: Optional[str] = None, **kwargs) -> 
                                         elif -180 <= min_val <= 180 and -180 <= max_val <= 180:
                                             meta["lon_min"] = min_val
                                             meta["lon_max"] = max_val
-                                except:
+                                except Exception:
                                     pass
                 return meta
 
@@ -628,7 +628,7 @@ def _load_csv(path: Path, **kwargs) -> Iterator[RasterChunk]:
                         non_numeric_cols.append(col)
                 else:
                     non_numeric_cols.append(col)
-            except:
+            except Exception:
                 # If conversion fails, treat as non-numeric metadata
                 non_numeric_cols.append(col)
         
@@ -650,7 +650,7 @@ def _load_csv(path: Path, **kwargs) -> Iterator[RasterChunk]:
                     has_time_column = True
                     time_col = col
                     break
-            except:
+            except Exception:
                 pass
         
         # BEST PRACTICE: For time-series CSV, create ONE embedding per variable (or variable + station combination)
@@ -738,7 +738,7 @@ def _load_csv(path: Path, **kwargs) -> Iterator[RasterChunk]:
                                             if -90 <= lat_val <= 90:
                                                 meta["lat_min"] = lat_val
                                                 meta["lat_max"] = lat_val
-                                        except:
+                                        except Exception:
                                             pass
                                     elif 'lon' in meta_col_lower:
                                         try:
@@ -746,7 +746,7 @@ def _load_csv(path: Path, **kwargs) -> Iterator[RasterChunk]:
                                             if -180 <= lon_val <= 180:
                                                 meta["lon_min"] = lon_val
                                                 meta["lon_max"] = lon_val
-                                        except:
+                                        except Exception:
                                             pass
                             
                             # Also check numeric columns for spatial info (CRITICAL: use filtered data, not full dataset)
@@ -769,7 +769,7 @@ def _load_csv(path: Path, **kwargs) -> Iterator[RasterChunk]:
                                                 # Multiple stations - use range
                                                 meta["lat_min"] = min_val
                                                 meta["lat_max"] = max_val
-                                    except:
+                                    except Exception:
                                         pass
                                 elif 'lon' in col_lower:
                                     try:
@@ -785,7 +785,7 @@ def _load_csv(path: Path, **kwargs) -> Iterator[RasterChunk]:
                                                 # Multiple stations - use range
                                                 meta["lon_min"] = min_val
                                                 meta["lon_max"] = max_val
-                                    except:
+                                    except Exception:
                                         pass
                             
                             meta["row_count"] = len(df_filtered)
@@ -842,7 +842,7 @@ def _load_csv(path: Path, **kwargs) -> Iterator[RasterChunk]:
                                 elif -180 <= min_val <= 180 and -180 <= max_val <= 180:
                                     meta["lon_min"] = min_val
                                     meta["lon_max"] = max_val
-                        except:
+                        except Exception:
                             pass
                     
                     meta["row_count"] = len(df_full)
@@ -904,7 +904,7 @@ def _load_csv(path: Path, **kwargs) -> Iterator[RasterChunk]:
                                     time_vals = df_chunk[meta_col].dropna()
                                     if len(time_vals) > 1:
                                         meta["time_end"] = str(time_vals.iloc[-1])
-                                except:
+                                except Exception:
                                     # Not a date - store with original column name
                                     if len(meta_values) == 1:
                                         meta[str(meta_col)] = val_str
@@ -938,7 +938,7 @@ def _load_csv(path: Path, **kwargs) -> Iterator[RasterChunk]:
                                     meta[f"{col}_max"] = max_val
                                     if len(col_values) == 1:
                                         meta[col] = min_val
-                        except:
+                        except Exception:
                             pass
                     
                     # Add chunk index
@@ -1013,7 +1013,7 @@ def _load_geotiff(path: Path, **kwargs) -> Iterator[RasterChunk]:
                             meta[f"geotiff_{key}"] = val
                         else:
                             meta[f"geotiff_{key}"] = str(val)
-                    except:
+                    except Exception:
                         meta[f"geotiff_{key}"] = str(val)
                 
                 yield RasterChunk(data=data, metadata=meta)

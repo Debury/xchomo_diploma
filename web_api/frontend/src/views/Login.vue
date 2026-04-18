@@ -16,8 +16,9 @@
         <!-- Form -->
         <form @submit.prevent="handleLogin" class="space-y-4">
           <div>
-            <label class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-2">Username</label>
+            <label for="login-username" class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-2">Username</label>
             <input
+              id="login-username"
               v-model="username"
               type="text"
               required
@@ -28,8 +29,9 @@
           </div>
 
           <div>
-            <label class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-2">Password</label>
+            <label for="login-password" class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-2">Password</label>
             <input
+              id="login-password"
               v-model="password"
               type="password"
               required

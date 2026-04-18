@@ -6,20 +6,28 @@
       </template>
     </PageHeader>
 
-    <!-- Filter Bar -->
-    <div class="card !p-3 mb-4">
-      <div class="flex items-center gap-3 flex-wrap">
-        <span class="text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider">Filters</span>
-        <select v-model="filterSource" class="input-field !w-auto !py-1.5 text-xs">
-          <option value="">All Sources</option>
-          <option v-for="s in availableSources" :key="s" :value="s">{{ s }}</option>
-        </select>
-        <select v-model="filterVariable" class="input-field !w-auto !py-1.5 text-xs">
-          <option value="">All Variables</option>
-          <option v-for="v in availableVariables" :key="v" :value="v">{{ v }}</option>
-        </select>
-        <span v-if="filterSource || filterVariable" class="badge-info">Filtered</span>
-      </div>
+    <!-- Filter Bar — compact, inline, search-driven -->
+    <div class="mb-4 flex items-center gap-2 flex-wrap text-xs">
+      <span class="font-medium text-mendelu-gray-dark uppercase tracking-wider">Filters</span>
+      <input
+        v-model="filterSearch"
+        type="search"
+        placeholder="Search sources &amp; variables…"
+        class="input-field !w-48 !py-1 text-xs"
+      />
+      <select v-model="filterSource" class="input-field !w-40 !py-1 text-xs">
+        <option value="">All sources ({{ filteredSources.length }})</option>
+        <option v-for="s in filteredSources" :key="s" :value="s">{{ s }}</option>
+      </select>
+      <select v-model="filterVariable" class="input-field !w-40 !py-1 text-xs">
+        <option value="">All variables ({{ filteredVariables.length }})</option>
+        <option v-for="v in filteredVariables" :key="v" :value="v">{{ v }}</option>
+      </select>
+      <button
+        v-if="filterSource || filterVariable || filterSearch"
+        @click="clearFilters"
+        class="text-mendelu-green hover:underline ml-1"
+      >Clear</button>
     </div>
 
     <!-- Chat Messages -->
@@ -27,16 +35,34 @@
       <div
         v-for="(msg, idx) in messages"
         :key="idx"
-        class="flex"
+        class="flex items-start gap-3"
         :class="msg.role === 'user' ? 'justify-end' : 'justify-start'"
       >
+        <!-- Assistant avatar (left of bubble) -->
+        <div
+          v-if="msg.role === 'assistant'"
+          class="flex-shrink-0 w-8 h-8 rounded-full bg-mendelu-green/15 border border-mendelu-green/30 flex items-center justify-center"
+          aria-hidden="true"
+          title="ClimateRAG"
+        >
+          <svg class="w-4 h-4 text-mendelu-green" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                  d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+          </svg>
+        </div>
+
         <div
           class="max-w-3xl px-4 py-3 rounded-xl transition-all duration-150"
           :class="msg.role === 'user'
             ? 'bg-mendelu-green/10 text-mendelu-black border border-mendelu-green/20'
             : 'bg-white border-l-2 border-l-mendelu-green border border-mendelu-gray-semi text-mendelu-black shadow-sm'"
         >
-          <div class="whitespace-pre-wrap text-sm">{{ msg.content }}</div>
+          <div
+            v-if="msg.role === 'assistant'"
+            class="chat-markdown text-sm"
+            v-html="renderMarkdown(msg.content)"
+          ></div>
+          <div v-else class="whitespace-pre-wrap text-sm">{{ msg.content }}</div>
 
           <!-- Spatial badge -->
           <div v-if="msg.spatial" class="mt-2">
@@ -83,6 +109,19 @@
             </div>
           </div>
         </div>
+
+        <!-- User avatar (right of bubble) -->
+        <div
+          v-if="msg.role === 'user'"
+          class="flex-shrink-0 w-8 h-8 rounded-full bg-mendelu-gray-light border border-mendelu-gray-semi flex items-center justify-center"
+          aria-hidden="true"
+          title="You"
+        >
+          <svg class="w-4 h-4 text-mendelu-gray-dark" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                  d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+          </svg>
+        </div>
       </div>
 
       <!-- Loading indicator -->
@@ -105,23 +144,25 @@
     </div>
 
     <!-- Input Area -->
-    <div class="card !p-4">
-      <div class="relative">
+    <div class="card !p-3">
+      <div class="flex items-end gap-2">
         <textarea
           v-model="input"
           @keydown.enter.exact.prevent="sendMessage"
           rows="3"
-          class="input-field resize-none pr-16"
+          class="input-field resize-none flex-1"
           placeholder="Ask about your climate data... (Enter to send)"
           :disabled="loading"
         ></textarea>
         <button
           @click="sendMessage"
           :disabled="loading || !input.trim()"
-          class="absolute right-2 bottom-2 btn-primary !py-1.5 !px-3 disabled:opacity-50"
+          class="btn-primary flex items-center justify-center !w-10 !h-10 !p-0 flex-shrink-0 disabled:opacity-50"
+          aria-label="Send message"
+          title="Send (Enter)"
         >
           <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14 5l7 7m0 0l-7 7m7-7H3" />
           </svg>
         </button>
       </div>
@@ -142,9 +183,28 @@
 </template>
 
 <script setup lang="ts">
-import { ref, nextTick, onMounted, onUnmounted } from 'vue'
+import { ref, computed, nextTick, onMounted, onUnmounted } from 'vue'
+import { marked } from 'marked'
+import DOMPurify from 'dompurify'
 import PageHeader from '../components/PageHeader.vue'
 import { apiFetch } from '../api'
+import { useToast } from '../composables/useToast'
+
+// Render assistant answers as Markdown. `marked` parses to HTML, DOMPurify
+// strips any script/event-handler content before we v-html it — the LLM
+// output is not trusted input, so sanitization is mandatory.
+marked.setOptions({ breaks: true, gfm: true })
+function renderMarkdown(text: string): string {
+  if (!text) return ''
+  try {
+    const html = marked.parse(text, { async: false }) as string
+    return DOMPurify.sanitize(html)
+  } catch {
+    return text
+  }
+}
+
+const toast = useToast()
 
 const input = ref('')
 const messages = ref<any[]>([])
@@ -154,9 +214,26 @@ const loadingElapsed = ref(0)
 const messagesContainer = ref(null)
 const filterSource = ref('')
 const filterVariable = ref('')
+const filterSearch = ref('')
 const availableSources = ref<any[]>([])
 const availableVariables = ref<any[]>([])
 let loadingTimer = null
+
+const filteredSources = computed(() => {
+  const q = filterSearch.value.toLowerCase().trim()
+  if (!q) return availableSources.value
+  return availableSources.value.filter((s: any) => String(s).toLowerCase().includes(q))
+})
+const filteredVariables = computed(() => {
+  const q = filterSearch.value.toLowerCase().trim()
+  if (!q) return availableVariables.value
+  return availableVariables.value.filter((v: any) => String(v).toLowerCase().includes(q))
+})
+function clearFilters() {
+  filterSearch.value = ''
+  filterSource.value = ''
+  filterVariable.value = ''
+}
 
 const quickQuestions = [
   'What variables are available?',
@@ -165,16 +242,19 @@ const quickQuestions = [
   'Drought indices for Central Europe'
 ]
 
-onMounted(async () => {
+async function loadRagInfo() {
   try {
     const resp = await apiFetch('/rag/info')
-    if (resp.ok) {
-      const data = await resp.json()
-      availableSources.value = data.sources || []
-      availableVariables.value = data.variables || []
-    }
-  } catch (e) {}
-})
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
+    const data = await resp.json()
+    availableSources.value = data.sources || []
+    availableVariables.value = data.variables || []
+  } catch (e: any) {
+    toast.error(`Could not load source/variable filters: ${e?.message ?? 'network error'}`, loadRagInfo)
+  }
+}
+
+onMounted(loadRagInfo)
 
 onUnmounted(() => {
   if (loadingTimer) {
@@ -274,3 +354,57 @@ async function scrollToBottom() {
   if (messagesContainer.value) messagesContainer.value.scrollTop = messagesContainer.value.scrollHeight
 }
 </script>
+
+<style scoped>
+/* Inline typography for markdown-rendered assistant answers.
+   Tailwind typography plugin isn't installed, so we do the small bits here. */
+.chat-markdown :deep(p) { margin: 0 0 0.5rem 0; }
+.chat-markdown :deep(p:last-child) { margin-bottom: 0; }
+.chat-markdown :deep(strong) { font-weight: 600; color: inherit; }
+.chat-markdown :deep(em) { font-style: italic; }
+.chat-markdown :deep(ul),
+.chat-markdown :deep(ol) { margin: 0.25rem 0 0.5rem 1.25rem; padding: 0; }
+.chat-markdown :deep(li) { margin: 0.125rem 0; }
+.chat-markdown :deep(ul) { list-style: disc; }
+.chat-markdown :deep(ol) { list-style: decimal; }
+.chat-markdown :deep(h1),
+.chat-markdown :deep(h2),
+.chat-markdown :deep(h3) { font-weight: 600; margin: 0.5rem 0 0.25rem 0; }
+.chat-markdown :deep(h1) { font-size: 1.05rem; }
+.chat-markdown :deep(h2) { font-size: 1rem; }
+.chat-markdown :deep(h3) { font-size: 0.95rem; }
+.chat-markdown :deep(code) {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.85em;
+  background: rgba(0, 0, 0, 0.05);
+  padding: 0.05rem 0.3rem;
+  border-radius: 0.25rem;
+}
+.chat-markdown :deep(pre) {
+  background: rgba(0, 0, 0, 0.05);
+  padding: 0.5rem 0.75rem;
+  border-radius: 0.375rem;
+  overflow-x: auto;
+  margin: 0.5rem 0;
+}
+.chat-markdown :deep(pre code) { background: transparent; padding: 0; }
+.chat-markdown :deep(a) { color: #2e6f40; text-decoration: underline; }
+.chat-markdown :deep(blockquote) {
+  border-left: 3px solid rgba(46, 111, 64, 0.4);
+  padding-left: 0.75rem;
+  margin: 0.5rem 0;
+  color: #4a5568;
+}
+.chat-markdown :deep(table) {
+  border-collapse: collapse;
+  margin: 0.5rem 0;
+  font-size: 0.85em;
+}
+.chat-markdown :deep(th),
+.chat-markdown :deep(td) {
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  padding: 0.25rem 0.5rem;
+  text-align: left;
+}
+.chat-markdown :deep(th) { background: rgba(0, 0, 0, 0.04); font-weight: 600; }
+</style>

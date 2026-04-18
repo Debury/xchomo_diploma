@@ -260,6 +260,9 @@ import DonutChart from '../components/DonutChart.vue'
 import ActivityFeed from '../components/ActivityFeed.vue'
 import ServiceHealth from '../components/ServiceHealth.vue'
 import { apiFetch } from '../api'
+import { useToast } from '../composables/useToast'
+
+const toast = useToast()
 
 const themeStore = useThemeStore()
 const isDark = computed(() => themeStore.theme === 'dark')
@@ -285,19 +288,30 @@ const systemStatus = computed(() => {
   return 'experiencing issues'
 })
 
-const datasetsWithData = computed(() => qdrantDatasets.value.filter(d => !d.is_metadata_only && d.chunk_count > 10).length)
-const metadataOnlyCount = computed(() => qdrantDatasets.value.filter(d => d.is_metadata_only || d.chunk_count <= 10).length)
+// Single pass over qdrantDatasets produces all aggregates.
+// Previously each aggregate iterated the array separately — 5x the work on mutation.
+const datasetAggregates = computed(() => {
+  const withData: any[] = []
+  const hazardCounts: Record<string, number> = {}
+  const regionCountsMap: Record<string, number> = {}
+  let metadataOnly = 0
 
-const topDatasets = computed(() => qdrantDatasets.value.filter(d => d.chunk_count > 10).slice(0, 10))
-const maxChunks = computed(() => topDatasets.value[0]?.chunk_count || 1)
-
-const hazardSegments = computed(() => {
-  const counts: Record<string, number> = {}
   for (const ds of qdrantDatasets.value) {
-    const h = ds.hazard_type || 'Unknown'
-    counts[h] = (counts[h] || 0) + 1
+    const isMetadataOnly = ds.is_metadata_only || ds.chunk_count <= 10
+    if (isMetadataOnly) metadataOnly++
+    else withData.push(ds)
+
+    const hazard = ds.hazard_type || 'Unknown'
+    hazardCounts[hazard] = (hazardCounts[hazard] || 0) + 1
+
+    const region = ds.location_name || 'Unknown'
+    regionCountsMap[region] = (regionCountsMap[region] || 0) + 1
   }
-  return Object.entries(counts)
+
+  withData.sort((a, b) => (b.chunk_count || 0) - (a.chunk_count || 0))
+  const topDatasets = withData.slice(0, 10)
+
+  const hazardSegments = Object.entries(hazardCounts)
     .sort((a, b) => b[1] - a[1])
     .slice(0, 10)
     .map(([label, value], i) => ({
@@ -305,50 +319,62 @@ const hazardSegments = computed(() => {
       value,
       color: hazardColors[i % hazardColors.length],
     }))
-})
 
-const regionCounts = computed(() => {
-  const counts: Record<string, number> = {}
-  for (const ds of qdrantDatasets.value) {
-    const r = ds.location_name || 'Unknown'
-    counts[r] = (counts[r] || 0) + 1
-  }
-  return Object.entries(counts)
+  const regionCounts = Object.entries(regionCountsMap)
     .sort((a, b) => b[1] - a[1])
     .map(([name, count]) => ({ name, count }))
+
+  return {
+    datasetsWithData: withData.length,
+    metadataOnlyCount: metadataOnly,
+    topDatasets,
+    maxChunks: topDatasets[0]?.chunk_count || 1,
+    hazardSegments,
+    regionCounts,
+  }
 })
+
+const datasetsWithData = computed(() => datasetAggregates.value.datasetsWithData)
+const metadataOnlyCount = computed(() => datasetAggregates.value.metadataOnlyCount)
+const topDatasets = computed(() => datasetAggregates.value.topDatasets)
+const maxChunks = computed(() => datasetAggregates.value.maxChunks)
+const hazardSegments = computed(() => datasetAggregates.value.hazardSegments)
+const regionCounts = computed(() => datasetAggregates.value.regionCounts)
 
 async function loadStats() {
   try {
     const resp = await apiFetch(`/rag/info?t=${Date.now()}`)
-    if (resp.ok) {
-      stats.value = await resp.json()
-      health.value.qdrant = true
-    }
-  } catch (e) {
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
+    stats.value = await resp.json()
+    health.value.qdrant = true
+  } catch (e: any) {
     health.value.qdrant = false
+    toast.error(`Failed to load RAG stats: ${e?.message ?? 'network error'}`, loadStats)
   }
 }
 
 async function checkHealth() {
   try {
     const resp = await apiFetch(`/health?t=${Date.now()}`)
-    if (resp.ok) {
-      const data = await resp.json()
-      health.value.dagster = data.dagster_available
-      health.value.llmOnline = data.status === 'healthy'
-    }
-  } catch (e) {
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
+    const data = await resp.json()
+    health.value.dagster = data.dagster_available
+    health.value.llmOnline = data.status === 'healthy'
+  } catch (e: any) {
     health.value.dagster = false
     health.value.llmOnline = false
+    toast.error(`Health check failed: ${e?.message ?? 'network error'}`, checkHealth)
   }
 }
 
 async function loadQdrantDatasets() {
   try {
     const resp = await apiFetch('/qdrant/datasets')
-    if (resp.ok) qdrantDatasets.value = await resp.json()
-  } catch (e) {}
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
+    qdrantDatasets.value = await resp.json()
+  } catch (e: any) {
+    toast.error(`Failed to load datasets: ${e?.message ?? 'network error'}`, loadQdrantDatasets)
+  }
 }
 
 async function refreshAll() {

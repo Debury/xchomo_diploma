@@ -42,7 +42,14 @@ def process_single_source_op(context: OpExecutionContext) -> Dict[str, Any]:
         logger.error("No source_id in run tags")
         return {"status": "error", "message": "No source_id provided"}
 
-    logger.info(f"Single source ETL: {source_id}")
+    # Propagate the Dagster run id to downstream helpers (portal adapters,
+    # chunk assembly) so every payload we write is tagged and can be atomically
+    # swept after a successful re-ingest.
+    from src.utils.ingestion_context import set_ingestion_run_id
+    ingestion_run_id = context.run_id
+    set_ingestion_run_id(ingestion_run_id)
+
+    logger.info(f"Single source ETL: {source_id} (run_id={ingestion_run_id})")
 
     # Load source
     from src.sources import get_source_store
@@ -141,66 +148,97 @@ def process_single_source_op(context: OpExecutionContext) -> Dict[str, Any]:
                     local_path = PROJECT_ROOT / source.url.lstrip('/')
                 tmp_path = str(local_path)
             elif portal and portal.upper() in ("CDS", "NASA", "MARINE", "ESGF"):
-                # Use portal adapter — it handles download + embed + upsert
+                # Use portal adapter — it handles download + embed + upsert.
+                # Adapter tags every chunk's payload with ingestion_run_id via
+                # the ingestion_context ContextVar (see _process_file).
                 _process_via_portal(
                     portal=portal.upper(),
                     source=source,
                     logger=logger,
                 )
-                # Portal adapters handle their own embedding — skip raster pipeline
+                # Verify the adapter actually wrote chunks for this run. Portal
+                # adapters may return success even after partial/silent failures
+                # (e.g. token refresh errors caught internally). Counting points
+                # tagged with THIS run_id is the authoritative signal.
+                portal_chunks = db.count_by_source(source_id, ingestion_run_id=ingestion_run_id)
+                if portal_chunks == 0:
+                    raise RuntimeError(
+                        f"{portal} adapter reported success but wrote 0 chunks for "
+                        f"{source_id} (run_id={ingestion_run_id}). Treating as failure."
+                    )
+
+                # Atomic versioned swap: new chunks are live, remove previous-run leftovers.
+                try:
+                    swept = db.delete_by_source(source_id, exclude_run_id=ingestion_run_id)
+                    if swept and swept > 0:
+                        logger.info(f"Swept {swept} stale chunks for {source_id}")
+                except Exception as sweep_err:
+                    # Sweep failure is non-fatal — new data is already live. Log loudly.
+                    logger.error(f"Post-ingest sweep failed for {source_id}: {sweep_err}")
+
                 duration = time.time() - start_time
                 store.update_processing_status(source_id, "completed")
                 if run_record_id:
                     try:
                         pg_store.complete_processing_run(
-                            run_id=run_record_id, status="completed", chunks_processed=0,
+                            run_id=run_record_id, status="completed", chunks_processed=portal_chunks,
                         )
                     except Exception:
                         pass
-                logger.info(f"Completed {source_id} via {portal} adapter in {duration:.1f}s")
+                logger.info(
+                    f"Completed {source_id} via {portal} adapter in {duration:.1f}s "
+                    f"({portal_chunks} chunks)"
+                )
                 return {
                     "status": "completed",
                     "source_id": source_id,
                     "portal": portal,
+                    "chunks": portal_chunks,
                     "duration": round(duration, 1),
                 }
             else:
-                # Direct HTTP download with auth support
+                # Direct HTTP download with auth support. Wrap the session in
+                # try/finally so a failed download doesn't leak sockets — under
+                # repeated user add-then-fail cycles the pool would otherwise
+                # exhaust file descriptors.
                 http_session = requests.Session()
-                _retry = Urllib3Retry(
-                    total=3, backoff_factor=2,
-                    status_forcelist=[502, 503, 504],
-                    allowed_methods=["GET"], raise_on_status=False,
-                )
-                http_session.mount("https://", HTTPAdapter(max_retries=_retry))
-                http_session.mount("http://", HTTPAdapter(max_retries=_retry))
-                http_session.headers["User-Agent"] = "ClimateRAG/1.0"
-
-                # Apply auth credentials
-                auth_method = source_creds.get("auth_method") or getattr(source, "auth_method", None)
-                creds = source_creds.get("credentials", {})
-                if auth_method == "api_key" and creds.get("api_key"):
-                    http_session.headers["X-API-Key"] = creds["api_key"]
-                elif auth_method == "bearer_token" and creds.get("token"):
-                    http_session.headers["Authorization"] = f"Bearer {creds['token']}"
-                elif auth_method == "basic" and creds.get("username"):
-                    http_session.auth = (creds["username"], creds.get("password", ""))
-
-                logger.info(f"Downloading {source.url}" + (f" (auth: {auth_method})" if auth_method else ""))
                 try:
-                    resp = http_session.get(source.url, stream=True, timeout=(30, 600))
-                    resp.raise_for_status()
-                except requests.exceptions.SSLError:
-                    resp = http_session.get(source.url, stream=True, timeout=(30, 600), verify=False)
-                    resp.raise_for_status()
+                    _retry = Urllib3Retry(
+                        total=3, backoff_factor=2,
+                        status_forcelist=[502, 503, 504],
+                        allowed_methods=["GET"], raise_on_status=False,
+                    )
+                    http_session.mount("https://", HTTPAdapter(max_retries=_retry))
+                    http_session.mount("http://", HTTPAdapter(max_retries=_retry))
+                    http_session.headers["User-Agent"] = "ClimateRAG/1.0"
 
-                with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
-                    for chunk in resp.iter_content(chunk_size=65536):
-                        tmp.write(chunk)
-                    tmp_path = tmp.name
-                is_downloaded = True
+                    # Apply auth credentials
+                    auth_method = source_creds.get("auth_method") or getattr(source, "auth_method", None)
+                    creds = source_creds.get("credentials", {})
+                    if auth_method == "api_key" and creds.get("api_key"):
+                        http_session.headers["X-API-Key"] = creds["api_key"]
+                    elif auth_method == "bearer_token" and creds.get("token"):
+                        http_session.headers["Authorization"] = f"Bearer {creds['token']}"
+                    elif auth_method == "basic" and creds.get("username"):
+                        http_session.auth = (creds["username"], creds.get("password", ""))
 
-                logger.info(f"Downloaded to {tmp_path}")
+                    logger.info(f"Downloading {source.url}" + (f" (auth: {auth_method})" if auth_method else ""))
+                    try:
+                        resp = http_session.get(source.url, stream=True, timeout=(30, 600))
+                        resp.raise_for_status()
+                    except requests.exceptions.SSLError:
+                        resp = http_session.get(source.url, stream=True, timeout=(30, 600), verify=False)
+                        resp.raise_for_status()
+
+                    with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
+                        for chunk in resp.iter_content(chunk_size=65536):
+                            tmp.write(chunk)
+                        tmp_path = tmp.name
+                    is_downloaded = True
+
+                    logger.info(f"Downloaded to {tmp_path}")
+                finally:
+                    http_session.close()
 
             # Load raster
             logger.info("Loading raster data...")
@@ -253,6 +291,10 @@ def process_single_source_op(context: OpExecutionContext) -> Dict[str, Any]:
                 )
                 meta_dict = meta.to_dict()
 
+                # Tag every chunk with the Dagster run id so we can atomically
+                # sweep previous-run leftovers after this run succeeds.
+                meta_dict["ingestion_run_id"] = ingestion_run_id
+
                 # Inject user-provided keywords and custom metadata
                 src_keywords = getattr(source, "keywords", None)
                 src_custom = getattr(source, "custom_metadata", None)
@@ -278,6 +320,18 @@ def process_single_source_op(context: OpExecutionContext) -> Dict[str, Any]:
 
             if total_chunks == 0:
                 raise ValueError("No data chunks produced")
+
+            # Atomic versioned swap: new chunks are live and tagged with this
+            # run's ingestion_run_id. Remove any leftovers from previous runs of
+            # the same source (covers Reprocess and scheduled refresh; no-op on
+            # first ingest). Failures here are non-fatal — new data is already
+            # live — but we log them loudly.
+            try:
+                swept = db.delete_by_source(source_id, exclude_run_id=ingestion_run_id)
+                if swept and swept > 0:
+                    logger.info(f"Swept {swept} stale chunks for {source_id}")
+            except Exception as sweep_err:
+                logger.error(f"Post-ingest sweep failed for {source_id}: {sweep_err}")
 
             duration = time.time() - start_time
             store.update_processing_status(source_id, "completed")

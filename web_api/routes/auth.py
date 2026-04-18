@@ -4,7 +4,8 @@ import hmac
 import logging
 import os
 import secrets
-from typing import Dict, Optional
+import time
+from typing import Dict, Optional, Tuple
 
 from fastapi import APIRouter, Header, HTTPException, status
 
@@ -14,10 +15,16 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
-# Simple in-process token storage. Production deployments should swap this for
-# Redis or the dagster-postgres `climate_app` database, but for a single-node
-# thesis install it is sufficient. Tokens are invalidated on server restart.
-_valid_tokens: Dict[str, str] = {}
+# Tokens expire 24h after issue by default. A 24h window is comfortable for a
+# demo-style deployment — the examiner won't have to re-log-in mid-defense — but
+# short enough that a stolen localStorage token becomes useless within a day.
+_TOKEN_TTL_SECONDS = int(os.getenv("AUTH_TOKEN_TTL_SECONDS", "86400"))
+
+# Simple in-process token storage: token -> (username, expires_at_epoch).
+# Production deployments should swap this for Redis or the dagster-postgres
+# `climate_app` database, but for a single-node thesis install it is sufficient.
+# Tokens are invalidated on server restart.
+_valid_tokens: Dict[str, Tuple[str, float]] = {}
 
 
 def _extract_bearer_token(authorization: Optional[str]) -> Optional[str]:
@@ -27,6 +34,14 @@ def _extract_bearer_token(authorization: Optional[str]) -> Optional[str]:
     if not authorization.lower().startswith("bearer "):
         return None
     return authorization.split(" ", 1)[1].strip() or None
+
+
+def _prune_expired() -> None:
+    """Drop tokens whose expires_at has passed. Cheap — _valid_tokens is tiny."""
+    now = time.time()
+    expired = [tok for tok, (_user, exp) in _valid_tokens.items() if exp <= now]
+    for tok in expired:
+        _valid_tokens.pop(tok, None)
 
 
 def require_auth(authorization: Optional[str] = Header(None)) -> str:
@@ -44,6 +59,8 @@ def require_auth(authorization: Optional[str] = Header(None)) -> str:
     if not os.getenv("AUTH_PASSWORD", ""):
         return "anonymous"
 
+    _prune_expired()
+
     token = _extract_bearer_token(authorization)
     if not token or token not in _valid_tokens:
         raise HTTPException(
@@ -51,7 +68,8 @@ def require_auth(authorization: Optional[str] = Header(None)) -> str:
             detail="Authentication required",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    return _valid_tokens[token]
+    username, _expires_at = _valid_tokens[token]
+    return username
 
 
 @router.post("/login", response_model=AuthResponse)
@@ -75,8 +93,9 @@ async def auth_login(request: AuthRequest):
             detail="Invalid username or password",
         )
 
+    _prune_expired()
     token = secrets.token_urlsafe(32)
-    _valid_tokens[token] = request.username
+    _valid_tokens[token] = (request.username, time.time() + _TOKEN_TTL_SECONDS)
     return AuthResponse(
         success=True,
         token=token,
@@ -100,7 +119,9 @@ async def auth_logout(authorization: Optional[str] = Header(None)):
 @router.get("/verify")
 async def auth_verify(authorization: Optional[str] = Header(None)):
     """Verify a token received via the `Authorization: Bearer <token>` header."""
+    _prune_expired()
     token = _extract_bearer_token(authorization)
     if token and token in _valid_tokens:
-        return {"valid": True, "username": _valid_tokens[token]}
+        username, _expires_at = _valid_tokens[token]
+        return {"valid": True, "username": username}
     return {"valid": False}

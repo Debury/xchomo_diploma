@@ -284,6 +284,64 @@ class VectorDatabase:
 
         logger.info(f"Upserted {len(points)} points in {(len(points) - 1) // BATCH_SIZE + 1} batches")
 
+    def count_by_source(self, source_id: str, ingestion_run_id: Optional[str] = None) -> int:
+        """Count points for a source, optionally narrowed to one ingestion_run_id."""
+        if not self.client:
+            return 0
+        from qdrant_client import models as qm
+
+        must = [qm.FieldCondition(key="source_id", match=qm.MatchValue(value=source_id))]
+        if ingestion_run_id is not None:
+            must.append(qm.FieldCondition(
+                key="ingestion_run_id",
+                match=qm.MatchValue(value=ingestion_run_id),
+            ))
+        flt = qm.Filter(must=must)
+        try:
+            return self.client.count(collection_name=self.collection, count_filter=flt, exact=True).count
+        except Exception as e:
+            logger.warning(f"count_by_source({source_id}) failed: {e}")
+            return 0
+
+    def delete_by_source(self, source_id: str, exclude_run_id: Optional[str] = None) -> int:
+        """Delete points for a source.
+
+        If exclude_run_id is given, points tagged with that ingestion_run_id are
+        preserved — used for atomic versioned swap: new chunks are written first
+        with the new run id, then this deletes everything else for the source.
+        Returns the number of points deleted (approximate, based on pre-count).
+        """
+        if not self.client:
+            return 0
+        from qdrant_client import models as qm
+
+        must = [qm.FieldCondition(key="source_id", match=qm.MatchValue(value=source_id))]
+        must_not = []
+        if exclude_run_id is not None:
+            must_not.append(qm.FieldCondition(
+                key="ingestion_run_id",
+                match=qm.MatchValue(value=exclude_run_id),
+            ))
+
+        flt = qm.Filter(must=must, must_not=must_not if must_not else None)
+
+        # Count first so we can return a meaningful stat
+        try:
+            pre_count = self.client.count(collection_name=self.collection, count_filter=flt, exact=True).count
+        except Exception:
+            pre_count = -1
+
+        try:
+            self.client.delete(collection_name=self.collection, points_selector=flt)
+        except Exception as e:
+            logger.error(f"delete_by_source({source_id}, exclude={exclude_run_id}) failed: {e}")
+            raise
+        logger.info(
+            f"Swept {pre_count if pre_count >= 0 else '?'} points for source={source_id} "
+            f"(excluded run_id={exclude_run_id})"
+        )
+        return pre_count
+
     def search(
         self,
         query_vector: List[float],
