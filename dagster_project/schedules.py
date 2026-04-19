@@ -31,8 +31,8 @@ logger = logging.getLogger(__name__)
 @sensor(
     job_name="single_source_etl_job",
     default_status=DefaultSensorStatus.RUNNING,
-    description="Polls source_schedules table every 60s, triggers ETL for due sources",
-    minimum_interval_seconds=60,
+    description="Polls source_schedules table every 30s, triggers ETL for due sources",
+    minimum_interval_seconds=30,
 )
 def source_schedule_sensor(context: SensorEvaluationContext):
     """Check for sources due for scheduled processing (per-source schedules only).
@@ -44,39 +44,56 @@ def source_schedule_sensor(context: SensorEvaluationContext):
     """
     try:
         from src.database.source_store import SourceStore
+        from src.database.connection import acquire_source_lock
         store = SourceStore()
         triggered = 0
+        skipped_locked = 0
 
         due_schedules = store.get_due_schedules()
         for sched in due_schedules:
             source_id = sched["source_id"]
-            next_run_at = sched.get("next_run_at")
-            slot_key = (
-                next_run_at.strftime("%Y%m%dT%H%M%S")
-                if hasattr(next_run_at, "strftime")
-                else datetime.utcnow().strftime("%Y%m%dT%H%M%S")
-            )
-            context.log.info(f"Triggering scheduled ETL for source {source_id} @ {slot_key}")
-            yield RunRequest(
-                run_key=f"schedule_{source_id}_{slot_key}",
-                tags={
-                    "source_id": source_id,
-                    "trigger_type": "schedule",
-                    "cron": sched.get("cron_expression", ""),
-                    "scheduled_for": slot_key,
-                },
-            )
-            try:
-                store.advance_schedule(source_id)
-            except Exception as advance_err:
-                # If the advance fails, Dagster's run-key dedup still prevents a
-                # duplicate run on the next sensor tick as long as the slot_key
-                # is stable (next_run_at hasn't been bumped yet).
-                context.log.error(f"advance_schedule({source_id}) failed: {advance_err}")
-            triggered += 1
+            # Advisory lock is shared with the FastAPI /trigger path. If the
+            # API is mid-launch for this source we skip this tick and retry
+            # in 30 s, rather than both paths racing to persist a RunRequest.
+            with acquire_source_lock(source_id) as acquired:
+                if not acquired:
+                    context.log.info(
+                        f"Skipping scheduled ETL for {source_id}: lock held by another path"
+                    )
+                    skipped_locked += 1
+                    continue
 
-        if triggered == 0:
+                next_run_at = sched.get("next_run_at")
+                slot_key = (
+                    next_run_at.strftime("%Y%m%dT%H%M%S")
+                    if hasattr(next_run_at, "strftime")
+                    else datetime.utcnow().strftime("%Y%m%dT%H%M%S")
+                )
+                context.log.info(f"Triggering scheduled ETL for source {source_id} @ {slot_key}")
+                yield RunRequest(
+                    run_key=f"schedule_{source_id}_{slot_key}",
+                    tags={
+                        "source_id": source_id,
+                        "trigger_type": "schedule",
+                        "cron": sched.get("cron_expression", ""),
+                        "scheduled_for": slot_key,
+                    },
+                )
+                try:
+                    store.advance_schedule(source_id)
+                except Exception as advance_err:
+                    # If the advance fails, Dagster's run-key dedup still
+                    # prevents a duplicate run on the next sensor tick as long
+                    # as slot_key is stable (next_run_at hasn't been bumped).
+                    context.log.error(f"advance_schedule({source_id}) failed: {advance_err}")
+                triggered += 1
+
+        if triggered == 0 and skipped_locked == 0:
             return SkipReason("No sources due for scheduled processing")
+        if triggered == 0:
+            return SkipReason(
+                f"All {skipped_locked} due source(s) locked by another path; will retry next tick"
+            )
 
     except ImportError:
         return SkipReason("PostgreSQL store not available")

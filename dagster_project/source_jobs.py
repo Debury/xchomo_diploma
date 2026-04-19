@@ -107,7 +107,13 @@ def process_single_source_op(context: OpExecutionContext) -> Dict[str, Any]:
         embedder = TextEmbedder()
         db = VectorDatabase(config=config)
 
-        # Load per-source credentials from app_settings.json
+        # Inject persisted global credentials (CDS / NASA / CMEMS / OpenRouter)
+        # so a UI rotation is picked up without restarting the Dagster containers.
+        from src.utils.persisted_creds import load_persisted_credentials_into_env
+        load_persisted_credentials_into_env()
+
+        # Load per-source credentials stored under source_credentials in the
+        # same JSON file — these are not global env vars.
         _settings_path = PROJECT_ROOT / "data" / "app_settings.json"
         source_creds = {}
         portal = getattr(source, "portal", None)
@@ -116,17 +122,6 @@ def process_single_source_op(context: OpExecutionContext) -> Dict[str, Any]:
             try:
                 _app_settings = _json.loads(_settings_path.read_text())
                 source_creds = _app_settings.get("source_credentials", {}).get(source_id, {})
-                # Also inject global portal credentials into env
-                for key, env_var in {
-                    "cds_api_key": "CDS_API_KEY",
-                    "nasa_earthdata_user": "NASA_EARTHDATA_USER",
-                    "nasa_earthdata_password": "NASA_EARTHDATA_PASSWORD",
-                    "cmems_username": "CMEMS_USERNAME",
-                    "cmems_password": "CMEMS_PASSWORD",
-                }.items():
-                    val = _app_settings.get("credentials", {}).get(key) or _app_settings.get(key)
-                    if val and not os.environ.get(env_var):
-                        os.environ[env_var] = val
             except Exception:
                 pass
 

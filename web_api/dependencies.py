@@ -35,6 +35,40 @@ async def execute_graphql_query(query: str, variables: Optional[Dict] = None) ->
             raise HTTPException(status_code=503, detail="Dagster unavailable")
 
 
+async def get_active_runs_for_source(source_id: str) -> List[Dict[str, Any]]:
+    """Return currently-active Dagster runs tagged with ``source_id=<source_id>``.
+
+    "Active" means not yet terminal — STARTED / STARTING / QUEUED. Used by
+    ``trigger_source_etl`` to refuse a second concurrent run for the same source
+    (prevents the "two clicks on Reprocess → race on the same Qdrant source_id"
+    bug). Returns ``[]`` on GraphQL error so the caller can fall through rather
+    than 503 on a transient Dagster hiccup.
+    """
+    query = """
+    query ActiveSourceRuns($tagValue: String!) {
+        runsOrError(
+            filter: {
+                statuses: [STARTED, STARTING, QUEUED]
+                tags: [{ key: "source_id", value: $tagValue }]
+            }
+            limit: 5
+        ) {
+            __typename
+            ... on Runs { results { runId status jobName } }
+            ... on PythonError { message }
+        }
+    }
+    """
+    try:
+        data = await execute_graphql_query(query, {"tagValue": source_id})
+    except HTTPException:
+        return []
+    runs_or_error = data.get("runsOrError") or {}
+    if runs_or_error.get("__typename") != "Runs":
+        return []
+    return runs_or_error.get("results") or []
+
+
 async def launch_dagster_run(job_name: str, run_config: Dict, tags: Dict = None):
     """Launch a Dagster job run via GraphQL."""
     repo_data = await execute_graphql_query("""

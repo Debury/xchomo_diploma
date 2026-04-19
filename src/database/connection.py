@@ -4,13 +4,16 @@ Database connection and session management for the climate_app database.
 Uses SQLAlchemy with PostgreSQL connection pooling.
 """
 
+import logging
 import os
 from contextlib import contextmanager
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker, Session
 
 from src.database.models import Base
+
+logger = logging.getLogger(__name__)
 
 # Database URL: uses the same PostgreSQL container as Dagster, different database
 DATABASE_URL = os.getenv(
@@ -71,6 +74,57 @@ def get_db_session() -> Session:
         raise
     finally:
         session.close()
+
+
+def _source_lock_key(source_id: str) -> int:
+    """Stable 64-bit signed int for ``pg_try_advisory_lock(bigint)``.
+
+    blake2b is collision-resistant; over a 64-bit space the birthday bound is
+    ~2³² (~4 B) distinct source_ids before a single expected collision — so
+    for this project the risk is effectively zero.
+    """
+    import hashlib
+
+    digest = hashlib.blake2b(source_id.encode("utf-8"), digest_size=8).digest()
+    return int.from_bytes(digest, "big", signed=True)
+
+
+@contextmanager
+def acquire_source_lock(source_id: str):
+    """Postgres session-level advisory lock keyed on a 64-bit hash of ``source_id``.
+
+    Both the FastAPI trigger path (web-api container) and the Dagster sensor
+    (dagster-daemon container) share the same ``climate_app`` database, so a
+    lock taken here is mutually exclusive across containers — closes the
+    API-vs-sensor race that otherwise allowed two runs to launch for the same
+    ``source_id`` before either appeared in Dagster's active-run list.
+
+    Non-blocking: yields ``True`` if acquired, ``False`` if another caller
+    already holds it. Release happens on context exit (or implicitly when the
+    connection closes, since the lock is session-scoped).
+    """
+    key = _source_lock_key(source_id)
+    engine = get_engine()
+    conn = engine.connect()
+    acquired = False
+    try:
+        acquired = bool(
+            conn.execute(
+                text("SELECT pg_try_advisory_lock(:key)"),
+                {"key": key},
+            ).scalar()
+        )
+        yield acquired
+    finally:
+        if acquired:
+            try:
+                conn.execute(
+                    text("SELECT pg_advisory_unlock(:key)"),
+                    {"key": key},
+                )
+            except Exception as unlock_err:
+                logger.warning(f"pg_advisory_unlock failed for {source_id}: {unlock_err}")
+        conn.close()
 
 
 def init_db():

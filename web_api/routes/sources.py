@@ -12,7 +12,13 @@ from fastapi import APIRouter, File, HTTPException, UploadFile
 
 from web_api.models import SourceCreate, SourceResponse, SourceScheduleRequest, RunResponse
 from web_api.config import load_settings, save_settings
-from web_api.dependencies import launch_dagster_run, get_qdrant_client, get_collection_name, clear_rag_cache
+from web_api.dependencies import (
+    launch_dagster_run,
+    get_qdrant_client,
+    get_collection_name,
+    clear_rag_cache,
+    get_active_runs_for_source,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -457,8 +463,16 @@ async def update_source_metadata(source_id: str, updates: dict):
 
 @router.post("/{source_id}/trigger", response_model=RunResponse)
 async def trigger_source_etl(source_id: str, job_name: str = "dynamic_source_etl_job"):
-    """Trigger ETL job for a specific source."""
+    """Trigger ETL job for a specific source.
+
+    Refuses with 409 if a run tagged ``source_id=<source_id>`` is already
+    STARTED/STARTING/QUEUED, so a double-click on "Reprocess" doesn't spawn two
+    concurrent runs writing to the same Qdrant ``source_id``. A Postgres
+    advisory lock further closes the TOCTOU window between this API path and
+    the ``source_schedule_sensor`` in the dagster-daemon container.
+    """
     from src.sources import get_source_store
+    from src.database.connection import acquire_source_lock
 
     store = get_source_store()
     source = store.get_source(source_id)
@@ -466,8 +480,26 @@ async def trigger_source_etl(source_id: str, job_name: str = "dynamic_source_etl
     if not source:
         raise HTTPException(404, "Source not found")
 
-    run = await launch_dagster_run(job_name, {}, tags={"source_id": source_id})
-    store.update_processing_status(source_id, "processing")
+    with acquire_source_lock(source_id) as acquired:
+        if not acquired:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Another trigger for source {source_id} is in flight. Retry shortly.",
+            )
+
+        active = await get_active_runs_for_source(source_id)
+        if active:
+            existing = active[0]
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Source {source_id} already has an active run "
+                    f"({existing.get('runId')}, status={existing.get('status')})."
+                ),
+            )
+
+        run = await launch_dagster_run(job_name, {}, tags={"source_id": source_id})
+        store.update_processing_status(source_id, "processing")
 
     return RunResponse(
         run_id=run["runId"], job_name=run["jobName"], status=run["status"], message="Job triggered"
