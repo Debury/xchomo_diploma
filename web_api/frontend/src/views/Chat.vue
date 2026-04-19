@@ -312,14 +312,26 @@ async function sendMessage() {
     } else if (data.error) {
       messages.value.push({ role: 'assistant', content: `Error: ${data.error}` })
     } else {
-      const chunks = (data.contexts || data.results || []).map(c => ({
-        score: c.score || 0,
-        dataset: c.dataset_name || c.source || '',
-        variable: c.variable || '',
-        coordinates: c.lat !== undefined ? `${c.lat?.toFixed(1)}\u00b0N, ${c.lon?.toFixed(1)}\u00b0E` : '',
-        time_range: c.time_range || '',
-        text: c.text || c.content || ''
-      }))
+      // /rag/chat response shape: `chunks` with {source_id, variable,
+      // similarity, text, metadata}. /rag/query returns `chunks` with
+      // {score, metadata}. Support both. (contexts/results were never emitted
+      // by the backend — the old code path always produced an empty list.)
+      const rawChunks = data.chunks || data.contexts || data.results || []
+      const chunks = rawChunks.map((c: any) => {
+        const meta = c.metadata || {}
+        const lat = c.lat ?? meta.lat
+        const lon = c.lon ?? meta.lon
+        return {
+          score: c.similarity ?? c.score ?? 0,
+          dataset: c.dataset_name || meta.dataset_name || c.source_id || c.source || '',
+          variable: c.variable || meta.variable || '',
+          coordinates: (lat !== undefined && lon !== undefined)
+            ? `${Number(lat).toFixed(1)}\u00b0N, ${Number(lon).toFixed(1)}\u00b0E`
+            : '',
+          time_range: c.time_range || meta.time_range || '',
+          text: c.text || c.content || '',
+        }
+      })
 
       const spatial = data.spatial_filter
         ? `Filtered: ${data.spatial_filter.description || `${data.spatial_filter.lat_min}-${data.spatial_filter.lat_max}\u00b0N`}`

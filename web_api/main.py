@@ -14,7 +14,7 @@ from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from web_api.config import restore_settings_to_env
-from web_api.routes import health, auth, frontend, embeddings, sources, rag, catalog, schedules, admin, qdrant_datasets
+from web_api.routes import health, auth, frontend, embeddings, sources, rag, catalog, schedules, admin, qdrant_datasets, adapters
 
 logger = logging.getLogger(__name__)
 
@@ -107,6 +107,7 @@ app.include_router(rag.router, dependencies=_protected)
 app.include_router(catalog.router, dependencies=_protected)
 app.include_router(schedules.router, dependencies=_protected)
 app.include_router(admin.router, dependencies=_protected)
+app.include_router(adapters.router, dependencies=_protected)
 app.include_router(qdrant_datasets.router, dependencies=_protected)
 
 

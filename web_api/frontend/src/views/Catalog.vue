@@ -250,8 +250,10 @@ import PageHeader from '../components/PageHeader.vue'
 import Modal from '../components/Modal.vue'
 import { apiFetch } from '../api'
 import { useConfirm } from '../composables/useConfirm'
+import { useToast } from '../composables/useToast'
 
 const { confirm } = useConfirm()
+const toast = useToast()
 
 const catalog = ref<any[]>([])
 const qdrantDatasets = ref<any[]>([])

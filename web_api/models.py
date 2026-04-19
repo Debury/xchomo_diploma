@@ -202,6 +202,9 @@ class CatalogProgressResponse(BaseModel):
     failed: int = 0
     skipped: int = 0
     pending: int = 0
+    # Sources that completed Phase 0 (metadata embedding) but no data phase.
+    # Previously dropped by the response_model — UI stat-card always read 0.
+    metadata_only: int = 0
     current_phase: Optional[int] = None
     current_source: Optional[str] = None
     started_at: Optional[str] = None
@@ -209,6 +212,10 @@ class CatalogProgressResponse(BaseModel):
     thread_alive: bool = False
     thread_crashed: bool = False
     thread_error: Optional[str] = None
+    # Per-phase breakdown: { "0": {completed, failed, total}, "1": {...}, ... }
+    # Populated by BatchProgress.get_summary; ETL Monitor renders the per-phase
+    # cards only while a batch is actually running.
+    phases: dict = {}
 
 
 # --- Schedules ---

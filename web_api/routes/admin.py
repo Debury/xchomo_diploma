@@ -124,6 +124,18 @@ async def update_system_settings(settings: dict):
 # --- Credentials ---
 
 
+def _all_credential_keys() -> dict:
+    """Built-in CREDENTIAL_KEYS plus any fields registered via the custom
+    adapter registry. Merged fresh on each call so a custom adapter added
+    through `POST /settings/adapters` is immediately usable here without
+    a restart."""
+    from web_api.routes.adapters import custom_adapter_credential_keys
+
+    merged = dict(CREDENTIAL_KEYS)
+    merged.update(custom_adapter_credential_keys())
+    return merged
+
+
 @router.get("/settings/credentials")
 async def get_credentials():
     """Get all portal credentials with masked values."""
@@ -134,7 +146,7 @@ async def get_credentials():
     PLACEHOLDER_TOKENS = ("your-", "CHANGE_ME", "REPLACE_ME", "xxx", "<", "TODO")
 
     result = {}
-    for cred_key, env_var in CREDENTIAL_KEYS.items():
+    for cred_key, env_var in _all_credential_keys().items():
         value = stored_creds.get(cred_key, "") or os.getenv(env_var, "")
         if value and not any(p.lower() in value.lower() for p in PLACEHOLDER_TOKENS):
             if len(value) > 10:
@@ -150,11 +162,12 @@ async def get_credentials():
 @router.get("/settings/credentials/{key}")
 async def get_credential_value(key: str):
     """Get the full (unmasked) value of a single credential."""
-    if key not in CREDENTIAL_KEYS:
+    keys = _all_credential_keys()
+    if key not in keys:
         raise HTTPException(404, f"Unknown credential key: {key}")
     persisted = load_settings()
     stored_creds = persisted.get("credentials", {})
-    value = stored_creds.get(key, "") or os.getenv(CREDENTIAL_KEYS[key], "")
+    value = stored_creds.get(key, "") or os.getenv(keys[key], "")
     if not value:
         raise HTTPException(404, f"Credential {key} is not configured")
     return {"key": key, "value": value}
@@ -165,13 +178,14 @@ async def update_credentials(credentials: dict):
     """Update portal credentials. Saves to disk and updates os.environ."""
     persisted = load_settings()
     stored_creds = persisted.get("credentials", {})
+    keys = _all_credential_keys()
 
     updated_keys = []
     for key, value in credentials.items():
-        if key not in CREDENTIAL_KEYS:
+        if key not in keys:
             continue
         stored_creds[key] = value
-        env_var = CREDENTIAL_KEYS[key]
+        env_var = keys[key]
         if value:
             os.environ[env_var] = value
         elif env_var in os.environ:

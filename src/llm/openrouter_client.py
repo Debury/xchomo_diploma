@@ -21,16 +21,9 @@ class OpenRouterClient(BaseLLMClient):
         self.site_url = os.getenv("OPENROUTER_SITE_URL", "")
         self.site_name = os.getenv("OPENROUTER_SITE_NAME", "Climate RAG")
         
-        # Model options (in order of recommendation for RAG):
-        # Free/cheap models:
-        # - meta-llama/llama-3.1-8b-instruct:free (FREE, good quality)
-        # - google/gemma-2-9b-it:free (FREE, good for structured data)
-        # - mistralai/mistral-7b-instruct:free (FREE, fast)
-        # Premium models:
-        # - openai/gpt-4o-mini ($0.15/1M input) - best value
-        # - anthropic/claude-3-haiku ($0.25/1M input) - very good
-        # - openai/gpt-4o ($2.50/1M input) - best quality
-        self.model = os.getenv("OPENROUTER_MODEL", "x-ai/grok-4.1-fast")
+        # Default model matches what the rest of the project (README, DEMO,
+        # eval logs) advertises. Override with OPENROUTER_MODEL in .env.
+        self.model = os.getenv("OPENROUTER_MODEL", "anthropic/claude-sonnet-4.6")
         self.fast_model = os.getenv("OPENROUTER_FAST_MODEL", "anthropic/claude-sonnet-4.6")
     
     def is_available(self) -> bool:

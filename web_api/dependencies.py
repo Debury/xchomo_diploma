@@ -16,7 +16,11 @@ DAGSTER_GRAPHQL_URL = f"http://{DAGSTER_HOST}:{DAGSTER_PORT}/graphql"
 
 
 async def execute_graphql_query(query: str, variables: Optional[Dict] = None) -> Dict:
-    """Execute a GraphQL query against Dagster."""
+    """Execute a GraphQL query against Dagster.
+
+    Always returns a dict. Dagster returns ``{"data": null}`` when a mutation
+    targets an unknown entity, so callers can't assume the payload is truthy.
+    """
     async with httpx.AsyncClient() as client:
         try:
             response = await client.post(
@@ -24,7 +28,8 @@ async def execute_graphql_query(query: str, variables: Optional[Dict] = None) ->
                 json={"query": query, "variables": variables or {}},
                 timeout=30.0,
             )
-            return response.json().get("data", {})
+            payload = response.json().get("data")
+            return payload if isinstance(payload, dict) else {}
         except Exception as e:
             logger.error(f"Dagster GraphQL error: {e}")
             raise HTTPException(status_code=503, detail="Dagster unavailable")
@@ -33,9 +38,12 @@ async def execute_graphql_query(query: str, variables: Optional[Dict] = None) ->
 async def launch_dagster_run(job_name: str, run_config: Dict, tags: Dict = None):
     """Launch a Dagster job run via GraphQL."""
     repo_data = await execute_graphql_query("""
-    query { repositoriesOrError { ... on RepositoryConnection { nodes { name location { name } } } } }
+    query { repositoriesOrError { __typename ... on RepositoryConnection { nodes { name location { name } } } ... on PythonError { message } } }
     """)
-    nodes = repo_data.get("repositoriesOrError", {}).get("nodes", [])
+    repos = repo_data.get("repositoriesOrError") or {}
+    if repos.get("__typename") == "PythonError":
+        raise HTTPException(status_code=502, detail=f"Dagster error: {repos.get('message', 'unknown')}")
+    nodes = repos.get("nodes") or []
     if not nodes:
         raise HTTPException(status_code=500, detail="No repositories found")
 

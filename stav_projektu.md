@@ -76,7 +76,7 @@ Sieť: `climate-net` (bridge). Volumes: `dagster-postgres-data`, `dagster-home`,
 - **Phase classifier** — klasifikácia 233 záznamov do fáz 0–4
 - **Phase 0** — Metadata-only embedding (všetky záznamy, bez sťahovania)
 - **Phase 1** — Direct HTTP download + raster spracovanie
-- **Phase 3** — API portal adaptery (CDS, ESGF, NASA, CMEMS)
+- **Phase 3** — API portal adaptery (CDS, ESGF, NASA, CMEMS, CEDA, EIDC, NOAA)
 - **Location enricher** — extrakcia/normalizácia lokačných informácií
 - **Resume support** a progress tracking
 
@@ -243,14 +243,15 @@ Trojitý paralelný audit (lifecycle, concurrency, silent-errors) pred obhajobou
 
 ## 5. V procese / zostáva
 
-### Rozpracované
-- **Evaluation kapitola** — definované metriky (Recall@k, MRR, Faithfulness), chýba realizácia experimentov
-- **Test set** — navrhnutých 50–100 query-answer párov, zatiaľ nevytvorené
-- **Baseline porovnania** — BM25, no-RAG LLM, alternatívne embedding modely (plánované)
+### Dokončené (2026-04)
+- **Evaluation kapitola** — metriky realizované, výsledky v `docs/rag_eval_v2_clean_final.md`:
+  Context Relevance 98 %, Faithfulness 99 %, Overall Composite **89 %**, pass-rate 10/10 (top_k=10, reranker=off, Claude Sonnet 4.6)
+- **Test set** — 10 golden queries (`tests/fixtures/golden_queries.json`) naprieč hazard kategóriami
 
 ### Chýba / TODO
-- **Kvantitatívne výsledky** experimentov pre evaluation kapitolu
-- **Test coverage** je ~21% (primárne raster pipeline)
+- **Rozšírenie test setu** nad 10 golden queries (plánovaných 50–100 query-answer párov)
+- **Baseline porovnania** — BM25, no-RAG LLM, alternatívne embedding modely (plánované)
+- **Test coverage** je ~11 % (zámerne zacielené na raster pipeline)
 - **Ablation studies** (chunk size, top-k, metadata enrichment)
 - **Inter-annotator agreement** pre test set
 
@@ -290,7 +291,8 @@ Trojitý paralelný audit (lifecycle, concurrency, silent-errors) pred obhajobou
 | RAG evaluation | `test_rag_evaluation.py` | RAGAS metrics (faithfulness, context recall) |
 
 **Spustenie**: `make test` / `pytest tests/ -v`
-**Celkové pokrytie**: ~21%
+**Počet testov**: 108 (pytest collect)
+**Celkové pokrytie**: ~11 % line coverage (zámerne zacielené na raster pipeline)
 
 ### Smoke test (overené apríl 2026, cold start overený)
 - `GET /health` → 200 `{"status":"healthy","dagster_available":true}`

@@ -105,8 +105,8 @@ Optional: `jupyter` (profile `jupyter`) for ad-hoc notebooks.
 xchomo_diploma/
 ├── web_api/
 │   ├── main.py            # FastAPI app
-│   ├── routes/            # auth, sources, catalog, rag, schedules, admin
-│   ├── rag_endpoint.py    # /rag/query implementation
+│   ├── routes/            # auth, sources, catalog, rag (prefix /rag), schedules, admin
+│   ├── rag_endpoint.py    # internal helpers used by web_api/routes/rag.py
 │   └── frontend/          # Vue 3 SPA (Pinia, Vue Router, Tailwind)
 ├── dagster_project/
 │   ├── repository.py      # Definitions(jobs, schedules, sensors, resources)
@@ -218,8 +218,9 @@ make test-coverage         # coverage report
 docker compose exec web-api pytest tests/test_raster_pipeline_flow.py::TestNetCDF::test_load_basic -v
 ```
 
-Coverage target is pragmatic (~21 %) and focused on the raster pipeline, which is the
-core academic contribution.
+108 tests collected across the suite; line coverage is ~11 % and
+deliberately focused on the raster pipeline, which is the core academic
+contribution.
 
 ---
 

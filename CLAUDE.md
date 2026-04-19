@@ -121,7 +121,7 @@ make check-all                    # lint + type-check + test
 
 ## Docker Services
 
-Seven services in `docker-compose.yml`: dagster-postgres (:5432), dagster-daemon, dagit (:3000), web-api (:8000), qdrant (:6333/:6334), caddy (:80/:443), jupyter (:8888 optional). All on `climate-net` bridge network.
+Six services in `docker-compose.yml` plus an optional `jupyter` profile: dagster-postgres (:5432), dagster-daemon, dagit (:3000), web-api (:8000), qdrant (:6333/:6334), caddy (:80/:443), and jupyter (:8888, opt-in via `--profile jupyter`). All on `climate-net` bridge network.
 
 ## Deployment
 
@@ -133,4 +133,4 @@ Seven services in `docker-compose.yml`: dagster-postgres (:5432), dagster-daemon
 
 ## Companion Directory
 
-`../xchomo_latex/` contains the diploma thesis LaTeX source. `0_kontext/` has project state docs (`stav_projektu.md`) and literature review (`literarna_resers.md`) in Czech/Slovak.
+`../thesis-template-typst-main/` contains the diploma thesis Typst source (migrated from LaTeX). `0_kontext/` has project state docs (`stav_projektu.md`) and literature review (`literarna_resers.md`) in Czech/Slovak.

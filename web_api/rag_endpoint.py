@@ -861,8 +861,10 @@ async def rag_query(request: RAGRequest) -> RAGResponse:
         except Exception as e:
             logger.warning(f"LLM error (attempt 1): {e}, retrying...")
             try:
-                import time as _time
-                _time.sleep(1)
+                # Cooldown before the retry; `asyncio.sleep` yields to the
+                # event loop so concurrent requests aren't blocked by this
+                # 1 s pause.
+                await asyncio.sleep(1)
                 answer = await asyncio.wait_for(
                     asyncio.to_thread(
                         lambda: llm_client.generate(

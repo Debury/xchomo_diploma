@@ -18,6 +18,7 @@ async def list_schedules():
         query = """
         query {
             schedulesOrError {
+                __typename
                 ... on Schedules {
                     results {
                         name
@@ -38,11 +39,15 @@ async def list_schedules():
         }
         """
         data = await execute_graphql_query(query)
-        schedules_data = data.get("schedulesOrError", {}).get("results", [])
+        schedules_or_error = data.get("schedulesOrError") or {}
+        if schedules_or_error.get("__typename") == "PythonError":
+            logger.warning(f"Dagster schedules error: {schedules_or_error.get('message')}")
+            return []
+        schedules_data = schedules_or_error.get("results") or []
 
         result = []
         for s in schedules_data:
-            next_ticks = s.get("futureTicks", {}).get("results", [])
+            next_ticks = (s.get("futureTicks") or {}).get("results") or []
             next_run = next_ticks[0]["timestamp"] if next_ticks else None
             result.append(
                 {

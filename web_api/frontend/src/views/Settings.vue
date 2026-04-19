@@ -100,9 +100,68 @@
           <span class="text-[10px] px-1.5 py-0.5 rounded-full bg-mendelu-gray-light text-mendelu-gray-dark" style="font-family: var(--font-mono);">
             {{ configuredAdapterCount }}/{{ adapterGroups.length }} configured
           </span>
+          <button
+            @click="showAdapterForm = !showAdapterForm"
+            class="btn-ghost !py-1.5 !text-xs"
+            :class="showAdapterForm ? 'text-mendelu-gray-dark' : 'text-mendelu-green'"
+          >
+            {{ showAdapterForm ? 'Cancel' : '+ Add adapter' }}
+          </button>
           <button v-if="hasCredentialChanges" @click="saveCredentials" :disabled="savingCredentials" class="btn-primary !py-1.5 !text-xs disabled:opacity-50">
             {{ savingCredentials ? 'Saving...' : 'Save Credentials' }}
           </button>
+        </div>
+      </div>
+
+      <!-- Add-adapter form. Collapsed by default. When expanded, lets the
+           operator register a new portal config without a code deploy — useful
+           for a portal whose Python adapter isn't yet shipped but whose data
+           you still want to collect credentials for. -->
+      <div v-if="showAdapterForm" class="mb-4 border border-mendelu-green/30 bg-mendelu-green/[0.03] rounded-xl p-4 space-y-3">
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <div>
+            <label class="block text-[10px] font-medium text-mendelu-gray-dark uppercase tracking-wider mb-1">Name *</label>
+            <input v-model="adapterDraft.name" type="text" placeholder="e.g. CEDA CMIP6" class="input-field !py-1.5 text-xs" />
+          </div>
+          <div>
+            <label class="block text-[10px] font-medium text-mendelu-gray-dark uppercase tracking-wider mb-1">Datasets (hint)</label>
+            <input v-model="adapterDraft.datasets" type="text" placeholder="e.g. CMIP6, CORDEX" class="input-field !py-1.5 text-xs" />
+          </div>
+        </div>
+        <div>
+          <label class="block text-[10px] font-medium text-mendelu-gray-dark uppercase tracking-wider mb-1">Description</label>
+          <input v-model="adapterDraft.description" type="text" placeholder="One-liner shown next to the adapter name" class="input-field !py-1.5 text-xs" />
+        </div>
+
+        <div>
+          <div class="flex items-center justify-between mb-2">
+            <span class="text-[10px] font-medium text-mendelu-gray-dark uppercase tracking-wider">Credential fields</span>
+            <button @click="addDraftField" type="button" class="btn-ghost !px-2 !py-0.5 text-xs text-mendelu-green">+ Field</button>
+          </div>
+          <div v-for="(f, idx) in adapterDraft.fields" :key="idx" class="grid grid-cols-12 gap-2 mb-2 items-start">
+            <input v-model="f.key" type="text" placeholder="key (e.g. ceda_token)" class="input-field !py-1.5 text-xs col-span-3" />
+            <input v-model="f.label" type="text" placeholder="Display label" class="input-field !py-1.5 text-xs col-span-4" />
+            <input v-model="f.hint" type="text" placeholder="Hint (optional)" class="input-field !py-1.5 text-xs col-span-4" />
+            <button
+              v-if="adapterDraft.fields.length > 1"
+              @click="removeDraftField(idx)"
+              type="button"
+              class="btn-ghost !px-2 !py-1 text-xs text-mendelu-alert col-span-1"
+              title="Remove field"
+            >×</button>
+          </div>
+          <p class="text-[10px] text-mendelu-gray-dark/70">
+            Leave this list empty for a public (no-auth) adapter. Keys are normalised to lowercase/underscore.
+          </p>
+        </div>
+
+        <div class="flex justify-end gap-2 pt-2">
+          <button @click="resetAdapterDraft" type="button" class="btn-ghost text-xs">Cancel</button>
+          <button
+            @click="submitAdapter"
+            :disabled="adapterSubmitting || !adapterDraft.name.trim()"
+            class="btn-primary !py-1.5 !text-xs disabled:opacity-50"
+          >{{ adapterSubmitting ? 'Saving…' : 'Add adapter' }}</button>
         </div>
       </div>
 
@@ -129,6 +188,9 @@
 
             <!-- Datasets badge -->
             <span v-if="adapter.datasets" class="text-[10px] text-mendelu-gray-dark hidden sm:block">{{ adapter.datasets }}</span>
+
+            <!-- Custom badge -->
+            <span v-if="!adapter.builtin" class="text-[9px] px-1.5 py-0.5 rounded bg-mendelu-green/10 text-mendelu-green font-medium uppercase tracking-wider" style="font-family: var(--font-mono);">Custom</span>
 
             <!-- Chevron -->
             <svg class="w-4 h-4 text-mendelu-gray-dark transition-transform duration-150 flex-shrink-0" :class="{ 'rotate-180': adapter.expanded }" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
@@ -173,6 +235,16 @@
                 </div>
                 <p v-if="field.hint" class="text-[10px] text-mendelu-gray-dark/60 mt-1">{{ field.hint }}</p>
               </div>
+            </div>
+
+            <!-- Custom-adapter controls: only shown on non-builtin entries.
+                 The built-in adapters are immutable from the UI. -->
+            <div v-if="!adapter.builtin" class="flex justify-end pt-3 mt-2 border-t border-mendelu-gray-semi/30">
+              <button
+                type="button"
+                @click="removeAdapter(adapter)"
+                class="btn-ghost !py-1 !px-2 text-xs text-mendelu-alert hover:underline"
+              >Remove adapter</button>
             </div>
           </div>
         </div>
@@ -380,9 +452,9 @@ const credentialEdits = reactive({
 })
 
 // Adapters grouped by portal with their credential fields
-const adapterGroups = reactive([
+const builtinAdapters = reactive([
   {
-    id: 'cds',
+    id: 'cds', builtin: true,
     name: 'Copernicus CDS',
     description: 'Climate Data Store — ERA5, CERRA, seasonal forecasts',
     datasets: 'ERA5, CERRA, SEAS5',
@@ -393,7 +465,7 @@ const adapterGroups = reactive([
     ],
   },
   {
-    id: 'nasa',
+    id: 'nasa', builtin: true,
     name: 'NASA Earthdata',
     description: 'GES DISC, PO.DAAC — MERRA-2, GPM, sea level data',
     datasets: 'MERRA-2, GPM, GRACE',
@@ -405,7 +477,7 @@ const adapterGroups = reactive([
     ],
   },
   {
-    id: 'cmems',
+    id: 'cmems', builtin: true,
     name: 'Marine Copernicus (CMEMS)',
     description: 'Copernicus Marine — ocean temperature, sea level, ice',
     datasets: 'SST, sea level, sea ice',
@@ -417,7 +489,7 @@ const adapterGroups = reactive([
     ],
   },
   {
-    id: 'esgf',
+    id: 'esgf', builtin: true,
     name: 'ESGF',
     description: 'Earth System Grid Federation — CMIP6, CORDEX projections',
     datasets: 'CMIP6, CORDEX',
@@ -426,7 +498,7 @@ const adapterGroups = reactive([
     fields: [],
   },
   {
-    id: 'noaa',
+    id: 'noaa', builtin: true,
     name: 'NOAA',
     description: 'PSL, NCEI — reanalysis, observational datasets',
     datasets: '20CRv3, NCEP/NCAR',
@@ -435,7 +507,7 @@ const adapterGroups = reactive([
     fields: [],
   },
   {
-    id: 'eidc',
+    id: 'eidc', builtin: true,
     name: 'EIDC / CEDA',
     description: 'Hydro-JULES, UK environmental data via OpenDAP',
     datasets: 'Hydro-JULES, CHESS',
@@ -445,14 +517,113 @@ const adapterGroups = reactive([
   },
 ])
 
+// Custom adapters registered through POST /settings/adapters. Fetched on
+// mount and re-fetched whenever the user adds/removes one.
+const customAdapters = ref<any[]>([])
+
+// Unified list rendered by the template. Built-in first, then custom.
+const adapterGroups = computed(() => [...builtinAdapters, ...customAdapters.value])
+
 function adapterConfigured(adapter) {
   if (adapter.public) return true
   return adapter.fields.every(f => credentials.value[f.key]?.configured)
 }
 
 const configuredAdapterCount = computed(() => {
-  return adapterGroups.filter(a => adapterConfigured(a)).length
+  return adapterGroups.value.filter(a => adapterConfigured(a)).length
 })
+
+// "Add adapter" form state.
+const showAdapterForm = ref(false)
+const adapterDraft = ref({
+  name: '',
+  description: '',
+  datasets: '',
+  fields: [{ key: '', label: '', hint: '' }],
+})
+const adapterSubmitting = ref(false)
+
+function addDraftField() {
+  adapterDraft.value.fields.push({ key: '', label: '', hint: '' })
+}
+function removeDraftField(idx: number) {
+  if (adapterDraft.value.fields.length > 1) adapterDraft.value.fields.splice(idx, 1)
+}
+function resetAdapterDraft() {
+  adapterDraft.value = { name: '', description: '', datasets: '', fields: [{ key: '', label: '', hint: '' }] }
+  showAdapterForm.value = false
+}
+
+async function loadCustomAdapters() {
+  try {
+    const resp = await apiFetch('/settings/adapters')
+    if (!resp.ok) return
+    const data = await resp.json()
+    // Keep the same shape as builtinAdapters so the template needs no branching.
+    customAdapters.value = (data.adapters || []).map((a: any) => ({
+      ...a,
+      builtin: false,
+      expanded: false,
+    }))
+  } catch (e) {
+    console.error('Failed to load custom adapters:', e)
+  }
+}
+
+async function submitAdapter() {
+  const draft = adapterDraft.value
+  if (!draft.name.trim()) {
+    toast.error('Adapter name is required')
+    return
+  }
+  const validFields = draft.fields.filter(f => f.key.trim() && f.label.trim())
+  // An adapter with zero fields would be a public one — if the user actually
+  // wanted public, they can still submit an empty field list.
+  const payload = {
+    name: draft.name.trim(),
+    description: draft.description.trim(),
+    datasets: draft.datasets.trim(),
+    fields: validFields.map(f => ({ key: f.key.trim(), label: f.label.trim(), hint: f.hint?.trim() || null })),
+  }
+  adapterSubmitting.value = true
+  try {
+    const resp = await apiFetch('/settings/adapters', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+    const body = await resp.json().catch(() => ({}))
+    if (!resp.ok) {
+      const msg = Array.isArray(body.detail)
+        ? body.detail.map((d: any) => d.msg || JSON.stringify(d)).join('; ')
+        : (body.detail || `HTTP ${resp.status}`)
+      throw new Error(msg)
+    }
+    toast.success(`Adapter "${body.name}" added`)
+    resetAdapterDraft()
+    await Promise.all([loadCustomAdapters(), refreshSettings()])
+  } catch (e: any) {
+    toast.error(`Could not add adapter: ${e?.message || e}`)
+  } finally {
+    adapterSubmitting.value = false
+  }
+}
+
+async function removeAdapter(adapter: any) {
+  if (!adapter?.id || adapter.builtin) return
+  if (!window.confirm(`Remove adapter "${adapter.name}"? Stored credentials for its fields stay behind and can be cleared separately.`)) return
+  try {
+    const resp = await apiFetch(`/settings/adapters/${adapter.id}`, { method: 'DELETE' })
+    if (!resp.ok && resp.status !== 204) {
+      const err = await resp.json().catch(() => ({}))
+      throw new Error(err.detail || `HTTP ${resp.status}`)
+    }
+    toast.success(`Removed "${adapter.name}"`)
+    await Promise.all([loadCustomAdapters(), refreshSettings()])
+  } catch (e: any) {
+    toast.error(`Delete failed: ${e?.message || e}`)
+  }
+}
 
 const hasCredentialChanges = computed(() => {
   return Object.values(credentialEdits).some(v => v !== '')
@@ -542,5 +713,8 @@ async function saveCredentials() {
   }
 }
 
-onMounted(() => { refreshSettings() })
+onMounted(() => {
+  refreshSettings()
+  loadCustomAdapters()
+})
 </script>
