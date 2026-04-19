@@ -1,6 +1,7 @@
 """Persistent settings management for the Climate ETL Pipeline API."""
 
 import json
+import os
 from pathlib import Path
 
 from src.utils.persisted_creds import (
@@ -25,9 +26,19 @@ def load_settings() -> dict:
 
 
 def save_settings(data: dict) -> None:
-    """Save settings to disk."""
+    """Save settings to disk and restrict permissions to the owner only.
+
+    ``app_settings.json`` holds plaintext API keys, so we narrow the file mode
+    to 0600 on every write. This is a POSIX semantic; on Windows ``chmod``
+    degrades to a read-only toggle, which doesn't hurt.
+    """
     SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
     SETTINGS_PATH.write_text(json.dumps(data, indent=2))
+    try:
+        os.chmod(SETTINGS_PATH, 0o600)
+    except OSError:
+        # Not fatal — the write succeeded, only the permission tighten failed.
+        pass
 
 
 def restore_settings_to_env() -> dict:

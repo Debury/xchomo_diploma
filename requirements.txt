@@ -73,8 +73,12 @@ httpx>=0.25.0
 # Pydantic for data validation
 pydantic>=2.0.0
 
-# Python ASGI server
+# Multipart form support for OAuth2PasswordRequestForm
 python-multipart>=0.0.6
+
+# Authentication: argon2id password hashing + JWT tokens
+pwdlib[argon2]>=0.2.0
+PyJWT>=2.8.0
 
 # ====================================================================================
 # PHASE 5: DYNAMIC SOURCE MANAGEMENT & DATABASE

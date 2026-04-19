@@ -219,6 +219,35 @@ class ProcessingRun(Base):
         }
 
 
+class AuthToken(Base):
+    """Historic bearer-token session store.
+
+    Superseded by stateless JWT (``web_api/routes/auth.py``). The table is kept
+    to avoid a schema migration and to allow a rollback, but nothing writes to
+    it in the current code path. Safe to drop in a future release.
+    """
+    __tablename__ = "auth_tokens"
+
+    token = Column(String(128), primary_key=True)
+    username = Column(String(255), nullable=False)
+    expires_at = Column(DateTime, nullable=False, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class LoginFailure(Base):
+    """Per-IP record of failed ``/auth/login`` attempts.
+
+    Postgres-backed so the per-IP lockout window survives restarts and is
+    shared across replicas. Rows older than the rate-limit window are
+    pruned on every check.
+    """
+    __tablename__ = "login_failures"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    ip = Column(String(64), nullable=False, index=True)
+    attempted_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+
+
 class CatalogProgress(Base):
     """Tracks batch catalog processing progress per (source_id, phase) pair.
 

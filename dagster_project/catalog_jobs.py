@@ -79,9 +79,9 @@ def _run_phase_op(context: OpExecutionContext, excel_path: str, phase: int) -> d
     """Shared logic for running a single phase via batch_orchestrator."""
     # Refresh persisted credentials (OpenRouter key, portal logins) from
     # app_settings.json so a UI rotation reaches this op without a container
-    # restart. Safe no-op when the file doesn't exist.
+    # restart. override=True → UI wins over `.env`, consistent with web-api.
     from src.utils.persisted_creds import load_persisted_credentials_into_env
-    load_persisted_credentials_into_env()
+    load_persisted_credentials_into_env(override=True)
 
     from src.catalog.batch_orchestrator import run_batch_pipeline
 

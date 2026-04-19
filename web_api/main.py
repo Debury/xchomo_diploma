@@ -24,6 +24,34 @@ _runtime_settings = restore_settings_to_env()
 # Initialize admin module's runtime settings reference
 admin.init_runtime_settings(_runtime_settings)
 
+# Audit password configuration at startup — loud log line so mis-configured
+# deployments are obvious in `docker compose logs web-api`.
+if os.getenv("AUTH_PASSWORD_HASH"):
+    logger.info("Auth: using AUTH_PASSWORD_HASH (PBKDF2-SHA256)")
+elif os.getenv("AUTH_PASSWORD"):
+    logger.warning(
+        "Auth: AUTH_PASSWORD is set as plaintext. Generate a hash with "
+        "`python scripts/hash_password.py` and move it to AUTH_PASSWORD_HASH."
+    )
+elif os.getenv("AUTH_ALLOW_ANONYMOUS", "").lower() in ("1", "true", "yes"):
+    logger.warning("Auth: AUTH_ALLOW_ANONYMOUS=1 — auth gate is DISABLED. Do not deploy this way.")
+else:
+    logger.error(
+        "Auth: no AUTH_PASSWORD / AUTH_PASSWORD_HASH configured — /auth/login and "
+        "protected endpoints will return 503 until this is fixed."
+    )
+
+# Refuse to boot with the auth gate disabled in a production-labelled environment.
+# Guards against a stale `.env` carrying AUTH_ALLOW_ANONYMOUS=1 from a CI run
+# landing on the droplet.
+_anon_on = os.getenv("AUTH_ALLOW_ANONYMOUS", "").lower() in ("1", "true", "yes")
+_prod_like = os.getenv("APP_ENV", "").lower() in ("prod", "production")
+if _anon_on and _prod_like:
+    raise RuntimeError(
+        "Refusing to start: AUTH_ALLOW_ANONYMOUS is truthy and APP_ENV=production. "
+        "Clear AUTH_ALLOW_ANONYMOUS from .env before deploying."
+    )
+
 # ====================================================================================
 # APPLICATION SETUP
 # ====================================================================================

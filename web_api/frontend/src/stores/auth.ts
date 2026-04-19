@@ -39,8 +39,52 @@ function readStoredUser(): AuthUser | null {
 export const useAuthStore = defineStore('auth', () => {
   const token = ref<string | null>(readStoredToken())
   const user = ref<AuthUser | null>(readStoredUser())
+  const initialized = ref(false)
 
   const isAuthenticated = computed(() => Boolean(token.value))
+
+  // Verify the cached token against the server BEFORE the router's first
+  // navigation decision. Without this, a stale localStorage token flashes
+  // the protected UI for ~one API round-trip while apiFetch catches a 401
+  // and hard-navigates to /login — visible as a flicker of the dashboard.
+  //
+  // Resolves once initialization is done. Idempotent: subsequent calls
+  // return the original promise.
+  let _initPromise: Promise<void> | null = null
+
+  function initialize(): Promise<void> {
+    if (_initPromise) return _initPromise
+    _initPromise = (async () => {
+      if (!token.value) {
+        initialized.value = true
+        return
+      }
+      try {
+        const resp = await fetch('/auth/verify', {
+          method: 'GET',
+          headers: { Authorization: `Bearer ${token.value}` },
+        })
+        const data = resp.ok ? await resp.json() : null
+        if (!data || data.valid !== true) {
+          // Stale or revoked token — clear and let the guard redirect.
+          token.value = null
+          user.value = null
+          localStorage.removeItem('auth_token')
+          localStorage.removeItem('auth_user')
+        } else if (data.username && (!user.value || user.value.username !== data.username)) {
+          user.value = { username: data.username }
+          localStorage.setItem('auth_user', JSON.stringify(user.value))
+        }
+      } catch {
+        // Network error — treat token as unverified rather than wiping it,
+        // so a flaky network on reload doesn't log the user out. apiFetch
+        // will clear it the next time the server actually rejects.
+      } finally {
+        initialized.value = true
+      }
+    })()
+    return _initPromise
+  }
 
   async function login(username: string, password: string): Promise<true> {
     let resp: Response
@@ -94,5 +138,5 @@ export const useAuthStore = defineStore('auth', () => {
     localStorage.removeItem('auth_user')
   }
 
-  return { token, user, isAuthenticated, login, logout }
+  return { token, user, initialized, isAuthenticated, initialize, login, logout }
 })

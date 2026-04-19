@@ -758,7 +758,16 @@ async def scan_source_metadata(data: dict):
                 downloaded_tmp = tmp.name
                 tmp_path = tmp.name
                 try:
-                    resp = req.get(url, stream=True, timeout=(10, 60), headers={"User-Agent": "ClimateRAG/1.0"})
+                    # allow_redirects=False: SSRF guard only validated the
+                    # original URL; a redirect can point back to 169.254.x.x
+                    # or RFC1918 after we've cleared the pre-flight check.
+                    resp = req.get(
+                        url,
+                        stream=True,
+                        timeout=(10, 60),
+                        allow_redirects=False,
+                        headers={"User-Agent": "ClimateRAG/1.0"},
+                    )
                     resp.raise_for_status()
                     # Check size from Content-Length, skip files over 200MB
                     content_length = int(resp.headers.get("Content-Length", 0))

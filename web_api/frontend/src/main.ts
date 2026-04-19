@@ -2,6 +2,7 @@ import { createApp } from 'vue'
 import { createPinia } from 'pinia'
 import router from './router'
 import App from './App.vue'
+import { useAuthStore } from './stores/auth'
 import './style.css'
 
 const app = createApp(App)
@@ -23,4 +24,12 @@ if (typeof window !== 'undefined') {
 
 app.use(createPinia())
 app.use(router)
-app.mount('#app')
+
+// Verify any cached token against the server BEFORE mounting — prevents
+// the protected UI from flashing while apiFetch catches a 401 on the first
+// dashboard request. Costs one /auth/verify round-trip on boot; no call at
+// all when the user isn't logged in.
+const authStore = useAuthStore()
+authStore.initialize().finally(() => {
+  app.mount('#app')
+})

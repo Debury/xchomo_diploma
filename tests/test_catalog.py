@@ -122,11 +122,15 @@ class TestPhaseClassifier:
         assert classify_source(entry) == 3
 
     def test_esgf_portal_is_phase3(self):
+        # Use a dataset name that isn't in DIRECT_DOWNLOAD_URLS or _HAS_ADAPTER
+        # so we isolate the _get_portal() → ESGF path. "CMIP6" was renamed in
+        # DIRECT_DOWNLOAD_URLS after a CEDA mirror became available, which
+        # correctly short-circuits to Phase 1 and made this test stale.
         entry = CatalogEntry(
             row_index=0,
-            dataset_name="CMIP6",
+            dataset_name="custom_esgf_dataset_not_in_registry",
             access="Open",
-            link="https://pcmdi.llnl.gov/CMIP6/",
+            link="https://pcmdi.llnl.gov/some/path/",
         )
         assert classify_source(entry) == 3
 
@@ -526,10 +530,13 @@ class TestSchemaExtension:
             "impact_sector": "Health, Energy",
         }
         text = generate_human_readable_text(meta_dict)
-        assert "Hazard: Mean surface temperature" in text
-        assert "Data type: Reanalysis" in text
-        assert "Region: Europe" in text
-        assert "Impact sectors: Health, Energy" in text
+        # Hazard label wording was changed to "Climate hazard context:" to
+        # improve retrieval grounding — updating the test rather than reverting
+        # the grammar tweak.
+        assert "Climate hazard context: Mean surface temperature" in text
+        assert "Reanalysis data" in text
+        assert "Europe" in text
+        assert "Health, Energy" in text
 
     def test_backward_compatibility(self):
         """Old metadata without catalog fields still works."""

@@ -107,21 +107,19 @@ class VectorDatabase:
                     existing_size = collection_info.config.params.vectors.size
                     
                     if existing_size != self.vector_size:
-                        logger.warning(
-                            f"Collection '{self.collection}' exists with vector size {existing_size}, "
-                            f"but expected {self.vector_size}. Deleting and recreating..."
+                        # Historic footgun: this path used to silently delete
+                        # the existing collection and recreate it with the new
+                        # size. With a 1.53 M-chunk production collection on
+                        # the other side of the call that is a ~9 GB data-loss
+                        # event triggered implicitly by a model/config change.
+                        # Refuse and require an explicit operator action.
+                        raise RuntimeError(
+                            f"Vector size mismatch for collection '{self.collection}': "
+                            f"existing={existing_size}, configured={self.vector_size}. "
+                            "Refusing to drop the collection. Either revert the embedding "
+                            "model to one with a matching vector size, or explicitly "
+                            "recreate via the admin API after exporting a snapshot."
                         )
-                        # Delete existing collection
-                        self.client.delete_collection(self.collection)
-                        # Create new collection with correct size
-                        self.client.create_collection(
-                            collection_name=self.collection,
-                            vectors_config=VectorParams(
-                                size=self.vector_size,
-                                distance=Distance.COSINE
-                            )
-                        )
-                        logger.info(f"Recreated collection '{self.collection}' with vector size {self.vector_size}")
                     else:
                         logger.info(f"Collection '{self.collection}' exists with correct vector size {self.vector_size}")
                 else:
@@ -135,6 +133,12 @@ class VectorDatabase:
                     )
                     logger.info(f"Created collection '{self.collection}' with vector size {self.vector_size}")
                 return
+            except RuntimeError:
+                # A RuntimeError from the vector-size mismatch guard above is a
+                # deliberate refusal, not a transient client failure. Don't
+                # swallow it and quietly fall through to the REST path, which
+                # would hide the problem from the caller.
+                raise
             except Exception as e:
                 logger.warning(f"Client collection check failed ({e}), trying REST...")
 
@@ -151,21 +155,12 @@ class VectorDatabase:
                 existing_size = vectors.get("size") if isinstance(vectors, dict) else None
                 
                 if existing_size and existing_size != self.vector_size:
-                    logger.warning(
-                        f"Collection '{self.collection}' exists with vector size {existing_size}, "
-                        f"but expected {self.vector_size}. Deleting and recreating..."
+                    # Same no-silent-wipe policy as the client path above.
+                    raise RuntimeError(
+                        f"Vector size mismatch for collection '{self.collection}' (REST): "
+                        f"existing={existing_size}, configured={self.vector_size}. "
+                        "Refusing to drop the collection without explicit operator action."
                     )
-                    # Delete existing collection
-                    requests.delete(url, timeout=5)
-                    # Create new collection
-                    payload = {
-                        "vectors": {
-                            "size": self.vector_size,
-                            "distance": "Cosine"
-                        }
-                    }
-                    requests.put(url, json=payload, timeout=5)
-                    logger.info(f"Recreated collection '{self.collection}' via REST with vector size {self.vector_size}")
                 else:
                     logger.info(f"Collection '{self.collection}' exists with correct vector size")
             else:

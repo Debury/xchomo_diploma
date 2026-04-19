@@ -109,8 +109,10 @@ def process_single_source_op(context: OpExecutionContext) -> Dict[str, Any]:
 
         # Inject persisted global credentials (CDS / NASA / CMEMS / OpenRouter)
         # so a UI rotation is picked up without restarting the Dagster containers.
+        # override=True → UI-persisted value wins over `.env` for consistency
+        # with the web-api startup behaviour.
         from src.utils.persisted_creds import load_persisted_credentials_into_env
-        load_persisted_credentials_into_env()
+        load_persisted_credentials_into_env(override=True)
 
         # Load per-source credentials stored under source_credentials in the
         # same JSON file — these are not global env vars.

@@ -209,13 +209,17 @@ def test_connection(url: str, timeout: int = 15) -> Dict[str, Any]:
     if result["detected_portal"] in ("NASA",) and "earthdata" in hostname:
         result["suggested_auth"] = "bearer_token"
 
-    # Try HTTP HEAD first (fast), fall back to GET with stream
+    # Try HTTP HEAD first (fast), fall back to GET with stream.
+    # allow_redirects=False: SSRF guard above only validated the original URL;
+    # a redirect to 169.254.169.254 or an RFC1918 host would otherwise slip
+    # through. We just surface the redirect target as "reachable" and leave
+    # the caller to make a new validated request if they really want to follow.
     start = time.time()
     try:
         resp = requests.head(
             url,
             timeout=timeout,
-            allow_redirects=True,
+            allow_redirects=False,
             headers={"User-Agent": "ClimateRAG/1.0"},
         )
         latency = (time.time() - start) * 1000
