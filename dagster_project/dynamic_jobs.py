@@ -329,12 +329,15 @@ def process_all_sources(context: OpExecutionContext):
                     stats_vector = stat_item["vector"]
                     raw_meta = stat_item["metadata"]
                     
-                    # Create normalized metadata first
+                    # Create normalized metadata first.
+                    # dataset_name groups multiple Source rows under one logical
+                    # dataset in Qdrant — falls back to source_id when not set,
+                    # preserving old per-source behaviour.
                     normalized_meta = ClimateChunkMetadata.from_chunk_metadata(
                         raw_metadata=raw_meta,
                         stats_vector=stats_vector,
                         source_id=source_id,
-                        dataset_name=source_id
+                        dataset_name=getattr(source, "dataset_name", None) or source_id,
                     )
                     
                     payload = normalized_meta.to_dict()

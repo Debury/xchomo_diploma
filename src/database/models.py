@@ -27,6 +27,11 @@ class Source(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     source_id = Column(String(255), unique=True, nullable=False, index=True)
+    # Logical grouping — multiple Source rows can share a dataset_name when a
+    # user adds another URL/variable/year to an existing dataset via the
+    # "Add to this dataset" flow. Defaults to source_id if not set, so older
+    # rows don't change behaviour.
+    dataset_name = Column(String(255), nullable=True, index=True)
     url = Column(Text, nullable=False)
     is_active = Column(Boolean, default=True, nullable=False)
     format = Column(String(50), nullable=True)
@@ -75,6 +80,7 @@ class Source(Base):
     def to_dict(self):
         return {
             "source_id": self.source_id,
+            "dataset_name": self.dataset_name,
             "url": self.url,
             "is_active": self.is_active,
             "format": self.format,

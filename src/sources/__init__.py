@@ -22,6 +22,9 @@ class ClimateDataSource:
     """Internal representation of a data source."""
     source_id: str
     url: str
+    # Logical grouping — multiple sources can share a dataset_name when added
+    # via the "Add to this dataset" flow. Defaults to source_id when None.
+    dataset_name: Optional[str] = None
     is_active: bool = True
     format: Optional[str] = None
     variables: Optional[List[str]] = None

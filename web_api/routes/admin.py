@@ -29,29 +29,64 @@ def init_runtime_settings(settings: dict) -> None:
 
 @router.get("/logs/etl")
 async def get_etl_logs(lines: int = Query(100, ge=1, le=10000)):
-    """Get the last N lines of the ETL log file."""
+    """Get the last N lines combined across every ETL log we know about.
+
+    Was previously "first existing wins" — that meant only the catalog batch
+    log was visible, even when per-source ETL runs were producing fresh
+    output in `dagster_dynamic_etl.log`. Now we merge every present file's
+    tail and re-sort by leading ISO timestamp so the panel shows both
+    catalog AND per-source events together. Lines without a parseable
+    timestamp keep their per-file order at the end.
+    """
     log_paths = [
         _PROJECT_ROOT / "logs" / "catalog_pipeline.log",
         _PROJECT_ROOT / "logs" / "dagster_dynamic_etl.log",
         _PROJECT_ROOT / "logs" / "dagster_pipeline.log",
     ]
 
-    for log_path in log_paths:
-        if log_path.exists():
-            try:
-                with open(log_path, "r", encoding="utf-8", errors="replace") as f:
-                    all_lines = f.readlines()
-                tail = all_lines[-lines:] if len(all_lines) > lines else all_lines
-                return {
-                    "file": str(log_path),
-                    "total_lines": len(all_lines),
-                    "returned_lines": len(tail),
-                    "content": "".join(tail),
-                }
-            except Exception as e:
-                raise HTTPException(500, f"Failed to read log: {e}")
+    files_present = [p for p in log_paths if p.exists()]
+    if not files_present:
+        return {"file": None, "total_lines": 0, "returned_lines": 0, "content": "No log file found"}
 
-    return {"file": None, "total_lines": 0, "returned_lines": 0, "content": "No log file found"}
+    import re
+    # Match a leading ISO-ish timestamp like 2026-04-20 08:33:32 (with optional
+    # fractional seconds and TZ). Used as a sort key so merged tails stay
+    # chronological. Lines with no match get a sentinel that pushes them last.
+    TS_RE = re.compile(r"^(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?)")
+
+    merged: list[tuple[str, str, str]] = []  # (sort_key, file_label, line)
+    total_lines = 0
+    files_used: list[str] = []
+
+    for log_path in files_present:
+        try:
+            with open(log_path, "r", encoding="utf-8", errors="replace") as f:
+                all_lines = f.readlines()
+        except Exception as e:
+            raise HTTPException(500, f"Failed to read {log_path.name}: {e}")
+        files_used.append(log_path.name)
+        total_lines += len(all_lines)
+        # Per-file tail so a giant catalog log can't crowd out a small dynamic log.
+        per_file_tail = all_lines[-lines:] if len(all_lines) > lines else all_lines
+        label = log_path.stem  # e.g. "dagster_dynamic_etl"
+        for ln in per_file_tail:
+            m = TS_RE.match(ln)
+            sort_key = m.group(1).replace("T", " ").replace(",", ".") if m else "~"
+            merged.append((sort_key, label, ln))
+
+    merged.sort(key=lambda x: x[0])
+    tail = merged[-lines:]
+    # Prefix each line with its source file in subtle brackets so user can
+    # tell at a glance whether a line came from the catalog batch or a
+    # per-source run, without parsing.
+    rendered = "".join(f"[{label}] {line.rstrip()}\n" for _, label, line in tail)
+
+    return {
+        "file": ", ".join(files_used),
+        "total_lines": total_lines,
+        "returned_lines": len(tail),
+        "content": rendered,
+    }
 
 
 # --- System Settings ---

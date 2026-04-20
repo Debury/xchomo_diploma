@@ -32,7 +32,7 @@
 
           <div>
             <label for="cs-name" class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-1">Source Name</label>
-            <input id="cs-name" v-model="form.name" type="text" class="input-field" placeholder="e.g., ERA5, CMIP6" />
+            <input id="cs-name" v-model.trim="form.name" type="text" class="input-field" placeholder="e.g., ERA5, CMIP6" />
           </div>
 
           <div>
@@ -55,7 +55,7 @@
             <!-- URL mode -->
             <div v-if="sourceMode === 'url'">
               <div class="flex gap-2">
-                <input id="cs-url" v-model="form.url" type="text" class="input-field flex-1" placeholder="https://..." />
+                <input id="cs-url" v-model.trim="form.url" type="text" class="input-field flex-1" placeholder="https://..." />
                 <button
                   type="button"
                   @click="analyzeUrl"
@@ -429,7 +429,7 @@ const totalSteps = 5
 const stepLabels = ['URL', 'Auth', 'Config', 'Schedule', 'Review']
 
 const form = ref<any>({
-  name: '', type: 'netcdf', url: '', variables: '',
+  name: '', dataset_name: '', type: 'netcdf', url: '', variables: '',
   startYear: null, endYear: null, description: '',
   autoEmbed: true, enableSchedule: false, schedule_cron: '0 2 * * 0',
   auth_method: 'none', auth_api_key: '', auth_token: '',
@@ -550,9 +550,23 @@ onMounted(async () => {
 })
 
 function useMatchedDataset() {
-  if (urlAnalysis.value?.matched_dataset) {
-    form.value.name = urlAnalysis.value.matched_dataset.dataset_name
-  }
+  // "Add to this dataset" — preserve the existing dataset's logical name (so
+  // chunks land under the same group in Qdrant) but generate a UNIQUE
+  // source_id from the URL slug to avoid the uniqueness collision that the
+  // first version of this button hit.
+  const matched = urlAnalysis.value?.matched_dataset
+  if (!matched) return
+  const datasetName = matched.dataset_name
+  form.value.dataset_name = datasetName
+  const slug = (form.value.url || '')
+    .split('/')
+    .filter(Boolean)
+    .pop()
+    ?.replace(/\.[^.]+$/, '')
+    ?.replace(/[^A-Za-z0-9._-]+/g, '_')
+    ?.slice(0, 40)
+    || `var${Date.now().toString(36)}`
+  form.value.name = `${datasetName} — ${slug}`
 }
 
 async function scanMetadata() {
@@ -562,7 +576,7 @@ async function scanMetadata() {
   try {
     const resp = await apiFetch('/sources/scan-metadata', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url: form.value.url }),
+      body: JSON.stringify({ url: form.value.url.trim() }),
     })
     if (resp.ok) {
       const data = await resp.json()
@@ -633,7 +647,7 @@ async function analyzeUrl() {
   try {
     const resp = await apiFetch('/sources/analyze-url', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url: form.value.url }),
+      body: JSON.stringify({ url: form.value.url.trim() }),
     })
     if (resp.ok) {
       const data = await resp.json()
@@ -667,7 +681,7 @@ async function testConnectionReview() {
   try {
     const resp = await apiFetch('/sources/analyze-url', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url: form.value.url }),
+      body: JSON.stringify({ url: form.value.url.trim() }),
     })
     if (resp.ok) {
       reviewConnectionResult.value = await resp.json()
@@ -704,7 +718,8 @@ async function handleSubmit() {
     }
 
     const sourceConfig = {
-      source_id: form.value.name.trim().toLowerCase().replace(/\s+/g, '_'),
+      source_id: form.value.name.trim().toLowerCase().replace(/\s+/g, '_').replace(/[—–]/g, '-'),
+      dataset_name: (form.value.dataset_name || '').trim() || null,
       url: form.value.url.trim(),
       format: form.value.type || null,
       variables: form.value.variables ? form.value.variables.split(',').map(v => v.trim()).filter(Boolean) : null,

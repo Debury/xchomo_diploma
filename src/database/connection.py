@@ -148,6 +148,7 @@ def init_db():
         ("region_country", "VARCHAR(255)"),
         ("spatial_coverage", "TEXT"),
         ("impact_sector", "VARCHAR(255)"),
+        ("dataset_name", "VARCHAR(255)"),
     ]
 
     inspector = inspect(engine)

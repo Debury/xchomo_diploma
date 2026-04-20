@@ -112,6 +112,28 @@ async def create_source(source: SourceCreate):
         if store.get_source(source.source_id):
             raise HTTPException(409, f"Source '{source.source_id}' already exists")
 
+        # When the user is appending to an existing dataset (via the wizard's
+        # "Add to this dataset" button), refuse if the same URL is already
+        # registered under that dataset — that's a true duplicate, not an
+        # append. Different URL under the same dataset_name is fine and is
+        # the intended append flow.
+        if source.dataset_name:
+            try:
+                existing = [
+                    s for s in store.get_all_sources(active_only=False)
+                    if (s.dataset_name or s.source_id) == source.dataset_name
+                ]
+            except Exception:
+                existing = []
+            url_norm = (source.url or "").strip().rstrip("/").lower()
+            for s in existing:
+                if (s.url or "").strip().rstrip("/").lower() == url_norm:
+                    raise HTTPException(
+                        409,
+                        f"This URL is already in dataset '{source.dataset_name}' "
+                        f"as source '{s.source_id}'. Nothing to append.",
+                    )
+
         if not source.format:
             from src.climate_embeddings.loaders.detect_format import detect_format_from_url
 

@@ -82,14 +82,6 @@
       </div>
     </div>
 
-    <!-- Status Cards — catalog batch seeding numbers -->
-    <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
-      <StatCard label="Total Sources" :value="String(progress?.total || 0)" :loading="loading" />
-      <StatCard label="Processed" :value="String(progress?.processed || 0)" :loading="loading" />
-      <StatCard label="Metadata Only" :value="String(progress?.metadata_only || 0)" :loading="loading" />
-      <StatCard label="Failed" :value="String(progress?.failed || 0)" :loading="loading" />
-    </div>
-
     <!-- Idle banner — when no batch is running, make that obvious so the
          "X pending" count from historical catalog rows doesn't read as live. -->
     <div v-if="progress && !progress.thread_alive" class="card !py-3 flex items-center gap-3 text-sm">

@@ -284,7 +284,10 @@ def process_single_source_op(context: OpExecutionContext) -> Dict[str, Any]:
                     raw_metadata=chunk.metadata,
                     stats_vector=stats,
                     source_id=source_id,
-                    dataset_name=source_id,
+                    # Logical grouping — falls back to source_id when this Source
+                    # row wasn't tagged with a dataset_name (older rows / direct
+                    # API creates without the wizard's "Add to dataset" flow).
+                    dataset_name=getattr(source, "dataset_name", None) or source_id,
                 )
                 meta_dict = meta.to_dict()
 

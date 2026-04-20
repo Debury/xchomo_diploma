@@ -168,7 +168,11 @@ def _get_variable_list(db, force_refresh: bool = False) -> List[str]:
 # ---------------------------------------------------------------------------
 
 _VARIABLE_LIST_RE = re.compile(
-    r"\b(what|which|list|show|tell|give)\b.*\b(variable|variables|var|data|fields|columns)\b.*\b(available|in|does|are|have|contains|include)\b",
+    # Was matching "data" in the second group — that wrongly fired on real
+    # questions like "what precipitation data is available for X" because
+    # all three groups would match (what / data / available). Restrict to
+    # explicit variable-naming words.
+    r"\b(what|which|list|show|tell|give)\b.*\b(variable|variables|var|fields|columns)\b.*\b(available|in|does|are|have|contains|include)\b",
     re.IGNORECASE,
 )
 

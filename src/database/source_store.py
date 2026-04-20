@@ -341,6 +341,7 @@ def _to_dto(row: Source) -> "ClimateDataSource":
 
     return ClimateDataSource(
         source_id=row.source_id,
+        dataset_name=row.dataset_name,
         url=row.url,
         is_active=row.is_active,
         format=row.format,

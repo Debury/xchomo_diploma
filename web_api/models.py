@@ -42,6 +42,10 @@ class HealthResponse(BaseModel):
 
 class SourceCreate(BaseModel):
     source_id: str
+    # Logical grouping — when set, this Source row joins an existing dataset
+    # (multiple URLs/variables/years grouped under one logical name in Qdrant
+    # chunks). Defaults to source_id at ETL-time when None.
+    dataset_name: Optional[str] = None
     url: str
     format: Optional[str] = None
     variables: Optional[List[str]] = None
@@ -72,6 +76,7 @@ class SourceUpdate(BaseModel):
 
 class SourceResponse(BaseModel):
     source_id: str
+    dataset_name: Optional[str] = None
     url: str
     format: Optional[str] = None
     variables: Optional[List[str]] = None
