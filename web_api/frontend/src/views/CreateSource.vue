@@ -32,7 +32,7 @@
 
           <div>
             <label for="cs-name" class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-1">Source Name</label>
-            <input id="cs-name" v-model="form.name" type="text" class="input-field" placeholder="e.g., ERA5, CMIP6" required />
+            <input id="cs-name" v-model="form.name" type="text" class="input-field" placeholder="e.g., ERA5, CMIP6" />
           </div>
 
           <div>
@@ -685,6 +685,13 @@ async function testConnectionReview() {
 }
 
 async function handleSubmit() {
+  // Visible JS validation — replaces the HTML5 `required` on the hidden
+  // step-1 input which silently blocked submit with no UI feedback.
+  if (!form.value.name?.trim() || !form.value.url?.trim()) {
+    toast.error('Source Name and URL are required')
+    step.value = 1
+    return
+  }
   submitting.value = true
   try {
     let authCredentials = null

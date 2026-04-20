@@ -91,8 +91,26 @@ def _get_components():
     return _CACHED_CONFIG, _CACHED_DB, _CACHED_EMBEDDER, _CACHED_LLM
 
 
+_VAR_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,59}$")
+
+
+def _is_sane_variable(v: str) -> bool:
+    """Filter out garbage that ended up in the `variable` payload field —
+    file paths (contain `/`), numeric values, comma-joined column lists, etc.
+    Real climate variables look like `tas`, `H1000`, `Var_TS`, `pr_2010`."""
+    return bool(_VAR_NAME_RE.match(v or ""))
+
+
 def _get_variable_list(db, force_refresh: bool = False) -> List[str]:
-    """Collect distinct variable names via Qdrant scroll; cached 5 min."""
+    """Collect distinct variable names via Qdrant facet API; cached 5 min.
+
+    The earlier scroll-based version only sampled the first 25k of 1.5M
+    points, so it returned a biased slice (often coordinate names like lat/
+    lon that leaked into the variable payload from imperfect ingestion).
+    Facet API scans the indexed payload values and returns every distinct
+    value, which is what this function is meant to expose. Results are then
+    filtered through `_is_sane_variable` to drop ingestion garbage.
+    """
     global _CACHED_VARIABLES, _CACHED_VARIABLES_TS
     now = time.time()
     if not force_refresh and _CACHED_VARIABLES and (now - _CACHED_VARIABLES_TS) < 300:
@@ -108,23 +126,37 @@ def _get_variable_list(db, force_refresh: bool = False) -> List[str]:
 
         if client and collection:
             try:
-                offset = None
-                for _ in range(50):
-                    points, offset = client.scroll(
-                        collection_name=collection,
-                        limit=500,
-                        offset=offset,
-                        with_vectors=False,
-                        with_payload=True,
-                    )
-                    for p in points:
-                        var = (getattr(p, "payload", None) or {}).get("variable")
-                        if var:
-                            seen.add(str(var))
-                    if offset is None:
-                        break
+                result = client.facet(
+                    collection_name=collection,
+                    key="variable",
+                    limit=1000,
+                )
+                for hit in getattr(result, "hits", []):
+                    val = getattr(hit, "value", None)
+                    if val and _is_sane_variable(str(val)):
+                        seen.add(str(val))
             except Exception as e:
-                logger.error(f"Variable list scan error: {e}")
+                # Fall back to a single scroll so the endpoint still works
+                # on older qdrant servers that lack facet support.
+                logger.warning(f"Facet variable list failed ({e}); falling back to scroll sample")
+                try:
+                    offset = None
+                    for _ in range(50):
+                        points, offset = client.scroll(
+                            collection_name=collection,
+                            limit=500,
+                            offset=offset,
+                            with_vectors=False,
+                            with_payload=True,
+                        )
+                        for p in points:
+                            var = (getattr(p, "payload", None) or {}).get("variable")
+                            if var and _is_sane_variable(str(var)):
+                                seen.add(str(var))
+                        if offset is None:
+                            break
+                except Exception as e2:
+                    logger.error(f"Variable list scroll fallback error: {e2}")
 
         _CACHED_VARIABLES = sorted(seen)
         _CACHED_VARIABLES_TS = time.time()
@@ -735,7 +767,15 @@ async def rag_query(request: RAGRequest) -> RAGResponse:
     if _is_variable_list_question(question):
         all_vars = _get_variable_list(db)
         if all_vars:
-            answer = f"Available climate variables ({len(all_vars)}):\n" + ", ".join(all_vars)
+            preview_n = 50
+            shown = all_vars[:preview_n]
+            remaining = len(all_vars) - len(shown)
+            suffix = f", … and {remaining} more" if remaining > 0 else ""
+            answer = (
+                f"Available climate variables ({len(all_vars)} total, showing first {len(shown)}):\n"
+                + ", ".join(shown)
+                + suffix
+            )
             return RAGResponse(
                 question=question,
                 answer=answer,
