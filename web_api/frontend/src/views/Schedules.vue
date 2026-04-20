@@ -177,9 +177,11 @@ async function loadSources() {
         dataset_name: s.dataset_name,
         ...s.schedule,
       }))
-  } catch (e) {
+  } catch (e: any) {
     console.error('Failed to load sources:', e)
-    errorMessage.value = `Failed to load sources: ${e.message}`
+    const msg = e?.message || 'network error'
+    errorMessage.value = `Failed to load sources: ${msg}`
+    toast.error(`Could not load schedules: ${msg}`)
   }
 }
 

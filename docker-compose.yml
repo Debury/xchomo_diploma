@@ -16,6 +16,7 @@ services:
       - ./docker/init-db.sh:/docker-entrypoint-initdb.d/init-climate-app.sh:ro
     networks:
       - climate-net
+    restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U dagster"]
       interval: 10s

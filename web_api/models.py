@@ -34,6 +34,7 @@ class RunResponse(BaseModel):
 class HealthResponse(BaseModel):
     status: str
     dagster_available: bool
+    database_available: bool = True
     timestamp: str
 
 

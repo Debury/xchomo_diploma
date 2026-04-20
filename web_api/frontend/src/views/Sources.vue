@@ -192,8 +192,19 @@
           <!-- Actions -->
           <div class="pt-4 border-t border-mendelu-gray-semi">
             <div class="flex gap-2">
-              <button @click="reprocessSource(selectedSource)" :disabled="selectedSource._reprocessing" class="btn-primary flex-1 text-xs disabled:opacity-50">
+              <button
+                v-if="selectedSource.processing_status !== 'processing'"
+                @click="reprocessSource(selectedSource)"
+                :disabled="selectedSource._reprocessing"
+                class="btn-primary flex-1 text-xs disabled:opacity-50">
                 {{ selectedSource._reprocessing ? 'Triggering...' : 'Reprocess' }}
+              </button>
+              <button
+                v-else
+                @click="cancelSourceRun(selectedSource)"
+                :disabled="selectedSource._cancelling"
+                class="btn-ghost flex-1 text-xs text-mendelu-alert hover:bg-mendelu-alert/10 border border-mendelu-alert/20 disabled:opacity-50">
+                {{ selectedSource._cancelling ? 'Cancelling...' : 'Cancel run' }}
               </button>
               <button @click="openEditModal(selectedSource)" class="btn-secondary flex-1 text-xs">Edit</button>
             </div>
@@ -364,8 +375,9 @@ async function loadSources() {
     const resp = await apiFetch('/sources/')
     if (!resp.ok) throw new Error(resp.statusText)
     sources.value = await resp.json()
-  } catch (e) {
+  } catch (e: any) {
     console.error('Failed to load sources:', e)
+    toast.error(`Could not load sources: ${e?.message || 'network error'}`)
   } finally {
     loading.value = false
   }
@@ -383,10 +395,36 @@ async function reprocessSource(source) {
       const err = await resp.json().catch(() => ({}))
       toast.error(err.detail || 'Failed to trigger reprocessing')
     }
-  } catch (e) {
+  } catch (e: any) {
     console.error('Reprocess failed:', e)
+    toast.error(`Reprocess failed: ${e?.message || 'network error'}`)
   } finally {
     source._reprocessing = false
+  }
+}
+
+async function cancelSourceRun(source) {
+  source._cancelling = true
+  try {
+    const resp = await apiFetch(`/sources/${source.source_id}/cancel`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+    })
+    const data = await resp.json().catch(() => ({}))
+    if (resp.ok) {
+      source.processing_status = 'pending'
+      if (data.cancelled > 0) {
+        toast.success(`Cancelled ${data.cancelled} run${data.cancelled === 1 ? '' : 's'} for ${source.source_id}`)
+      } else {
+        toast.info?.(`No active run to cancel — status reset to pending.`) ?? toast.success('Status reset')
+      }
+    } else {
+      toast.error(data.detail || `Cancel failed (HTTP ${resp.status})`)
+    }
+  } catch (e: any) {
+    console.error('Cancel failed:', e)
+    toast.error(`Cancel failed: ${e?.message || 'network error'}`)
+  } finally {
+    source._cancelling = false
   }
 }
 
@@ -405,8 +443,9 @@ async function deleteSourceEmbeddings(source) {
       selectedSource.value = null
       await loadSources()
     }
-  } catch (e) {
+  } catch (e: any) {
     console.error('Error deleting embeddings:', e)
+    toast.error(`Delete failed: ${e?.message || 'network error'}`)
   }
 }
 

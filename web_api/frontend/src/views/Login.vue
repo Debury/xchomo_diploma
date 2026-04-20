@@ -87,8 +87,11 @@ async function handleLogin() {
       // Fallback if client-side navigation is blocked by a guard mismatch
       window.location.assign('/app/')
     }
-  } catch (err) {
-    error.value = err.message || 'Login failed'
+  } catch (err: any) {
+    // err can be anything (string, Error, {detail: ...}, null); coerce safely
+    // so we never show "Cannot read properties of undefined (reading 'message')"
+    // on the login screen when the backend returns an unexpected shape.
+    error.value = err?.message || err?.detail || (typeof err === 'string' ? err : '') || 'Login failed'
   } finally {
     loading.value = false
   }

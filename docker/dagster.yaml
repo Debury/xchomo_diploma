@@ -5,25 +5,39 @@
 # Note: we use the default sqlite-based storage (placed inside DAGSTER_HOME,
 # which is a shared named volume between dagit and dagster-daemon). Postgres
 # storage would require the optional `dagster-postgres` pip package.
+#
+# Module paths use the `dagster._core.*` prefix. The legacy `dagster.core.*`
+# aliases still resolve at the webserver layer via module-level shims, but the
+# multiprocess executor rehydrates configurable classes through
+# `importlib.import_module` on the subprocess side, which bypasses those
+# shims and fails with `AttributeError: module has no attribute ...`. Keeping
+# the canonical underscore paths here is what keeps per-source runs alive.
 
+# max_concurrent_runs kept at 1: the per-source op eagerly imports
+# sentence-transformers + xarray + numpy + qdrant, each of which drags in
+# ~1 GiB of resident memory. With 2 concurrent runs the second gRPC code
+# server routinely fails to bind to its Unix socket within
+# local_startup_timeout and Dagster silently FAILUREs the queued runs
+# (dur=0s). Serializing keeps the demo deterministic; queue depth is OK
+# because individual runs still finish in under a couple of minutes.
 run_coordinator:
-  module: dagster.core.run_coordinator
+  module: dagster._core.run_coordinator.queued_run_coordinator
   class: QueuedRunCoordinator
   config:
-    max_concurrent_runs: 2
+    max_concurrent_runs: 1
 
 run_launcher:
-  module: dagster.core.launcher
+  module: dagster._core.launcher.default_run_launcher
   class: DefaultRunLauncher
 
 compute_logs:
-  module: dagster.core.storage.compute_log_manager
+  module: dagster._core.storage.local_compute_log_manager
   class: LocalComputeLogManager
   config:
     base_dir: /opt/dagster/dagster_home/compute_logs
 
 local_artifact_storage:
-  module: dagster.core.storage.root
+  module: dagster._core.storage.root
   class: LocalArtifactStorage
   config:
     base_dir: /opt/dagster/dagster_home/artifacts
@@ -42,7 +56,9 @@ retention:
 
 # Quiet down the gRPC code-server heartbeat churn — bump the interval well
 # above the 20s default that triggers "No heartbeat received" warnings on
-# slower machines.
+# slower machines. 300s covers the cold import of sentence-transformers,
+# torch, xarray, and netCDF4 on a WSL2 VM with limited RAM; anything below
+# that is flaky under concurrent load.
 code_servers:
-  local_startup_timeout: 180
-  reload_timeout: 180
+  local_startup_timeout: 300
+  reload_timeout: 300

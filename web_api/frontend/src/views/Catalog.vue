@@ -361,7 +361,10 @@ async function loadQdrantDatasets() {
   try {
     const resp = await apiFetch('/qdrant/datasets')
     if (resp.ok) qdrantDatasets.value = await resp.json()
-  } catch (e) { console.error('Failed to load Qdrant datasets:', e) }
+  } catch (e: any) {
+    console.error('Failed to load Qdrant datasets:', e)
+    toast.error(`Could not load datasets: ${e?.message || 'network error'}`)
+  }
 }
 
 async function refreshCatalog() {
@@ -370,7 +373,10 @@ async function refreshCatalog() {
     const [catResp, progResp] = await Promise.all([apiFetch('/catalog'), apiFetch('/catalog/progress'), loadQdrantDatasets()])
     if (catResp.ok) catalog.value = await catResp.json()
     if (progResp.ok) progress.value = await progResp.json()
-  } catch (e) { console.error('Failed to load catalog:', e) }
+  } catch (e: any) {
+    console.error('Failed to load catalog:', e)
+    toast.error(`Could not load catalog: ${e?.message || 'network error'}`)
+  }
   finally { loading.value = false }
 }
 
@@ -379,7 +385,10 @@ async function classifyCatalog() {
   try {
     const resp = await apiFetch('/catalog/classify', { method: 'POST' })
     if (resp.ok) phaseStats.value = await resp.json()
-  } catch (e) { console.error('Failed to classify:', e) }
+  } catch (e: any) {
+    console.error('Failed to classify:', e)
+    toast.error(`Classification failed: ${e?.message || 'network error'}`)
+  }
   finally { loading.value = false }
 }
 
@@ -391,7 +400,10 @@ async function triggerProcessing(phases) {
       body: JSON.stringify({ phases }),
     })
     if (resp.ok) pollProgress()
-  } catch (e) { console.error('Failed to trigger processing:', e) }
+  } catch (e: any) {
+    console.error('Failed to trigger processing:', e)
+    toast.error(`Trigger failed: ${e?.message || 'network error'}`)
+  }
   finally { processing.value = false }
 }
 
@@ -410,7 +422,10 @@ async function triggerSourceReprocess(entry) {
       })
       if (catResp.ok) pollProgress()
     }
-  } catch (e) { console.error('Error triggering reprocess:', e) }
+  } catch (e: any) {
+    console.error('Error triggering reprocess:', e)
+    toast.error(`Reprocess failed: ${e?.message || 'network error'}`)
+  }
   finally { entry.reprocessing = false }
 }
 
@@ -432,7 +447,10 @@ async function deleteDatasetEmbeddings(entry) {
       await loadQdrantDatasets()
       selectedEntry.value = null
     }
-  } catch (e) { console.error('Error deleting embeddings:', e) }
+  } catch (e: any) {
+    console.error('Error deleting embeddings:', e)
+    toast.error(`Delete failed: ${e?.message || 'network error'}`)
+  }
 }
 
 async function autoRestart() {
@@ -440,8 +458,16 @@ async function autoRestart() {
   try {
     const resp = await apiFetch('/catalog/auto-restart', { method: 'POST' })
     if (resp.ok) pollProgress()
-    else { const data = await resp.json(); console.error('Auto-restart failed:', data.detail || data) }
-  } catch (e) { console.error('Auto-restart error:', e) }
+    else {
+      const data = await resp.json().catch(() => ({}))
+      const detail = data.detail || data.message || resp.statusText
+      console.error('Auto-restart failed:', detail)
+      toast.error(`Auto-restart failed: ${detail}`)
+    }
+  } catch (e: any) {
+    console.error('Auto-restart error:', e)
+    toast.error(`Auto-restart error: ${e?.message || 'network error'}`)
+  }
   finally { restarting.value = false }
 }
 

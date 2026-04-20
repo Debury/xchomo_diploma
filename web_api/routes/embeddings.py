@@ -1,5 +1,6 @@
 """Embedding management endpoints (Qdrant stats, sample, clear)."""
 
+import asyncio
 import os
 import time
 import logging
@@ -119,7 +120,7 @@ async def clear_embeddings(confirm: bool = False, delete_sources: bool = False):
                 client.delete_collection(collection_name)
                 logger.info(f"Deleted collection: {collection_name} (had {points_before} points)")
 
-                time.sleep(0.5)
+                await asyncio.sleep(0.5)
 
                 collections_after = client.get_collections().collections
                 still_exists = any(c.name == collection_name for c in collections_after)

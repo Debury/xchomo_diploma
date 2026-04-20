@@ -23,15 +23,34 @@ class VectorDatabase:
                    from config['vector_db']['qdrant']['vector_size'].
                    Defaults to 1024 (BAAI/bge-large-en-v1.5 dimension).
         """
-        self.host = os.getenv("QDRANT_HOST", "localhost")
-        self.port = int(os.getenv("QDRANT_REST_PORT", 6333))
+        # Host / port resolution with a robust fallback chain:
+        #   1. `QDRANT_HOST` / `QDRANT_REST_PORT` env vars (normal Docker path)
+        #   2. `config['vector_db']['qdrant']['host' / 'rest_port']` from YAML
+        #   3. A Docker-aware default: if this process is running inside a
+        #      container (detected via /.dockerenv), the sibling Qdrant service
+        #      is reachable on the compose network as `qdrant`, not `localhost`.
+        # Resolves an intermittent bug where the Dagster multiprocess executor
+        # spawned op subprocesses that didn't inherit `QDRANT_HOST=qdrant`,
+        # leading to "Connection refused on 127.0.0.1:6334" mid-run.
+        qdrant_yaml_cfg = (config or {}).get("vector_db", {}).get("qdrant", {}) if config else {}
+        _in_container = os.path.exists("/.dockerenv")
+        _default_host = "qdrant" if _in_container else "localhost"
+        self.host = (
+            os.getenv("QDRANT_HOST")
+            or qdrant_yaml_cfg.get("host")
+            or _default_host
+        )
+        self.port = int(
+            os.getenv("QDRANT_REST_PORT")
+            or qdrant_yaml_cfg.get("rest_port")
+            or 6333
+        )
         self.base_url = f"http://{self.host}:{self.port}"
-        
+
         # Get vector size and collection name from config or defaults
         if config and "vector_db" in config:
-            qdrant_config = config.get("vector_db", {}).get("qdrant", {})
-            self.vector_size = qdrant_config.get("vector_size", 1024)
-            self.collection_name = qdrant_config.get("collection_name", "climate_data")
+            self.vector_size = qdrant_yaml_cfg.get("vector_size", 1024)
+            self.collection_name = qdrant_yaml_cfg.get("collection_name", "climate_data")
             logger.info(f"Using config: collection='{self.collection_name}', vector_size={self.vector_size}")
         else:
             self.vector_size = 1024  # Default for BAAI/bge-large-en-v1.5
@@ -44,7 +63,11 @@ class VectorDatabase:
             # Suppress version compatibility warnings
             with warnings.catch_warnings():
                 warnings.filterwarnings("ignore", message=".*version.*incompatible.*")
-                grpc_port = int(os.getenv("QDRANT_GRPC_PORT", 6334))
+                grpc_port = int(
+                    os.getenv("QDRANT_GRPC_PORT")
+                    or qdrant_yaml_cfg.get("grpc_port")
+                    or 6334
+                )
                 self.client = QdrantClient(
                     host=self.host,
                     port=self.port,

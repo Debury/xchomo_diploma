@@ -440,8 +440,9 @@ async function toggleReveal(key) {
       credentialEdits[key] = data.value
       revealedKeys[key] = true
     }
-  } catch (e) {
+  } catch (e: any) {
     console.error('Failed to reveal credential:', e)
+    toast.error(`Could not reveal credential: ${e?.message || 'network error'}`)
   }
 }
 
@@ -565,8 +566,9 @@ async function loadCustomAdapters() {
       builtin: false,
       expanded: false,
     }))
-  } catch (e) {
+  } catch (e: any) {
     console.error('Failed to load custom adapters:', e)
+    toast.error(`Could not load custom adapters: ${e?.message || 'network error'}`)
   }
 }
 
@@ -655,8 +657,9 @@ async function refreshSettings() {
       credentials.value = await credResp.json()
       Object.keys(credentialEdits).forEach(k => credentialEdits[k] = '')
     }
-  } catch (e) {
+  } catch (e: any) {
     console.error('Failed to load settings:', e)
+    toast.error(`Could not load settings: ${e?.message || 'network error'}`)
   } finally {
     loading.value = false
   }
@@ -681,9 +684,9 @@ async function saveSettings() {
       const err = await resp.json().catch(() => ({ detail: 'Unknown error' }))
       throw new Error(err.detail || `HTTP ${resp.status}`)
     }
-  } catch (e) {
+  } catch (e: any) {
     console.error('Failed to save settings:', e)
-    toast.error(`Error: ${e.message}`)
+    toast.error(`Save failed: ${e?.message || 'network error'}`)
   } finally {
     saving.value = false
   }
@@ -705,9 +708,9 @@ async function saveCredentials() {
       const err = await resp.json().catch(() => ({ detail: 'Unknown error' }))
       throw new Error(err.detail || `HTTP ${resp.status}`)
     }
-  } catch (e) {
+  } catch (e: any) {
     console.error('Failed to save credentials:', e)
-    toast.error(`Error: ${e.message}`)
+    toast.error(`Save failed: ${e?.message || 'network error'}`)
   } finally {
     savingCredentials.value = false
   }

@@ -339,7 +339,12 @@ vector_db:
   
   qdrant:
     # Connection configuration
-    host: "localhost"  # Overridden by QDRANT_HOST env var in Docker
+    # Host defaults to the compose service name so Dagster op subprocesses
+    # work even when `QDRANT_HOST` is not propagated into the spawned
+    # worker (the multiprocess executor can strip env under some spawn
+    # contexts, producing `::1:6334 connection refused`). For local pytest
+    # runs outside Docker, export `QDRANT_HOST=localhost` to override.
+    host: "qdrant"
     grpc_port: 6334
     rest_port: 6333
     prefer_grpc: true

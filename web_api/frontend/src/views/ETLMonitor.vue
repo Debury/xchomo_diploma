@@ -11,7 +11,78 @@
       </template>
     </PageHeader>
 
-    <!-- Status Cards -->
+    <!-- Per-source ETL runs (the PRIMARY workflow: user creates a source,
+         triggers it, watches progress here). Catalog batch below is a
+         secondary seeding tool. -->
+    <div class="card">
+      <div class="flex items-center justify-between mb-3">
+        <h3 class="text-sm font-medium text-mendelu-black">Source ETL runs</h3>
+        <span class="text-xs text-mendelu-gray-dark">
+          <span v-if="activity.active.length" class="text-mendelu-green font-medium">
+            <span class="inline-block w-2 h-2 rounded-full bg-mendelu-green animate-pulse mr-1 align-middle"></span>
+            {{ activity.active.length }} in flight
+          </span>
+          <span v-else>Idle</span>
+        </span>
+      </div>
+
+      <!-- Active runs (Dagster STARTED/STARTING/QUEUED) -->
+      <div v-if="activity.active.length" class="space-y-2 mb-4">
+        <div v-for="run in activity.active" :key="run.dagster_run_id"
+             class="flex items-center justify-between px-3 py-2 rounded-lg bg-mendelu-green/5 border border-mendelu-green/20">
+          <div class="flex items-center gap-3 min-w-0">
+            <span class="inline-block w-2 h-2 rounded-full bg-mendelu-green animate-pulse flex-none"></span>
+            <div class="min-w-0">
+              <div class="text-sm font-medium text-mendelu-black truncate">
+                {{ run.source_id || '(untagged run)' }}
+              </div>
+              <div class="text-xs text-mendelu-gray-dark font-mono truncate">
+                {{ run.dagster_run_id }}
+              </div>
+            </div>
+          </div>
+          <div class="flex items-center gap-3 text-xs flex-none">
+            <span :class="runStatusClass(run.status)">{{ run.status }}</span>
+            <span class="text-mendelu-gray-dark tabular-nums">{{ formatRelStart(run.start_time || run.creation_time) }}</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Recent history from processing_runs -->
+      <div v-if="activity.recent.length" class="overflow-x-auto">
+        <table class="w-full text-xs">
+          <thead class="text-mendelu-gray-dark text-[11px] uppercase tracking-wide">
+            <tr class="border-b border-mendelu-gray-semi">
+              <th class="py-2 pr-3 text-left font-medium">Source</th>
+              <th class="py-2 pr-3 text-left font-medium">Status</th>
+              <th class="py-2 pr-3 text-right font-medium">Chunks</th>
+              <th class="py-2 pr-3 text-right font-medium">Duration</th>
+              <th class="py-2 pr-3 text-left font-medium">Started</th>
+              <th class="py-2 pl-3 text-left font-medium">Trigger</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="r in activity.recent" :key="r.id" class="border-b border-mendelu-gray-semi/40 hover:bg-mendelu-gray-light/40">
+              <td class="py-2 pr-3 font-medium text-mendelu-black truncate max-w-xs">{{ r.source_id }}</td>
+              <td class="py-2 pr-3">
+                <span :class="runStatusBadge(r.status)">{{ r.status }}</span>
+              </td>
+              <td class="py-2 pr-3 text-right tabular-nums">{{ r.chunks_processed ?? '—' }}</td>
+              <td class="py-2 pr-3 text-right tabular-nums text-mendelu-gray-dark">{{ formatDuration(r.duration_seconds) }}</td>
+              <td class="py-2 pr-3 text-mendelu-gray-dark">{{ formatTime(r.started_at) }}</td>
+              <td class="py-2 pl-3 text-mendelu-gray-dark">{{ r.trigger_type || '—' }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- Empty-state (no history AND no active runs) -->
+      <div v-if="!activity.active.length && !activity.recent.length" class="text-sm text-mendelu-gray-dark py-4 text-center">
+        No per-source ETL runs yet. Trigger one from the Sources page.
+      </div>
+    </div>
+
+    <!-- Status Cards — catalog batch seeding numbers -->
     <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
       <StatCard label="Total Sources" :value="String(progress?.total || 0)" :loading="loading" />
       <StatCard label="Processed" :value="String(progress?.processed || 0)" :loading="loading" />
@@ -107,8 +178,12 @@ import { ref, onMounted, onUnmounted, nextTick } from 'vue'
 import PageHeader from '../components/PageHeader.vue'
 import StatCard from '../components/StatCard.vue'
 import { apiFetch } from '../api'
+import { useToast } from '../composables/useToast'
+
+const toast = useToast()
 
 const progress = ref(null)
+const activity = ref<{ active: any[]; recent: any[] }>({ active: [], recent: [] })
 const logs = ref('')
 const loading = ref(false)
 const logLines = ref(100)
@@ -124,7 +199,12 @@ function stopPolling(): void {
 
 function startPolling(): void {
   stopPolling()
-  pollTimer = setInterval(fetchProgress, 5000)
+  // Poll catalog progress AND per-source activity on the same 5 s tick so
+  // the "in flight" pulse dot matches whatever Sources.vue shows.
+  pollTimer = setInterval(() => {
+    fetchProgress()
+    fetchActivity()
+  }, 5000)
 }
 
 function onVisibilityChange(): void {
@@ -132,6 +212,7 @@ function onVisibilityChange(): void {
     stopPolling()
   } else {
     fetchProgress()
+    fetchActivity()
     startPolling()
   }
 }
@@ -151,11 +232,72 @@ function phaseLabel(phase) {
   return labels[String(phase)] || ''
 }
 
+function formatDuration(seconds: number | null | undefined): string {
+  if (seconds == null) return '—'
+  if (seconds < 60) return `${Math.round(seconds)}s`
+  const m = Math.floor(seconds / 60)
+  const s = Math.round(seconds - m * 60)
+  return `${m}m ${s}s`
+}
+
+function formatRelStart(ts: number | string | null | undefined): string {
+  if (ts == null) return '—'
+  // Dagster returns startTime as epoch *seconds* (float); normalize to ms.
+  const epochMs = typeof ts === 'number' && ts < 1e12 ? ts * 1000 : Number(new Date(ts))
+  if (!epochMs || Number.isNaN(epochMs)) return '—'
+  const deltaSec = Math.round((Date.now() - epochMs) / 1000)
+  if (deltaSec < 5) return 'just now'
+  if (deltaSec < 60) return `${deltaSec}s ago`
+  if (deltaSec < 3600) return `${Math.floor(deltaSec / 60)}m ago`
+  return `${Math.floor(deltaSec / 3600)}h ago`
+}
+
+function runStatusClass(status: string): string {
+  // Active-run pill (top card). Green for running, amber for queued.
+  const s = (status || '').toUpperCase()
+  if (s === 'STARTED') return 'text-mendelu-green font-medium'
+  if (s === 'STARTING') return 'text-mendelu-green'
+  if (s === 'QUEUED') return 'text-amber-600'
+  if (s === 'CANCELING') return 'text-mendelu-alert'
+  return 'text-mendelu-gray-dark'
+}
+
+function runStatusBadge(status: string): string {
+  // Recent-history table badge. Maps the climate_app.processing_runs
+  // statuses (completed/failed/cancelled/started) to the shared badge
+  // classes defined in style.css.
+  const s = (status || '').toLowerCase()
+  if (s === 'completed' || s === 'success') return 'badge-success'
+  if (s === 'failed' || s === 'failure') return 'badge-danger'
+  if (s === 'cancelled' || s === 'canceled') return 'badge-neutral'
+  if (s === 'started' || s === 'processing') return 'badge-info'
+  return 'badge-neutral'
+}
+
+async function fetchActivity() {
+  try {
+    const resp = await apiFetch('/sources/runs/activity?limit=20')
+    if (resp.ok) {
+      const data = await resp.json()
+      activity.value = {
+        active: Array.isArray(data.active) ? data.active : [],
+        recent: Array.isArray(data.recent) ? data.recent : [],
+      }
+    }
+  } catch (e: any) {
+    // Silent polling error — already logged. Don't toast on every 5 s tick.
+    console.error('Failed to fetch source activity:', e)
+  }
+}
+
 async function fetchProgress() {
   try {
     const resp = await apiFetch('/catalog/progress')
     if (resp.ok) progress.value = await resp.json()
-  } catch (e) { console.error('Failed to fetch progress:', e) }
+  } catch (e: any) {
+    console.error('Failed to fetch progress:', e)
+    toast.error(`Progress fetch failed: ${e?.message || 'network error'}`)
+  }
 }
 
 async function fetchLogs() {
@@ -167,7 +309,10 @@ async function fetchLogs() {
       await nextTick()
       if (logContainer.value) logContainer.value.scrollTop = logContainer.value.scrollHeight
     }
-  } catch (e) { console.error('Failed to fetch logs:', e) }
+  } catch (e: any) {
+    console.error('Failed to fetch logs:', e)
+    toast.error(`Log fetch failed: ${e?.message || 'network error'}`)
+  }
 }
 
 function copyLogs() {
@@ -180,12 +325,15 @@ async function retryFailed() {
   try {
     const resp = await apiFetch('/catalog/retry-failed', { method: 'POST' })
     if (resp.ok) fetchProgress()
-  } catch (e) { console.error('Failed to retry:', e) }
+  } catch (e: any) {
+    console.error('Failed to retry:', e)
+    toast.error(`Retry failed: ${e?.message || 'network error'}`)
+  }
 }
 
 async function refreshAll() {
   loading.value = true
-  try { await Promise.all([fetchProgress(), fetchLogs()]) }
+  try { await Promise.all([fetchProgress(), fetchLogs(), fetchActivity()]) }
   finally { loading.value = false }
 }
 

@@ -18,6 +18,7 @@ from web_api.dependencies import (
     get_collection_name,
     clear_rag_cache,
     get_active_runs_for_source,
+    execute_graphql_query,
 )
 
 logger = logging.getLogger(__name__)
@@ -214,6 +215,99 @@ async def create_source(source: SourceCreate):
     except Exception as e:
         logger.error(f"Failed to create source {source.source_id}: {e}", exc_info=True)
         raise HTTPException(500, str(e))
+
+
+@router.get("/runs/activity")
+async def source_runs_activity(limit: int = 20):
+    """Recent + active per-source ETL runs for the ETL Monitor.
+
+    Combines two signals so the UI doesn't lie about what's happening:
+      - ``active``: Dagster runs tagged ``source_id=<id>`` that are still
+        QUEUED / STARTING / STARTED. Read straight from the Dagster
+        GraphQL API so a source stuck in the coordinator without a
+        ``processing_runs`` row yet still appears on the monitor.
+      - ``recent``: last ``limit`` rows of ``processing_runs`` (DESC by
+        ``started_at``). These are the completed / failed runs after the
+        op's ``complete_run()`` call landed.
+
+    Returns ``{active: [...], recent: [...]}``. Both lists are sorted
+    newest-first and include ``dagster_run_id`` so the UI can deep-link
+    into Dagit.
+    """
+    from sqlalchemy import desc
+    from src.database.connection import get_db_session
+    from src.database.models import ProcessingRun
+
+    # --- active runs from Dagster ------------------------------------
+    active: list[dict] = []
+    try:
+        # We deliberately DO NOT filter by pipelineName — the app spawns
+        # runs across two job names (`single_source_etl_job` for auto-embed
+        # after POST /sources, `dynamic_source_etl_job` for the Reprocess
+        # button). A single-job filter was silently hiding the auto-embed
+        # path. Instead we fetch all non-terminal runs and keep only ones
+        # that carry a `source_id` tag — that's the invariant for anything
+        # relevant to this view.
+        query = """
+        query ActiveSourceRuns {
+            runsOrError(
+                filter: { statuses: [STARTED, STARTING, QUEUED] }
+                limit: 100
+            ) {
+                __typename
+                ... on Runs {
+                    results {
+                        runId
+                        status
+                        startTime
+                        creationTime
+                        pipelineName
+                        tags { key value }
+                    }
+                }
+                ... on PythonError { message }
+            }
+        }
+        """
+        data = await execute_graphql_query(query)
+        runs_or_error = data.get("runsOrError") or {}
+        if runs_or_error.get("__typename") == "Runs":
+            for r in runs_or_error.get("results") or []:
+                tags = {t["key"]: t["value"] for t in (r.get("tags") or [])}
+                sid = tags.get("source_id")
+                if not sid:
+                    continue  # skip catalog-batch + untagged runs
+                active.append({
+                    "dagster_run_id": r.get("runId"),
+                    "source_id": sid,
+                    "status": r.get("status"),
+                    "job_name": r.get("pipelineName"),
+                    "trigger_type": tags.get("trigger_type"),
+                    "start_time": r.get("startTime"),
+                    "creation_time": r.get("creationTime"),
+                })
+        # Sort newest-first by creation time
+        active.sort(key=lambda x: x.get("creation_time") or 0, reverse=True)
+    except Exception as e:
+        logger.warning(f"/sources/runs/activity: active-run fetch failed: {e}")
+
+    # --- recent history from processing_runs -------------------------
+    recent: list[dict] = []
+    try:
+        # Clamp limit into a sane range so a client can't ask for 10_000 rows.
+        lim = max(1, min(int(limit), 100))
+        with get_db_session() as session:
+            rows = (
+                session.query(ProcessingRun)
+                .order_by(desc(ProcessingRun.started_at))
+                .limit(lim)
+                .all()
+            )
+            recent = [r.to_dict() for r in rows]
+    except Exception as e:
+        logger.warning(f"/sources/runs/activity: recent-run fetch failed: {e}")
+
+    return {"active": active, "recent": recent}
 
 
 @router.get("/")
@@ -461,6 +555,71 @@ async def update_source_metadata(source_id: str, updates: dict):
     }
 
 
+@router.post("/{source_id}/cancel")
+async def cancel_source_etl(source_id: str):
+    """Cancel any active Dagster run for this source.
+
+    Returns the number of runs actually terminated. Uses Dagster's
+    ``terminateRuns(terminatePolicy: MARK_AS_CANCELED_IMMEDIATELY)`` so a
+    dead subprocess doesn't leave the run stuck in CANCELING and block the
+    concurrency slot for the next trigger. Safe to call when no run is
+    active (returns ``{"cancelled": 0}``); the caller can reset the
+    source's ``processing_status`` to ``pending`` separately if desired.
+    """
+    from src.sources import get_source_store
+
+    store = get_source_store()
+    source = store.get_source(source_id)
+    if not source:
+        raise HTTPException(404, "Source not found")
+
+    active = await get_active_runs_for_source(source_id)
+    if not active:
+        # No run in flight — also reset the source status if it was left
+        # in "processing" by a previous crashed run.
+        if getattr(source, "processing_status", None) == "processing":
+            store.update_processing_status(source_id, "pending")
+        return {"cancelled": 0, "source_id": source_id}
+
+    run_ids = [r.get("runId") for r in active if r.get("runId")]
+    mutation = """
+    mutation CancelRuns($runIds: [String!]!) {
+        terminateRuns(runIds: $runIds, terminatePolicy: MARK_AS_CANCELED_IMMEDIATELY) {
+            __typename
+            ... on TerminateRunsResult {
+                terminateRunResults {
+                    __typename
+                    ... on TerminateRunSuccess { run { runId status } }
+                    ... on TerminateRunFailure { message }
+                }
+            }
+            ... on PythonError { message }
+        }
+    }
+    """
+    data = await execute_graphql_query(mutation, {"runIds": run_ids})
+    body = data.get("terminateRuns") or {}
+    if body.get("__typename") == "PythonError":
+        raise HTTPException(502, f"Dagster error: {body.get('message', 'unknown')}")
+
+    results = body.get("terminateRunResults") or []
+    cancelled = sum(1 for r in results if r.get("__typename") == "TerminateRunSuccess")
+
+    # Reset the source so the UI doesn't keep showing it as "processing"
+    # after the user already clicked Cancel.
+    store.update_processing_status(
+        source_id,
+        "pending",
+        error_message="Cancelled by user." if cancelled else None,
+    )
+
+    return {
+        "cancelled": cancelled,
+        "run_ids": run_ids,
+        "source_id": source_id,
+    }
+
+
 @router.post("/{source_id}/trigger", response_model=RunResponse)
 async def trigger_source_etl(source_id: str, job_name: str = "dynamic_source_etl_job"):
     """Trigger ETL job for a specific source.
@@ -700,6 +859,72 @@ async def test_source_connection(source_id: str):
     return result
 
 
+def _scan_tabular(path: str, result: dict) -> None:
+    """Populate `result` from a CSV/TSV file using pandas. Mirrors the keys the
+    NetCDF branch produces so the frontend renders both the same way.
+
+    Heuristics: first matching name in TIME_NAMES becomes the time axis (min/max
+    parsed as dates if possible); LAT/LON name matches feed spatial_extent."""
+    import pandas as pd
+
+    TIME_NAMES = {"time", "date", "datetime", "year", "month", "timestamp"}
+    LAT_NAMES = {"lat", "latitude", "y"}
+    LON_NAMES = {"lon", "long", "longitude", "x"}
+
+    try:
+        head = pd.read_csv(path, nrows=5000, sep=None, engine="python", comment="#")
+    except Exception:
+        head = pd.read_csv(path, nrows=5000, comment="#")
+
+    for col in head.columns:
+        info = {"name": str(col), "units": str(head[col].dtype)}
+        result["variables"].append(info)
+
+    cols_lower = {str(c).strip().lower(): c for c in head.columns}
+
+    time_col = next((cols_lower[k] for k in TIME_NAMES if k in cols_lower), None)
+    if time_col is not None:
+        try:
+            parsed = pd.to_datetime(head[time_col], errors="coerce").dropna()
+            if not parsed.empty:
+                result["time_range"]["start"] = str(parsed.min())[:10]
+                result["time_range"]["end"] = str(parsed.max())[:10]
+        except Exception:
+            pass
+
+    lat_col = next((cols_lower[k] for k in LAT_NAMES if k in cols_lower), None)
+    if lat_col is not None:
+        try:
+            lats = pd.to_numeric(head[lat_col], errors="coerce").dropna()
+            if not lats.empty:
+                result["spatial_extent"]["lat_min"] = float(lats.min())
+                result["spatial_extent"]["lat_max"] = float(lats.max())
+        except Exception:
+            pass
+
+    lon_col = next((cols_lower[k] for k in LON_NAMES if k in cols_lower), None)
+    if lon_col is not None:
+        try:
+            lons = pd.to_numeric(head[lon_col], errors="coerce").dropna()
+            if not lons.empty:
+                result["spatial_extent"]["lon_min"] = float(lons.min())
+                result["spatial_extent"]["lon_max"] = float(lons.max())
+        except Exception:
+            pass
+
+    result["attributes"]["format"] = "CSV"
+    result["attributes"]["columns"] = str(len(head.columns))
+    result["attributes"]["rows_sampled"] = str(len(head))
+
+    parts = [f"Tabular CSV with {len(head.columns)} columns"]
+    var_names = [v["name"] for v in result["variables"]]
+    if var_names:
+        parts.append(f"Columns: {', '.join(var_names[:10])}")
+    if result["time_range"].get("start"):
+        parts.append(f"Period: {result['time_range']['start']} to {result['time_range'].get('end', 'present')}")
+    result["description"] = ". ".join(parts)
+
+
 @router.post("/scan-metadata")
 async def scan_source_metadata(data: dict):
     """Read file metadata remotely (variables, time range, spatial extent, attributes).
@@ -734,6 +959,20 @@ async def scan_source_metadata(data: dict):
     import asyncio
     loop = asyncio.get_event_loop()
 
+    # Pick scan backend by file extension. Gridded formats go through xarray;
+    # tabular CSV/TSV through pandas so the wizard surfaces columns/time-range
+    # for non-NetCDF sources too (HadCRUT5, GISTEMP, etc.).
+    def _detect_format(name: str) -> str:
+        from urllib.parse import urlparse
+        path = urlparse(name).path if name.lower().startswith(("http://", "https://")) else name
+        ext = Path(path).suffix.lower()
+        if ext in {".csv", ".tsv"}:
+            return "tabular"
+        return "gridded"
+
+    scan_format = _detect_format(str(uploaded_local_path) if uploaded_local_path else url)
+    tmp_suffix = ".csv" if scan_format == "tabular" else ".nc"
+
     def _scan():
         result = {
             "variables": [],
@@ -744,7 +983,6 @@ async def scan_source_metadata(data: dict):
             "error": None,
         }
         try:
-            import xarray as xr
             import tempfile
             import requests as req
 
@@ -754,7 +992,7 @@ async def scan_source_metadata(data: dict):
             if uploaded_local_path is not None:
                 tmp_path = str(uploaded_local_path)
             else:
-                tmp = tempfile.NamedTemporaryFile(suffix=".nc", delete=False)
+                tmp = tempfile.NamedTemporaryFile(suffix=tmp_suffix, delete=False)
                 downloaded_tmp = tmp.name
                 tmp_path = tmp.name
                 try:
@@ -791,6 +1029,17 @@ async def scan_source_metadata(data: dict):
                     result["error"] = f"Download failed: {dl_err}"
                     return result
 
+            if scan_format == "tabular":
+                _scan_tabular(tmp_path, result)
+                if downloaded_tmp:
+                    import os
+                    try:
+                        os.unlink(downloaded_tmp)
+                    except Exception:
+                        pass
+                return result
+
+            import xarray as xr
             ds = xr.open_dataset(tmp_path)
 
             # Variables

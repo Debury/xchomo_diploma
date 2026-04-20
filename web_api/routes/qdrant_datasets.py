@@ -7,6 +7,7 @@ Used by the frontend to show which catalog sources have data in the vector DB.
 
 import logging
 import time
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from typing import Dict, Any, List, Optional
 
 from fastapi import APIRouter, HTTPException
@@ -24,30 +25,52 @@ _COUNTS_CACHE: Optional[Dict[str, int]] = None
 _COUNTS_CACHE_TS: float = 0
 CACHE_TTL = 300  # 5 minutes
 
+# Facet calls can block for minutes when Qdrant is under heavy write load
+# from concurrent Dagster upserts. The /catalog endpoint calls this on every
+# page load, so an unbounded facet stall causes the whole Catalog page to
+# spin for minutes while ETL runs. Cap it and fall back to cached/empty
+# counts; the UI shows "pending" for sources whose counts weren't available,
+# which is acceptable while processing is in flight.
+_FACET_TIMEOUT_SECONDS = 5.0
+_FACET_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="qdrant-facet")
+
 
 def _get_embedding_counts() -> Dict[str, int]:
-    """Get per-source_id embedding counts using Qdrant facets. Cached."""
+    """Get per-source_id embedding counts using Qdrant facets. Cached.
+
+    Wraps the facet() call in a bounded-timeout executor so a blocked
+    Qdrant (e.g. during a hot Dagster upsert) cannot stall the calling
+    HTTP request indefinitely. On timeout/error, returns the last-good
+    cached counts (stale is better than hung); if there is no cache yet,
+    returns an empty dict so callers can render "pending" placeholders.
+    """
     global _COUNTS_CACHE, _COUNTS_CACHE_TS
     now = time.time()
     if _COUNTS_CACHE and (now - _COUNTS_CACHE_TS) < CACHE_TTL:
         return _COUNTS_CACHE
 
-    client = get_qdrant_client()
-    collection = get_collection_name()
-    counts: Dict[str, int] = {}
-
-    try:
-        # Facet by source_id to get counts per source
-        from qdrant_client.http.models import FacetRequest
+    def _query() -> Dict[str, int]:
+        client = get_qdrant_client()
+        collection = get_collection_name()
         result = client.facet(
             collection_name=collection,
             key="source_id",
             limit=500,
         )
-        for hit in result.hits:
-            counts[hit.value] = hit.count
+        return {hit.value: hit.count for hit in result.hits}
+
+    counts: Dict[str, int] = {}
+    try:
+        counts = _FACET_EXECUTOR.submit(_query).result(timeout=_FACET_TIMEOUT_SECONDS)
+    except FuturesTimeoutError:
+        logger.warning(
+            f"Facet by source_id timed out after {_FACET_TIMEOUT_SECONDS}s "
+            f"(Qdrant likely under write load); returning stale/empty counts."
+        )
+        return _COUNTS_CACHE or {}
     except Exception as e:
         logger.warning(f"Facet by source_id failed: {e}")
+        return _COUNTS_CACHE or {}
 
     _COUNTS_CACHE = counts
     _COUNTS_CACHE_TS = time.time()

@@ -645,9 +645,17 @@ async function analyzeUrl() {
         if (data.matched_dataset) form.value.name = data.matched_dataset.dataset_name
         else if (data.suggested_name) form.value.name = data.suggested_name
       }
+    } else {
+      // Surface backend rejections (400 from SSRF guard, 401, etc.) instead of
+      // silently dropping them — otherwise the button just stops spinning with
+      // no feedback.
+      const detail = await resp.json().catch(() => ({})).then(d => d.detail || `HTTP ${resp.status}`)
+      urlAnalysis.value = { reachable: false, error: detail }
+      toast.error(`URL check failed: ${detail}`)
     }
   } catch (e) {
     urlAnalysis.value = { reachable: false, error: e.message }
+    toast.error(`URL check failed: ${e.message}`)
   } finally {
     analyzing.value = false
   }
@@ -661,9 +669,16 @@ async function testConnectionReview() {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ url: form.value.url }),
     })
-    if (resp.ok) reviewConnectionResult.value = await resp.json()
+    if (resp.ok) {
+      reviewConnectionResult.value = await resp.json()
+    } else {
+      const detail = await resp.json().catch(() => ({})).then(d => d.detail || `HTTP ${resp.status}`)
+      reviewConnectionResult.value = { reachable: false, error: detail }
+      toast.error(`Connection test failed: ${detail}`)
+    }
   } catch (e) {
     reviewConnectionResult.value = { reachable: false, error: e.message }
+    toast.error(`Connection test failed: ${e.message}`)
   } finally {
     testingConnection.value = false
   }
