@@ -9,6 +9,8 @@ SUPPORTED_EXTENSIONS = {
     ".asc": "ascii", ".csv": "csv", ".tsv": "csv",
     ".zarr": "zarr", ".zip": "zip", ".gz": "gz",
     ".tar": "tar", ".txt": "csv",
+    # Unstructured documents → processed by rag-mendelu GeneralEtl
+    ".pdf": "pdf", ".docx": "pdf", ".pptx": "pdf", ".md": "pdf",
 }
 
 # Compound extensions that must be checked before single-suffix lookup

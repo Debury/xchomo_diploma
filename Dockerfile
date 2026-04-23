@@ -23,6 +23,8 @@ RUN apt-get update && apt-get install -y \
     libgeos-dev \
     libeccodes-dev \
     libeccodes0 \
+    libgl1-mesa-glx \
+    libglib2.0-0 \
     ca-certificates \
     curl \
     unzip \
@@ -63,6 +65,7 @@ COPY pyproject.toml .
 COPY README.md .
 COPY web_api/ ./web_api/
 COPY dagster_project/ ./dagster_project/
+COPY rag-mendelu/ ./rag-mendelu/
 
 # Restore the built frontend
 RUN cp -r /tmp/frontend-dist ./web_api/frontend/dist

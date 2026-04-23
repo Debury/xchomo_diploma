@@ -25,10 +25,17 @@ _CONTEXT_CACHE: Dict[str, str] = {}
 def _get_llm_client():
     """Get LLM client for context generation. Returns None if unavailable."""
     import os
-    api_key = os.getenv("OPENROUTER_API_KEY")
-    if not api_key:
-        return None
+    backend = os.getenv("LLM_BACKEND", "").lower().strip()
+    if not backend:
+        backend = "openrouter" if os.getenv("OPENROUTER_API_KEY") else "ollama"
     try:
+        if backend == "ollama":
+            from src.llm.ollama_client import OllamaClient
+            client = OllamaClient()
+            return client if client.check_health() else None
+        api_key = os.getenv("OPENROUTER_API_KEY")
+        if not api_key:
+            return None
         from src.llm.openrouter_client import OpenRouterClient
         return OpenRouterClient()
     except Exception:

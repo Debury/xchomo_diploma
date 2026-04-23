@@ -81,7 +81,7 @@
                   id="cs-file"
                   type="file"
                   class="hidden"
-                  accept=".nc,.nc4,.cdf,.hdf,.hdf5,.h5,.he5,.tif,.tiff,.grib,.grib2,.grb,.grb2,.csv,.tsv,.txt,.zip,.gz,.tar,.zarr,.parquet"
+                  accept=".nc,.nc4,.cdf,.hdf,.hdf5,.h5,.he5,.tif,.tiff,.grib,.grib2,.grb,.grb2,.csv,.tsv,.txt,.zip,.gz,.tar,.zarr,.parquet,.pdf,.docx,.pptx,.md"
                   @change="handleFileUpload"
                   :disabled="uploading"
                 />
@@ -94,7 +94,7 @@
               <p class="text-xs text-mendelu-gray-dark">
                 Max {{ uploadMaxMb }} MB per file
                 (<span class="font-mono">UPLOAD_MAX_MB</span> env var).
-                Accepted: NetCDF, GRIB, HDF5, GeoTIFF, CSV, Parquet, Zarr, zip/gz/tar.
+                Accepted: NetCDF, GRIB, HDF5, GeoTIFF, CSV, Parquet, Zarr, zip/gz/tar, unstructured data (.pdf, .docx, .pptx, .md, .txt).
                 The file stays on the server and the pipeline reads it in place.
               </p>
               <p v-if="uploadError" class="text-xs text-mendelu-alert">{{ uploadError }}</p>
@@ -152,6 +152,7 @@
               <option value="zarr">Zarr (.zarr)</option>
               <option value="ascii">ASCII Grid (.asc)</option>
               <option value="zip">Archive (.zip, .gz, .tar)</option>
+              <option value="pdf">Unstructured data (.pdf, .docx, .pptx, .md, .txt)</option>
             </select>
           </div>
         </div>
@@ -401,7 +402,7 @@
 
         <!-- Navigation buttons -->
         <div class="flex gap-3 pt-6">
-          <button v-if="step > 1" type="button" @click="step--" class="btn-secondary flex-1 py-3">Back</button>
+          <button v-if="step > 1" type="button" @click="isUnstructured && step === 5 ? step = 1 : step--" class="btn-secondary flex-1 py-3">Back</button>
           <button v-if="step < totalSteps" type="button" @click="nextStep" class="btn-primary flex-1 py-3">Next</button>
           <button v-if="step === totalSteps" type="submit" :disabled="submitting" class="btn-primary flex-1 py-3 disabled:opacity-50">
             {{ submitting ? 'Creating...' : 'Create Source' }}
@@ -498,8 +499,9 @@ async function handleFileUpload(event: Event) {
       csv: 'csv', tsv: 'csv', txt: 'csv',
       zip: 'zip', gz: 'zip', tar: 'zip',
       zarr: 'zarr',
+      pdf: 'pdf', docx: 'pdf', pptx: 'pdf', md: 'pdf',
     }
-    if (ext && fmtByExt[ext] && !form.value.type) form.value.type = fmtByExt[ext]
+    if (ext && fmtByExt[ext]) form.value.type = fmtByExt[ext]
     toast.success(`Uploaded ${body.filename} (${formatBytes(body.size_bytes)})`)
   } catch (e: any) {
     uploadError.value = e?.message || 'Upload failed'
@@ -632,9 +634,17 @@ function onPortalChange() {
   }
 }
 
+const isUnstructured = computed(() => form.value.type === 'pdf')
+
 function nextStep() {
   if (step.value === 1 && (!form.value.name || !form.value.url)) {
     toast.error('Please fill in Source Name and Data URL')
+    return
+  }
+  if (step.value === 1 && isUnstructured.value) {
+    form.value.auth_method = 'none'
+    form.value.autoEmbed = true
+    step.value = 5
     return
   }
   step.value++
@@ -757,7 +767,7 @@ async function handleSubmit() {
     })
     if (sourceConfig.time_range && Object.keys(sourceConfig.time_range).length === 0) delete sourceConfig.time_range
 
-    const resp = await apiFetch('/sources', {
+    const resp = await apiFetch('/sources/', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(sourceConfig)
     })

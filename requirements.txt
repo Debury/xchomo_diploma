@@ -127,3 +127,35 @@ datasets>=2.14.0
 
 # LangChain HuggingFace wrapper (RAGAS embeddings integration)
 langchain-huggingface>=0.1.0
+
+# ====================================================================================
+# UNSTRUCTURED DOCUMENT INGESTION (rag-mendelu submodule)
+# ====================================================================================
+
+# PDF / DOCX / PPTX → Markdown conversion
+docling>=2.0.0
+
+# Markdown header splitting (used by GeneralEtl)
+langchain-text-splitters>=0.3.0
+
+# LangChain community integrations (used by AgenticRAG nodes)
+langchain-community>=0.3.0
+
+# Fast in-process embedding (GeneralEtl / TextEmbeddingService default)
+fastembed>=0.4.0
+
+# FlashRank reranker (RetrievalGrader agent)
+flashrank>=0.2.9
+
+# DuckDB for tabular data extracted from documents
+duckdb>=0.10.0
+
+# NLP sentence splitting (SentenceSplitter → spacy en_core_web_sm)
+spacy>=3.8.0
+en-core-web-sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl
+
+# Colored logging (utils/logging_config.py)
+colorlog>=6.10.1
+
+# Ollama LLM integration (rag-mendelu LLM calls)
+langchain-ollama>=1.0.1

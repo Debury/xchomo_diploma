@@ -127,6 +127,40 @@ def acquire_source_lock(source_id: str):
         conn.close()
 
 
+def ensure_database_exists():
+    """Create the climate_app database if it doesn't exist.
+
+    Connects to the default 'dagster' (or POSTGRES_DB) database — which is
+    always present — and issues CREATE DATABASE with autocommit so it works
+    outside a transaction block. Safe to call on every startup.
+    """
+    import re
+    from sqlalchemy import create_engine, text
+
+    # Derive a connection URL pointing at the maintenance DB (always exists).
+    # e.g. postgresql://dagster:dagster@dagster-postgres:5432/climate_app
+    #   →  postgresql://dagster:dagster@dagster-postgres:5432/dagster
+    maintenance_db = os.getenv("POSTGRES_DB", "dagster")
+    maintenance_url = re.sub(r"/[^/]+$", f"/{maintenance_db}", DATABASE_URL)
+
+    engine = create_engine(maintenance_url, isolation_level="AUTOCOMMIT")
+    try:
+        with engine.connect() as conn:
+            exists = conn.execute(
+                text("SELECT 1 FROM pg_database WHERE datname = 'climate_app'")
+            ).scalar()
+            if not exists:
+                conn.execute(text("CREATE DATABASE climate_app"))
+                conn.execute(
+                    text("GRANT ALL PRIVILEGES ON DATABASE climate_app TO CURRENT_USER")
+                )
+                logger.info("Created database 'climate_app'")
+    except Exception as e:
+        logger.error(f"Could not ensure climate_app database exists: {e}")
+    finally:
+        engine.dispose()
+
+
 def init_db():
     """Create all tables if they don't exist, then apply idempotent ALTER TABLE
     migrations for columns that were added after the initial schema shipped.

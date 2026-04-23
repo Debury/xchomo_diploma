@@ -14,7 +14,7 @@ from datetime import datetime
 from typing import Dict, Any, List
 
 from dagster import (
-    job, op, Out, Output, OpExecutionContext, AssetMaterialization,
+    job, op, Out, Output, OpExecutionContext, AssetMaterialization, failure_hook, HookContext,
 )
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -132,7 +132,11 @@ def process_single_source_op(context: OpExecutionContext) -> Dict[str, Any]:
 
         # Download
         format_hint = source.format or detect_format_from_url(source.url)
-        ext_map = {'netcdf': '.nc', 'geotiff': '.tif', 'csv': '.csv', 'grib': '.grib', 'zip': '.zip'}
+        ext_map = {
+            'netcdf': '.nc', 'geotiff': '.tif', 'csv': '.csv',
+            'grib': '.grib', 'zip': '.zip',
+            'pdf': Path(source.url).suffix.lower() or '.pdf',
+        }
         ext = ext_map.get(format_hint, '.dat')
 
         tmp_path = None
@@ -236,6 +240,37 @@ def process_single_source_op(context: OpExecutionContext) -> Dict[str, Any]:
                     logger.info(f"Downloaded to {tmp_path}")
                 finally:
                     http_session.close()
+
+            # Branch: unstructured documents go through GeneralEtl
+            _unstructured_exts = {".pdf", ".docx", ".pptx", ".md", ".txt"}
+            _file_ext = Path(tmp_path).suffix.lower() if tmp_path else ""
+            if format_hint == "pdf" or _file_ext in _unstructured_exts:
+                logger.info(f"Unstructured format detected ({_file_ext or format_hint}), using GeneralEtl")
+                total_chunks = _process_unstructured(
+                    file_path=tmp_path,
+                    source_id=source_id,
+                    logger=logger,
+                )
+                if total_chunks == 0:
+                    raise ValueError("GeneralEtl produced 0 chunks")
+
+                duration = time.time() - start_time
+                store.update_processing_status(source_id, "completed")
+                if run_record_id:
+                    try:
+                        pg_store.complete_processing_run(
+                            run_id=run_record_id, status="completed", chunks_processed=total_chunks,
+                        )
+                    except Exception:
+                        pass
+                logger.info(f"Completed {source_id} (unstructured): {total_chunks} chunks in {duration:.1f}s")
+                return {
+                    "status": "completed",
+                    "source_id": source_id,
+                    "chunks": total_chunks,
+                    "duration": round(duration, 1),
+                    "pipeline": "general_etl",
+                }
 
             # Load raster
             logger.info("Loading raster data...")
@@ -395,12 +430,69 @@ def process_single_source_op(context: OpExecutionContext) -> Dict[str, Any]:
             except Exception:
                 pass
 
-        return {
-            "status": "failed",
-            "source_id": source_id,
-            "error": error_msg,
-            "duration": round(duration, 1),
-        }
+        raise  # Let Dagster mark the run as FAILURE (not success)
+
+
+def _process_unstructured(file_path: str, source_id: str, logger) -> int:
+    """Ingest an unstructured document (PDF/DOCX/PPTX/MD/TXT) via GeneralEtl.
+
+    Imports the rag-mendelu submodule at call time (lazy) so the heavy deps
+    (docling, fastembed, flashrank) only load when needed.
+    Returns the number of chunks stored.
+    """
+    import os
+    import sys
+
+    submodule_path = str(PROJECT_ROOT / "rag-mendelu")
+    if submodule_path not in sys.path:
+        sys.path.insert(0, submodule_path)
+
+    from database.qdrant_db_repository import QdrantDbRepository
+    from database.duck_db_repository import DuckDbRepository
+    from etl.general_etl import GeneralEtl
+    from text_embedding import TextEmbeddingService
+
+    qdrant_host = os.getenv("QDRANT_HOST", "localhost")
+    qdrant_port = int(os.getenv("QDRANT_REST_PORT", "6333"))
+    qdrant_grpc = int(os.getenv("QDRANT_GRPC_PORT", "6334"))
+    collection = os.getenv("DOCS_COLLECTION_NAME", "climate_data_documents")
+
+    embedding_service = TextEmbeddingService()
+    vector_size = embedding_service.get_embedding_dim()
+
+    db_repository = QdrantDbRepository(
+        ip=qdrant_host,
+        port=qdrant_port,
+        grpc_port=qdrant_grpc,
+        collection_name=collection,
+        metadata={"vector_size": vector_size, "distance": "DOT"},
+    )
+    # Create collection only if it doesn't already exist (idempotent)
+    existing = [c.name for c in db_repository.client.get_collections().collections]
+    if collection not in existing:
+        db_repository.create_collection()
+
+    duckdb_path = str(PROJECT_ROOT / "data" / "sql" / f"{collection}.duckdb")
+    sql_db = DuckDbRepository(db_path=duckdb_path)
+    try:
+        etl = GeneralEtl(
+            filepath=file_path,
+            db_repository=db_repository,
+            embedding_service=embedding_service,
+            sql_db_repo=sql_db,
+        )
+        success = etl.run()
+
+    finally:
+        sql_db.close()
+
+    if not success:
+        logger.error(f"GeneralEtl failed for {file_path}")
+        return 0
+
+    count = db_repository.get_count()
+    logger.info(f"GeneralEtl stored {count} total chunks in '{collection}' for {source_id}")
+    return len(etl.documents)
 
 
 def _process_via_portal(portal: str, source, logger) -> int:
@@ -476,6 +568,28 @@ def _source_to_catalog_entry(source):
     )
 
 
+@failure_hook
+def mark_source_failed_hook(context: HookContext):
+    """Mark the source as failed when a Dagster run fails at any level.
+
+    Covers infrastructure failures (e.g. compute log manager errors) that happen
+    before the op's own exception handler gets a chance to run, leaving the source
+    stuck in 'processing' indefinitely.
+    """
+    dagster_run = context.instance.get_run_by_id(context.run_id)
+    source_id = (dagster_run.tags or {}).get("source_id") if dagster_run else None
+    if not source_id:
+        return
+    try:
+        from src.sources import get_source_store
+        store = get_source_store()
+        error_msg = f"Dagster run failed: {context.op_exception}" if context.op_exception else "Dagster run failed"
+        store.update_processing_status(source_id, "failed", error_message=error_msg)
+        context.log.info(f"Marked {source_id} as failed via failure hook")
+    except Exception as e:
+        context.log.error(f"failure_hook could not update status for {source_id}: {e}")
+
+
 @job(
     resource_defs={
         "config_loader": ConfigLoaderResource(config_path="config/pipeline_config.yaml"),
@@ -488,6 +602,7 @@ def _source_to_catalog_entry(source):
     },
     tags={"pipeline": "single_source_etl"},
     description="Process a single data source (source_id from run tags)",
+    hooks={mark_source_failed_hook},
 )
 def single_source_etl_job():
     process_single_source_op()

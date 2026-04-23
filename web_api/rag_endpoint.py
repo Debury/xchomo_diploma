@@ -52,11 +52,28 @@ def _get_reranker():
 
 
 def _get_llm_client():
-    """Get LLM client — OpenRouter only."""
+    """Get LLM client — selects backend via LLM_BACKEND env var.
+
+    LLM_BACKEND=openrouter  → OpenRouterClient (requires OPENROUTER_API_KEY)
+    LLM_BACKEND=ollama      → OllamaClient (requires OLLAMA_HOST + OLLAMA_MODEL)
+    unset                   → OpenRouter if OPENROUTER_API_KEY present, else Ollama
+    """
     import os
+    backend = os.getenv("LLM_BACKEND", "").lower().strip()
+
+    if not backend:
+        backend = "openrouter" if os.getenv("OPENROUTER_API_KEY") else "ollama"
+
+    if backend == "ollama":
+        from src.llm.ollama_client import OllamaClient
+        client = OllamaClient()
+        logger.info(f"Using Ollama: {client.host} model={client.model}")
+        return client
+
+    # Default: openrouter
     api_key = os.getenv("OPENROUTER_API_KEY")
     if not api_key:
-        raise ValueError("OPENROUTER_API_KEY environment variable is required")
+        raise ValueError("OPENROUTER_API_KEY environment variable is required (or set LLM_BACKEND=ollama)")
     from src.llm.openrouter_client import OpenRouterClient
     client = OpenRouterClient()
     logger.info(f"Using OpenRouter: {client.model}")

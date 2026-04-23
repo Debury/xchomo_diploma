@@ -19,7 +19,10 @@ Diploma thesis project. Live at **[climaterag.online](https://climaterag.online)
 git clone <repo-url> xchomo_diploma
 cd xchomo_diploma/xchomo_diploma
 
-# 1. Create your .env from the example
+# 1a. Pull the rag-mendelu submodule (required — used by all Docker services)
+git submodule update --init --recursive
+
+# 1b. Create your .env from the example
 cp .env.example .env
 # Open .env and set:
 #   AUTH_USERNAME / AUTH_PASSWORD_HASH  (generate hash: python scripts/hash_password.py)
@@ -75,6 +78,26 @@ curl -X POST http://localhost:8000/rag/chat \
   -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{"question": "What precipitation data is available for Slovakia?", "top_k": 3, "use_llm": false}'
+```
+
+---
+
+## 📦 Git Submodule: rag-mendelu
+
+This project depends on **[rag-mendelu](https://github.com/dvlastnik/rag-mendelu)** (branch `integration-to-climate-rag`) as a git submodule, mounted into all Docker services at `/app/rag-mendelu`.
+
+**After cloning, you must initialise the submodule before running the stack:**
+
+```bash
+git submodule update --init --recursive
+```
+
+If you already cloned without `--recurse-submodules` and the `rag-mendelu/` directory is empty, run the same command to populate it.
+
+To update the submodule to the latest commit on its tracking branch:
+
+```bash
+git submodule update --remote rag-mendelu
 ```
 
 ---

@@ -1,0 +1,7 @@
+[submodule "web_api/frontend/rag_mendelu"]
+	path = web_api/frontend/rag_mendelu
+	url = https://github.com/dvlastnik/rag-mendelu.git
+[submodule "rag-mendelu"]
+	path = rag-mendelu
+	url = https://github.com/dvlastnik/rag-mendelu.git
+	branch = integration-to-climate-rag

@@ -59,6 +59,7 @@ _ALLOWED_UPLOAD_EXT = {
     ".zip", ".gz", ".tar",
     ".zarr",
     ".parquet",
+    ".pdf", ".docx", ".pptx", ".md",
 }
 # Whitelist the safe portion of the user-provided filename so a malicious
 # upload can't escape _UPLOAD_ROOT via path traversal or shell metachars.

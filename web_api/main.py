@@ -10,11 +10,14 @@ import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+from dotenv import load_dotenv
+load_dotenv()
+
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from web_api.config import restore_settings_to_env
-from web_api.routes import health, auth, frontend, embeddings, sources, rag, catalog, schedules, admin, qdrant_datasets, adapters
+from web_api.routes import health, auth, frontend, embeddings, sources, rag, catalog, schedules, admin, qdrant_datasets, adapters, rag_docs
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +70,13 @@ async def lifespan(app: FastAPI):
     worst demo failure mode identified in the pre-defense audit.
     """
     try:
+        from src.database.connection import ensure_database_exists, init_db
+        ensure_database_exists()
+        init_db()
+    except Exception as e:
+        logger.error(f"Database bootstrap failed: {e}", exc_info=True)
+
+    try:
         from src.sources import get_source_store
 
         store = get_source_store()
@@ -81,6 +91,20 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         # Never block the API boot on a reconciliation failure — log and move on.
         logger.error(f"Startup reconciliation failed: {e}", exc_info=True)
+
+    # Pre-warm the AgenticRAG singleton in the background so the first user
+    # request doesn't pay the full model-loading cost (~1-4 min on cold cache).
+    import threading
+
+    def _warmup_rag():
+        try:
+            from web_api.routes.rag_docs import _get_agentic_rag
+            _get_agentic_rag()
+            logger.info("Startup: AgenticRAG warm-up complete.")
+        except Exception as e:
+            logger.warning(f"Startup: AgenticRAG warm-up skipped: {e}")
+
+    threading.Thread(target=_warmup_rag, daemon=True, name="rag-warmup").start()
 
     yield
     # no shutdown work
@@ -137,6 +161,7 @@ app.include_router(schedules.router, dependencies=_protected)
 app.include_router(admin.router, dependencies=_protected)
 app.include_router(adapters.router, dependencies=_protected)
 app.include_router(qdrant_datasets.router, dependencies=_protected)
+app.include_router(rag_docs.router, dependencies=_protected)
 
 
 if __name__ == "__main__":

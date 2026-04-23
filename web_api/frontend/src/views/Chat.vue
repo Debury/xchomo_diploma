@@ -6,30 +6,6 @@
       </template>
     </PageHeader>
 
-    <!-- Filter Bar — compact, inline, search-driven -->
-    <div class="mb-4 flex items-center gap-2 flex-wrap text-xs">
-      <span class="font-medium text-mendelu-gray-dark uppercase tracking-wider">Filters</span>
-      <input
-        v-model="filterSearch"
-        type="search"
-        placeholder="Search sources &amp; variables…"
-        class="input-field !w-48 !py-1 text-xs"
-      />
-      <select v-model="filterSource" class="input-field !w-40 !py-1 text-xs">
-        <option value="">All sources ({{ filteredSources.length }})</option>
-        <option v-for="s in filteredSources" :key="s" :value="s">{{ s }}</option>
-      </select>
-      <select v-model="filterVariable" class="input-field !w-40 !py-1 text-xs">
-        <option value="">All variables ({{ filteredVariables.length }})</option>
-        <option v-for="v in filteredVariables" :key="v" :value="v">{{ v }}</option>
-      </select>
-      <button
-        v-if="filterSource || filterVariable || filterSearch"
-        @click="clearFilters"
-        class="text-mendelu-green hover:underline ml-1"
-      >Clear</button>
-    </div>
-
     <!-- Chat Messages -->
     <div class="flex-1 overflow-y-auto space-y-4 mb-4 pr-2" ref="messagesContainer">
       <div
@@ -157,7 +133,7 @@
             <span class="text-mendelu-gray-dark text-xs tabular-nums ml-auto">{{ loadingElapsed }}s</span>
           </div>
           <p class="text-[11px] text-mendelu-gray-dark/70 leading-tight">
-            Semantic search + LLM synthesis usually takes 15–25 s. Hang on.
+            AgenticRAG pipeline (multi-step) usually takes 30–60 s. Hang on.
           </p>
         </div>
       </div>
@@ -171,7 +147,7 @@
           @keydown.enter.exact.prevent="sendMessage"
           rows="3"
           class="input-field resize-none flex-1"
-          placeholder="Ask about your climate data... (Enter to send)"
+          placeholder="Ask about your documents… (Enter to send)"
           :disabled="loading"
         ></textarea>
         <button
@@ -203,13 +179,11 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, nextTick, onMounted, onUnmounted } from 'vue'
+import { ref, nextTick, onUnmounted } from 'vue'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
 import PageHeader from '../components/PageHeader.vue'
 import { apiFetch } from '../api'
-import { useToast } from '../composables/useToast'
-
 // Render assistant answers as Markdown. `marked` parses to HTML, DOMPurify
 // strips any script/event-handler content before we v-html it — the LLM
 // output is not trusted input, so sanitization is mandatory.
@@ -224,36 +198,13 @@ function renderMarkdown(text: string): string {
   }
 }
 
-const toast = useToast()
-
 const input = ref('')
 const messages = ref<any[]>([])
 const loading = ref(false)
 const loadingStage = ref('Searching Qdrant…')
 const loadingElapsed = ref(0)
 const messagesContainer = ref(null)
-const filterSource = ref('')
-const filterVariable = ref('')
-const filterSearch = ref('')
-const availableSources = ref<any[]>([])
-const availableVariables = ref<any[]>([])
 let loadingTimer = null
-
-const filteredSources = computed(() => {
-  const q = filterSearch.value.toLowerCase().trim()
-  if (!q) return availableSources.value
-  return availableSources.value.filter((s: any) => String(s).toLowerCase().includes(q))
-})
-const filteredVariables = computed(() => {
-  const q = filterSearch.value.toLowerCase().trim()
-  if (!q) return availableVariables.value
-  return availableVariables.value.filter((v: any) => String(v).toLowerCase().includes(q))
-})
-function clearFilters() {
-  filterSearch.value = ''
-  filterSource.value = ''
-  filterVariable.value = ''
-}
 
 const quickQuestions = [
   'What variables are available?',
@@ -262,19 +213,6 @@ const quickQuestions = [
   'Drought indices for Central Europe'
 ]
 
-async function loadRagInfo() {
-  try {
-    const resp = await apiFetch('/rag/info')
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
-    const data = await resp.json()
-    availableSources.value = data.sources || []
-    availableVariables.value = data.variables || []
-  } catch (e: any) {
-    toast.error(`Could not load source/variable filters: ${e?.message ?? 'network error'}`, loadRagInfo)
-  }
-}
-
-onMounted(loadRagInfo)
 
 onUnmounted(() => {
   if (loadingTimer) {
@@ -313,46 +251,38 @@ async function sendMessage() {
   await scrollToBottom()
 
   try {
-    const body: Record<string, any> = { question, limit: 5 }
-    if (filterSource.value) body.source_filter = filterSource.value
-    if (filterVariable.value) body.variable_filter = filterVariable.value
-
-    const resp = await apiFetch('/rag/chat', {
+    const resp = await apiFetch('/rag/docs/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body)
+      body: JSON.stringify({ question })
     })
-
     const data = await resp.json().catch(() => null)
+    console.log('[AgenticRAG] response:', data)
     if (!resp.ok) {
       const errMsg = (data && (data.detail || data.error)) || `HTTP ${resp.status}`
       messages.value.push({ role: 'assistant', content: `Error: ${errMsg}` })
     } else if (!data) {
       messages.value.push({ role: 'assistant', content: 'Error: malformed server response' })
-    } else if (data.error) {
-      messages.value.push({ role: 'assistant', content: `Error: ${data.error}` })
     } else {
-      // /rag/chat response shape: `chunks` with {source_id, variable,
-      // similarity, text, metadata}. /rag/query returns `chunks` with
-      // {score, metadata}. Support both. (contexts/results were never emitted
-      // by the backend — the old code path always produced an empty list.)
-      const rawChunks = data.chunks || data.contexts || data.results || []
+      // Support multiple RAG backends:
+      // 1. Climate RAG: data.chunks with {source_id, variable, similarity, text, metadata}
+      // 2. AgenticRAG (Ollama/PDF): data.sources with {source, file_type, header_path, score, rerank_score, text}
+      const rawChunks = data.chunks || data.sources || data.contexts || data.results || []
       const chunks = rawChunks.map((c: any) => {
         const meta = c.metadata || {}
         const lat = c.lat ?? meta.lat
         const lon = c.lon ?? meta.lon
         return {
-          score: c.similarity ?? c.score ?? 0,
+          score: c.similarity ?? c.score ?? c.rerank_score ?? 0,
           dataset: c.dataset_name || meta.dataset_name || c.source_id || c.source || '',
-          variable: c.variable || meta.variable || '',
+          variable: c.variable || meta.variable || c.header_path || '',
           coordinates: (lat !== undefined && lon !== undefined)
             ? `${Number(lat).toFixed(1)}\u00b0N, ${Number(lon).toFixed(1)}\u00b0E`
             : '',
           time_range: c.time_range || meta.time_range || '',
           text: c.text || c.content || '',
           // Keep the full payload so the per-message export can dump
-          // exactly what the chat answer cited, not just the rendered
-          // subset above.
+          // exactly what the chat answer cited, not just the rendered subset above.
           source_id: c.source_id || meta.source_id,
           metadata: meta,
         }
@@ -367,7 +297,7 @@ async function sendMessage() {
         content: data.answer,
         spatial,
         chunks,
-        showChunks: false,
+        showChunks: chunks.length > 0,
         // Per-message bulk-export state. The original question + filters
         // are captured here so the Export button works even after later
         // chats overwrite the input box or the user changes filters.
@@ -378,7 +308,7 @@ async function sendMessage() {
         meta: {
           llm_time_ms: data.llm_time_ms,
           search_time_ms: data.search_time_ms,
-          provider: data.provider
+          provider: data.provider || 'AgenticRAG (Ollama)'
         }
       })
     }

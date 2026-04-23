@@ -131,6 +131,24 @@ Six services in `docker-compose.yml` plus an optional `jupyter` profile: dagster
 - **Logs**: `docker compose logs -f web-api` or `GET /logs/etl` endpoint
 - **Persistent catalog log**: `logs/catalog_pipeline.log` (via `setup_logger()`)
 
+## Git Submodule: rag-mendelu
+
+The `rag-mendelu/` directory is a git submodule pointing to `https://github.com/dvlastnik/rag-mendelu.git` (branch `integration-to-climate-rag`). It is **required** — all three Docker services (`dagster-daemon`, `dagit`, `web-api`) mount it at `/app/rag-mendelu`.
+
+After cloning, initialise with:
+
+```bash
+git submodule update --init --recursive
+```
+
+To pull the latest submodule changes:
+
+```bash
+git submodule update --remote rag-mendelu
+```
+
+The submodule is used by `web_api/routes/rag_docs.py`, `dagster_project/source_jobs.py`, and `src/climate_embeddings/loaders/detect_format.py`.
+
 ## Companion Directory
 
 `../thesis-template-typst-main/` contains the diploma thesis Typst source (migrated from LaTeX). `0_kontext/` has project state docs (`stav_projektu.md`) and literature review (`literarna_resers.md`) in Czech/Slovak.
