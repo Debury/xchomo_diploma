@@ -216,7 +216,28 @@ function pctOf(value: number): number {
 
 function formatTime(ts) {
   if (!ts) return '---'
-  try { return new Date(ts).toLocaleString() } catch { return ts }
+  try {
+    let v: any = ts
+    if (typeof v === 'number') {
+      // Dagster epoch is in seconds (float); Postgres rows arrive as ISO
+      // strings. Normalize numeric seconds → milliseconds.
+      if (v < 1e12) v = v * 1000
+      return new Date(v).toLocaleString()
+    }
+    if (typeof v === 'string') {
+      // Backend serializes Python `datetime.utcnow()` as a naive ISO string
+      // (no Z / no offset), so the browser would otherwise read it as LOCAL
+      // and shift CEST users 2h off. Append 'Z' when no TZ marker is
+      // present so toLocaleString() converts UTC → local correctly.
+      if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/.test(v) && !/Z|[+-]\d{2}:?\d{2}$/.test(v)) {
+        v = v + 'Z'
+      }
+      return new Date(v).toLocaleString()
+    }
+    return new Date(v).toLocaleString()
+  } catch {
+    return String(ts)
+  }
 }
 
 function phaseLabel(phase) {
@@ -234,8 +255,20 @@ function formatDuration(seconds: number | null | undefined): string {
 
 function formatRelStart(ts: number | string | null | undefined): string {
   if (ts == null) return '—'
-  // Dagster returns startTime as epoch *seconds* (float); normalize to ms.
-  const epochMs = typeof ts === 'number' && ts < 1e12 ? ts * 1000 : Number(new Date(ts))
+  // Dagster returns startTime as epoch *seconds* (float); Postgres returns
+  // naive ISO strings (no Z / no offset) representing UTC. Normalize both
+  // to a real UTC epoch in ms so the relative delta below is correct
+  // regardless of the browser's local timezone.
+  let epochMs: number
+  if (typeof ts === 'number') {
+    epochMs = ts < 1e12 ? ts * 1000 : ts
+  } else {
+    let s = ts
+    if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/.test(s) && !/Z|[+-]\d{2}:?\d{2}$/.test(s)) {
+      s = s + 'Z'
+    }
+    epochMs = Number(new Date(s))
+  }
   if (!epochMs || Number.isNaN(epochMs)) return '—'
   const deltaSec = Math.round((Date.now() - epochMs) / 1000)
   if (deltaSec < 5) return 'just now'

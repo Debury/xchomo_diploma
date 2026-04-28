@@ -455,3 +455,7 @@ Icon
 
 # Qdrant snapshots
 *.snapshot
+
+# AI assistant context (not part of the thesis deliverable)
+CLAUDE.md
+.claude/
