@@ -35,7 +35,6 @@ _FORCE_PHASE: Dict[str, int] = {
     # EIDC/CEDA auth download — handled by EIDC adapter
     "Hydro-JULES": 3,
     # No public API or data portal
-    "ArCIS": 4,
     "TUDES": 4,
     # Requires Mistral portal registration + custom API
     "Mistral": 4,
@@ -46,10 +45,11 @@ _FORCE_PHASE: Dict[str, int] = {
     # Greek portals — registration closed / portal only
     "NOA-GR": 4,
     "HWE-DB": 4,
-    # Météo-France — requires specific registration
+    # Météo-France SAFRAN — requires registration
     "SAFRAN": 4,
-    "SYNOP": 4,
-    "RADOME": 4,
+    # ArCIS, SYNOP, RADOME removed: working public download URLs are
+    # registered in DIRECT_DOWNLOAD_URLS — Phase-1 classification picks
+    # them up via the override check below.
     # Italian tide gauge portals — no API
     "Rete Mareografica Italiana": 4,
     "RMI-ISPRA": 4,

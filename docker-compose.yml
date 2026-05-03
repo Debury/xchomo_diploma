@@ -22,6 +22,8 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    mem_limit: 512m
+    memswap_limit: 512m
 
   # Dagster Daemon (for schedules and sensors)
   dagster-daemon:
@@ -57,6 +59,19 @@ services:
     networks:
       - climate-net
     restart: unless-stopped
+    # Daemon polls schedules + sensors. Light when idle; spikes when a
+    # scheduled job runs and pulls torch lazily. 1.5g covers both.
+    mem_limit: 1500m
+    memswap_limit: 1500m
+    # GPU access for the same reason as web-api — Dagster ops invoke the
+    # raster pipeline + embedder, both benefit massively from cuda.
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
 
   qdrant:
     image: qdrant/qdrant:v1.17.1
@@ -71,6 +86,10 @@ services:
     networks:
       - climate-net
     restart: unless-stopped
+    # 1.5M points + scalar quantization needs headroom; 5g leaves room for
+    # the others while letting Qdrant cache hot segments in memory.
+    mem_limit: 5g
+    memswap_limit: 5g
 
   # Dagster webserver (formerly dagit)
   dagit:
@@ -114,6 +133,10 @@ services:
       timeout: 5s
       retries: 20
       start_period: 30s
+    # Dagit webserver itself is light, but workspace.yaml loads the full
+    # repository module on import (catalog + climate_embeddings → torch).
+    mem_limit: 1500m
+    memswap_limit: 1500m
 
   # FastAPI Web Service
   web-api:
@@ -145,6 +168,13 @@ services:
       - DAGSTER_PORT=3000
       - PYTHONUNBUFFERED=1
       - PYTHONDONTWRITEBYTECODE=1
+      # HuggingFace tokenizers can deadlock when a forked subprocess
+      # inherits a primed (CUDA-aware) tokenizer state. Disabling
+      # parallelism is the official workaround.
+      - TOKENIZERS_PARALLELISM=false
+      # Cap OpenMP threads so libraries (numpy/torch) don't saturate
+      # all cores and starve the upsert/dask threads.
+      - OMP_NUM_THREADS=4
       - QDRANT_HOST=qdrant
       - QDRANT_REST_PORT=6333
       - QDRANT_GRPC_PORT=6334
@@ -169,6 +199,26 @@ services:
     networks:
       - climate-net
     restart: unless-stopped
+    # FastAPI + sentence-transformers (BAAI/bge-large-en-v1.5 ~1.3 GB on
+    # first load) + reranker model + per-request torch tensors + xarray
+    # eager loads of multi-GB NetCDFs (E-OBS tn alone is 2 GB). The
+    # original 3g limit OOM-killed subprocesses silently during catalog
+    # batch — bumped to 6g which gives clear headroom for the largest
+    # single dataset variable + model + ETL working set.
+    mem_limit: 6g
+    memswap_limit: 6g
+    # GPU passthrough — embedding moves from CPU (~30-90s per 1k chunks)
+    # to GPU (~3-8s). Requires NVIDIA driver on the Windows host that
+    # supports WSL2 GPU passthrough (470+) and `nvidia-container-toolkit`
+    # (Docker Desktop bundles this). If the host doesn't expose the GPU,
+    # PyTorch falls back to CPU automatically — won't crash.
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
 
   # Caddy reverse proxy with automatic HTTPS
   caddy:
@@ -187,6 +237,8 @@ services:
     depends_on:
       - web-api
     restart: unless-stopped
+    mem_limit: 256m
+    memswap_limit: 256m
 
   # Optional: Jupyter notebook for interactive analysis
   # Start manually with: docker compose --profile jupyter up jupyter

@@ -2,6 +2,14 @@
   <div class="space-y-6">
     <PageHeader title="ETL Monitor" subtitle="Live view of running ETL jobs and batch processing">
       <template #actions>
+        <button
+          v-if="progress?.thread_alive"
+          @click="cancelBatch"
+          :disabled="cancelling"
+          class="btn-danger disabled:opacity-50"
+        >
+          {{ cancelling ? 'Cancelling…' : 'Cancel batch' }}
+        </button>
         <button @click="retryFailed" :disabled="!progress || progress.failed === 0" class="btn-ghost disabled:opacity-50">
           Retry Failed
         </button>
@@ -94,8 +102,31 @@
       </span>
     </div>
 
-    <!-- Progress Bar — only shown while a batch is actually running. -->
-    <div v-if="progress && progress.thread_alive && progress.total > 0" class="card">
+    <!-- Live "what's running now" card — replaces the old percentage bar
+         which counted internal batch state (Qdrant guard pre-skips as
+         "processed") and was misleading. We just say what's actively
+         being processed and when the progress dict was last touched. -->
+    <div v-if="progress && progress.thread_alive" class="card !py-3">
+      <div class="flex items-center gap-3 text-sm">
+        <span class="relative flex h-2.5 w-2.5">
+          <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-mendelu-green opacity-75"></span>
+          <span class="relative inline-flex rounded-full h-2.5 w-2.5 bg-mendelu-green"></span>
+        </span>
+        <span class="text-mendelu-black font-medium">
+          <span v-if="progress.current_source">
+            Processing
+            <span class="font-mono text-mendelu-green ml-1">{{ progress.current_source }}</span>
+          </span>
+          <span v-else class="text-mendelu-gray-dark">Working… (between sources)</span>
+        </span>
+        <span class="text-xs text-mendelu-gray-dark ml-auto">
+          updated {{ formatTime(progress.updated_at) }}
+        </span>
+      </div>
+    </div>
+    <!-- Old progress-bar block intentionally kept commented for reference;
+         it counts in-batch state, not user-meaningful progress. -->
+    <div v-if="false" class="card">
       <div class="flex items-center justify-between mb-2">
         <span class="text-xs text-mendelu-gray-dark">
           <span v-if="progress.current_source" class="text-mendelu-green font-medium">Processing {{ progress.current_source }}</span>
@@ -137,31 +168,6 @@
       </div>
     </div>
 
-    <!-- Per-Phase Breakdown — only shown if an *active* catalog batch is
-         running. Phases are a catalog-specific concept; they're meaningless
-         for user-added sources, so don't clutter the idle view with them. -->
-    <div v-if="progress && progress.thread_alive && progress.phases && Object.keys(progress.phases).length" class="card">
-      <h3 class="text-sm font-medium text-mendelu-black mb-3">Catalog batch — per-phase breakdown</h3>
-      <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-        <div v-for="(info, phase) in progress.phases" :key="phase" class="bg-mendelu-gray-light rounded-lg p-4">
-          <div class="flex items-center justify-between mb-2">
-            <span class="text-mendelu-black font-medium text-sm">Phase {{ phase }}</span>
-            <span class="text-xs text-mendelu-gray-dark">{{ phaseLabel(phase) }}</span>
-          </div>
-          <div class="flex gap-3 text-xs">
-            <span class="text-mendelu-success">{{ info.completed }} done</span>
-            <span class="text-mendelu-alert">{{ info.failed }} failed</span>
-            <span class="text-mendelu-gray-dark">{{ info.total }} total</span>
-          </div>
-          <div class="w-full bg-mendelu-gray-semi rounded-full h-1.5 mt-2">
-            <div
-              class="bg-mendelu-green h-1.5 rounded-full transition-all duration-300"
-              :style="{ width: info.total > 0 ? `${(info.completed / info.total) * 100}%` : '0%' }"
-            ></div>
-          </div>
-        </div>
-      </div>
-    </div>
   </div>
 </template>
 
@@ -174,10 +180,11 @@ import { useToast } from '../composables/useToast'
 
 const toast = useToast()
 
-const progress = ref(null)
+const progress = ref<any>(null)
 const activity = ref<{ active: any[]; recent: any[] }>({ active: [], recent: [] })
 const logs = ref('')
 const loading = ref(false)
+const cancelling = ref(false)
 const logLines = ref(100)
 const logContainer = ref(null)
 let pollTimer: ReturnType<typeof setInterval> | null = null
@@ -343,6 +350,25 @@ async function fetchLogs() {
 function copyLogs() {
   if (logs.value) {
     navigator.clipboard.writeText(logs.value).catch(() => {})
+  }
+}
+
+async function cancelBatch() {
+  cancelling.value = true
+  try {
+    const resp = await apiFetch('/catalog/cancel', { method: 'POST' })
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}))
+      throw new Error(err.detail || `HTTP ${resp.status}`)
+    }
+    const data = await resp.json()
+    toast.success(`Cancel sent — ${data.rows_reset || 0} stuck rows reset.`)
+    refreshAll()
+  } catch (e: any) {
+    console.error('Cancel failed:', e)
+    toast.error(`Cancel failed: ${e?.message || 'network error'}`)
+  } finally {
+    cancelling.value = false
   }
 }
 

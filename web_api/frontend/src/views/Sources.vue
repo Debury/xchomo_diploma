@@ -27,10 +27,13 @@
       </div>
     </div>
 
-    <!-- Filters -->
+    <!-- Filters — fixed widths so a long option label (e.g.
+         "Heavy precipitation and pluvial floods") can't blow out
+         the row width. Selected text truncates with ellipsis; the
+         full label is still visible in the open dropdown. -->
     <div class="flex gap-3 flex-wrap">
       <input v-model="searchInput" type="text" placeholder="Search sources..." class="input-field !w-56" />
-      <select v-model="filters.status" class="input-field !w-auto">
+      <select v-model="filters.status" class="input-field !w-40 truncate">
         <option value="">All Statuses</option>
         <option value="completed">With Data</option>
         <option value="metadata_only">Metadata Only</option>
@@ -38,13 +41,18 @@
         <option value="failed">Failed</option>
         <option value="pending">Pending</option>
       </select>
-      <select v-model="filters.hazard" class="input-field !w-auto">
+      <select v-model="filters.hazard" class="input-field !w-48 truncate">
         <option value="">All Hazards</option>
         <option v-for="h in hazardTypes" :key="h" :value="h">{{ h }}</option>
       </select>
-      <select v-model="filters.region" class="input-field !w-auto">
+      <select v-model="filters.region" class="input-field !w-48 truncate">
         <option value="">All Regions</option>
         <option v-for="r in regions" :key="r" :value="r">{{ r }}</option>
+      </select>
+      <select v-model="filters.origin" class="input-field !w-36 truncate">
+        <option value="">All Origins</option>
+        <option value="catalog">From Catalog</option>
+        <option value="user">User-added</option>
       </select>
     </div>
 
@@ -78,7 +86,8 @@
               <td class="px-4 py-2.5">
                 <div class="flex items-center gap-2">
                   <span class="text-mendelu-black text-sm font-medium">{{ source.dataset_name || source.source_id }}</span>
-                  <span v-if="source.catalog_source" class="badge-neutral !text-[9px] !py-0">catalog</span>
+                  <span v-if="source.from_catalog" class="badge-neutral !text-[9px] !py-0" title="From the D1.1.xlsx catalog">catalog</span>
+                  <span v-else class="badge-info !text-[9px] !py-0" title="Added by user via Add Sources / upload">user</span>
                   <span v-if="source.schedule" class="badge-info !text-[9px] !py-0">cron</span>
                 </div>
               </td>
@@ -297,7 +306,7 @@ const editingSource = ref(null)
 const saving = ref(false)
 const editForm = ref<any>({ source_id: '', url: '', description: '', hazard_type: '', location_name: '', impact_sector: '', keywords: '', schedule_cron: '' })
 
-const filters = ref<any>({ search: '', status: '', hazard: '', region: '' })
+const filters = ref<any>({ search: '', status: '', hazard: '', region: '', origin: '' })
 // Debounce the free-text search so filteredSources doesn't recompute on every
 // keystroke (which re-runs through every source + re-builds hazardTypes/regions).
 const searchInput = ref('')
@@ -317,8 +326,30 @@ let statusPollInterval: ReturnType<typeof setInterval> | null = null
 const withDataCount = computed(() => sources.value.filter(s => s.embedding_count > 10).length)
 const metadataOnlyCount = computed(() => sources.value.filter(s => s.embedding_count > 0 && s.embedding_count <= 10).length)
 const scheduledCount = computed(() => sources.value.filter(s => s.schedule).length)
-const hazardTypes = computed(() => [...new Set(sources.value.map(s => s.hazard_type).filter(Boolean))].sort())
-const regions = computed(() => [...new Set(sources.value.map(s => s.location_name).filter(Boolean))].sort())
+// hazard_type can now be a comma-joined list (datasets covering multiple
+// hazards in the catalog). Split for dropdown options and match with
+// substring instead of equality.
+const hazardTypes = computed(() => {
+  const all = new Set<string>()
+  for (const s of sources.value) {
+    if (!s.hazard_type) continue
+    for (const h of String(s.hazard_type).split(',').map(x => x.trim()).filter(Boolean)) {
+      all.add(h)
+    }
+  }
+  return [...all].sort()
+})
+const regions = computed(() => {
+  const all = new Set<string>()
+  for (const s of sources.value) {
+    const raw = s.location_name || s.region_country
+    if (!raw) continue
+    for (const r of String(raw).split(',').map(x => x.trim()).filter(Boolean)) {
+      all.add(r)
+    }
+  }
+  return [...all].sort()
+})
 
 const filteredSources = computed(() => {
   let result = [...sources.value]
@@ -335,8 +366,10 @@ const filteredSources = computed(() => {
     else if (filters.value.status === 'metadata_only') result = result.filter(s => s.embedding_count > 0 && s.embedding_count <= 10)
     else result = result.filter(s => s.processing_status === filters.value.status)
   }
-  if (filters.value.hazard) result = result.filter(s => s.hazard_type === filters.value.hazard)
-  if (filters.value.region) result = result.filter(s => s.location_name === filters.value.region)
+  if (filters.value.hazard) result = result.filter(s => String(s.hazard_type || '').includes(filters.value.hazard))
+  if (filters.value.region) result = result.filter(s => String(s.location_name || s.region_country || '').includes(filters.value.region))
+  if (filters.value.origin === 'catalog') result = result.filter(s => s.from_catalog)
+  else if (filters.value.origin === 'user') result = result.filter(s => !s.from_catalog)
 
   result.sort((a, b) => {
     if (sortField.value === 'embedding_count') {

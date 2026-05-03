@@ -88,12 +88,34 @@ class TextEmbedder:
         self.instruction = "Represent this sentence for searching relevant passages: " if "bge" in model_name else ""
         logger.info(f"TextEmbedder ready: {model_name} on {self.device}")
 
-    def embed_queries(self, queries: List[str], batch_size: int = 128):
-        inputs = [self.instruction + q for q in queries]
-        return self.model.encode(inputs, normalize_embeddings=True, convert_to_numpy=True, batch_size=batch_size)
+    @staticmethod
+    def _default_doc_batch() -> int:
+        """Read embedding batch size from env (set by Settings → System).
 
-    def embed_documents(self, texts: List[str], batch_size: int = 512):
-        return self.model.encode(texts, normalize_embeddings=True, convert_to_numpy=True, batch_size=batch_size)
+        Tunable per-GPU because BAAI/bge-large at FP32 + 512 tokens × N
+        texts must fit in VRAM. Default 64 is safe for 4 GB mobile cards
+        (RTX 3050 Laptop). 24 GB+ cards (RTX 4090, A100) can push 512+.
+        """
+        raw = os.getenv("EMBEDDING_BATCH_SIZE", "")
+        if raw.isdigit():
+            return max(1, min(2048, int(raw)))
+        return 64
+
+    @staticmethod
+    def _default_query_batch() -> int:
+        raw = os.getenv("EMBEDDING_QUERY_BATCH_SIZE", "")
+        if raw.isdigit():
+            return max(1, min(2048, int(raw)))
+        return 32
+
+    def embed_queries(self, queries: List[str], batch_size: Optional[int] = None):
+        bs = batch_size if batch_size is not None else self._default_query_batch()
+        inputs = [self.instruction + q for q in queries]
+        return self.model.encode(inputs, normalize_embeddings=True, convert_to_numpy=True, batch_size=bs)
+
+    def embed_documents(self, texts: List[str], batch_size: Optional[int] = None):
+        bs = batch_size if batch_size is not None else self._default_doc_batch()
+        return self.model.encode(texts, normalize_embeddings=True, convert_to_numpy=True, batch_size=bs)
 
 
 class Reranker:

@@ -54,6 +54,9 @@ DIRECT_DOWNLOAD_URLS = {
     # E-OBS: portal page has no direct links, S3 bucket has per-variable files
     "catalog_E-OBS_3": "https://knmi-ecad-assets-prd.s3.amazonaws.com/ensembles/data/Grid_0.25deg_reg_ensemble/tg_ens_mean_0.25deg_reg_2011-2025_v32.0e.nc",
     "catalog_E-OBS_21": "https://knmi-ecad-assets-prd.s3.amazonaws.com/ensembles/data/Grid_0.25deg_reg_ensemble/tx_ens_mean_0.25deg_reg_2011-2025_v32.0e.nc",
+    # Cold spell / Frost — use min temperature (tn) instead of mean (tg)
+    "catalog_E-OBS_36": "https://knmi-ecad-assets-prd.s3.amazonaws.com/ensembles/data/Grid_0.25deg_reg_ensemble/tn_ens_mean_0.25deg_reg_2011-2025_v32.0e.nc",
+    "catalog_E-OBS_49": "https://knmi-ecad-assets-prd.s3.amazonaws.com/ensembles/data/Grid_0.25deg_reg_ensemble/tn_ens_mean_0.25deg_reg_2011-2025_v32.0e.nc",
     "catalog_E-OBS_66": "https://knmi-ecad-assets-prd.s3.amazonaws.com/ensembles/data/Grid_0.25deg_reg_ensemble/rr_ens_mean_0.25deg_reg_2011-2025_v32.0e.nc",
     "catalog_E-OBS_112": "https://knmi-ecad-assets-prd.s3.amazonaws.com/ensembles/data/Grid_0.25deg_reg_ensemble/pp_ens_mean_0.25deg_reg_2011-2025_v32.0e.nc",
     "catalog_E-OBS_149": "https://knmi-ecad-assets-prd.s3.amazonaws.com/ensembles/data/Grid_0.25deg_reg_ensemble/fg_ens_mean_0.25deg_reg_2011-2025_v32.0e.nc",
@@ -82,6 +85,14 @@ DIRECT_DOWNLOAD_URLS = {
     "catalog_CMIP6_218": "https://dap.ceda.ac.uk/badc/cmip6/data/CMIP6/CMIP/MOHC/HadGEM3-GC31-LL/historical/r1i1p1f3/Amon/clt/gn/latest/clt_Amon_HadGEM3-GC31-LL_historical_r1i1p1f3_gn_195001-201412.nc",
     # CMIP6 row 221 (CO2): only some models include atmospheric chemistry, use ISI-MIP CO2 as proxy
     "catalog_CMIP6_221": "https://files.isimip.org/ISIMIP3b/InputData/climate/atmosphere_composition/co2/historical/co2_historical_annual_1850_2014.txt",
+    # Météo-France SYNOP — public archive, no auth. Now that the CSV
+    # loader handles `;` delimiter + "mq" missing-value placeholder, the
+    # 60-column station file produces ~50 chunks per month.
+    "SYNOP": "https://donneespubliques.meteofrance.fr/donnees_libres/Txt/Synop/Archive/synop.202312.csv.gz",
+    "Données publiques Météo-France": "https://donneespubliques.meteofrance.fr/donnees_libres/Txt/Synop/Archive/synop.202312.csv.gz",
+    "RADOME": "https://donneespubliques.meteofrance.fr/donnees_libres/Txt/Synop/Archive/synop.202312.csv.gz",
+    # ArCIS — direct .nc.gz files, no registration needed for the public V2.
+    "ArCIS": "https://www.arcis.it/download/V2/ARCIS20_GG_2011-2015.nc.gz",
     "NOAAN": "https://www.ncei.noaa.gov/access/monitoring/climate-at-a-glance/global/time-series/globe/land_ocean/ytd/12/1880-2023.csv",
     "GSFC-NASA": "https://earth.gsfc.nasa.gov/sites/default/files/geo/gsfc.glb_.200204_202505_rl06v2.0_obp-ice6gd_halfdegree.nc",
     "ROCIO_IBEB": "https://www.aemet.es/documentos/es/serviciosclimaticos/cambio_climat/datos_diarios/dato_observacional/rejilla_5km/v2/Serie_AEMET_v2_pcp_2020_netcdf.tar.gz",
@@ -121,8 +132,10 @@ SKIP_PHASE1 = {
     "MED-CORDEX",       # ESGF auth required
     "EURO-CORDEX",      # ESGF auth required
     "RMI-ISPRA",        # ISPRA portal, no direct downloads
-    "SPEI-GD",          # 21GB file, too large for current pipeline
-    "STEAD",            # 2GB file, connection breaks at ~1GB consistently (revisit later)
+    # STEAD (2 GB) and SPEI-GD (21 GB) used to live here because the
+    # download would break partway through. Now handled by the resume-on-
+    # disconnect path in _download_with_resume() below — the file size
+    # itself isn't the problem, the streaming was.
 }
 
 
@@ -427,11 +440,45 @@ class BatchProgress:
         }
 
 
+# Module-level cancel flag — flipped via set_cancel_flag() so the long-
+# running phase loop can bail out cleanly between entries. Daemon threads
+# can't be cancelled directly in Python, so cooperative shutdown is the
+# only safe option.
+_CANCEL_REQUESTED = False
+
+
+def set_cancel_flag(value: bool = True) -> None:
+    """Flip the global cancel flag. The phase loop checks this between entries."""
+    global _CANCEL_REQUESTED
+    _CANCEL_REQUESTED = bool(value)
+
+
+def is_cancelled() -> bool:
+    return _CANCEL_REQUESTED
+
+
+def clear_progress_for_source(source_id: str) -> int:
+    """Drop all catalog_progress rows for a single source_id.
+
+    Used by the per-row Retry endpoint so the resume guard doesn't skip
+    the row before the loop even gets to it. Returns the number of rows
+    deleted (0 if the source was never seen).
+    """
+    with get_db_session() as session:
+        deleted = (
+            session.query(CatalogProgressRow)
+            .filter_by(source_id=source_id)
+            .delete()
+        )
+    return deleted
+
+
 def run_batch_pipeline(
     excel_path: str,
     phases: Optional[List[int]] = None,
     dry_run: bool = False,
     resume: bool = True,
+    row_filter: Optional[set] = None,
 ) -> Dict[str, Any]:
     """
     Run the batch catalog processing pipeline.
@@ -441,6 +488,8 @@ def run_batch_pipeline(
         phases: Which phases to process (default: [0] for metadata-only).
         dry_run: If True, only classify and report — no processing.
         resume: If True, skip already-completed sources.
+        row_filter: When set, only process rows whose ``row_index`` is in
+            this set. Used by the per-row Retry endpoint.
 
     Returns:
         Summary dict with processing results.
@@ -448,10 +497,16 @@ def run_batch_pipeline(
     if phases is None:
         phases = [0]
 
-    catalog_logger.info(f"=== Batch pipeline started | phases={phases} | excel={excel_path} ===")
+    # Reset cancel flag for the new run.
+    set_cancel_flag(False)
+
+    catalog_logger.info(f"=== Batch pipeline started | phases={phases} | excel={excel_path}"
+                        f"{' | row_filter='+str(sorted(row_filter)) if row_filter else ''} ===")
 
     # Read catalog
     entries = read_catalog(excel_path)
+    if row_filter:
+        entries = [e for e in entries if e.row_index in row_filter]
     grouped = classify_all(entries)
 
     if dry_run:
@@ -602,12 +657,130 @@ def _check_memory_pressure() -> bool:
     return True
 
 
+def _classify_error(exc: Exception, url: str = "") -> str:
+    """Render an exception into a short, user-readable failure reason.
+
+    Goal: when this string lands in ``catalog_progress.error`` and bubbles up
+    into the catalog UI, the operator should be able to tell at a glance
+    whether to (a) wait and retry, (b) fix a URL override, or (c) give up
+    and mark the source as Phase 4. Keep messages tight — they show up in
+    table rows, not full-page modals.
+    """
+    import requests as _r
+    msg = str(exc) or exc.__class__.__name__
+    if isinstance(exc, _r.exceptions.HTTPError):
+        resp = getattr(exc, "response", None)
+        code = getattr(resp, "status_code", None) if resp is not None else None
+        host = ""
+        try:
+            from urllib.parse import urlparse
+            host = urlparse(url).netloc if url else ""
+        except Exception:
+            pass
+        if code == 401 or code == 403:
+            return f"HTTP {code} (auth required)" + (f" — {host}" if host else "")
+        if code == 404:
+            return f"HTTP 404 (URL dead)" + (f" — {host}" if host else "")
+        if code == 429:
+            return f"HTTP 429 (rate-limited) — {host}"
+        if code and 400 <= code < 500:
+            return f"HTTP {code} — {host or 'remote'}"
+        if code and 500 <= code < 600:
+            return f"HTTP {code} (server error) — {host or 'remote'}"
+        return f"HTTP error: {msg[:120]}"
+    if isinstance(exc, (_r.exceptions.ConnectionError, _r.exceptions.Timeout)):
+        return f"Network error: {msg[:120]}"
+    if isinstance(exc, TimeoutError):
+        return f"Timeout: {msg[:120]}"
+    if isinstance(exc, ValueError) and "html" in msg.lower():
+        return "Server returned HTML (likely a portal page, not data)"
+    return msg[:200]
+
+
+def _is_permanent_failure(exc: Exception) -> bool:
+    """True if retrying is hopeless: auth required, file missing, or the
+    server returned a portal page instead of data. Network errors and 5xx
+    server hiccups are treated as transient and DO retry.
+    """
+    import requests as _r
+    if isinstance(exc, _r.exceptions.HTTPError):
+        resp = getattr(exc, "response", None)
+        code = getattr(resp, "status_code", None) if resp is not None else None
+        # 4xx except 429 (rate-limit) and 408 (request timeout) — those are worth retrying.
+        if code and 400 <= code < 500 and code not in (408, 429):
+            return True
+    if isinstance(exc, ValueError):
+        msg = str(exc).lower()
+        # HTML/login page returned instead of data → fundamental auth problem.
+        if "html" in msg:
+            return True
+        # Loader couldn't extract any chunks → format mismatch (e.g. CSV
+        # served to the raster pipeline). Retrying produces the same result.
+        if "0 data chunks" in msg or "no data chunks" in msg:
+            return True
+    return False
+
+
 def _get_download_url(entry: "CatalogEntry") -> str:
     """Get download URL: check source_id override first, then dataset_name, then link."""
     return DIRECT_DOWNLOAD_URLS.get(
         entry.source_id,
         DIRECT_DOWNLOAD_URLS.get(entry.dataset_name, entry.link or "")
     ).strip()
+
+
+def _qdrant_full_source_ids(min_chunks: int = 10) -> set:
+    """Return source_ids that already have >= ``min_chunks`` points in Qdrant.
+
+    Used by the resume path to short-circuit downloads for datasets that
+    previous runs already populated, even when ``catalog_progress`` lacks a
+    matching row. Walks the indexed ``source_id`` payload field via Qdrant
+    aggregation (group-by) — fast even on collections with millions of
+    points because source_id is keyword-indexed.
+    """
+    import os
+    from qdrant_client import QdrantClient
+
+    host = os.getenv("QDRANT_HOST", "localhost")
+    port = int(os.getenv("QDRANT_REST_PORT", 6333))
+    collection = os.getenv("QDRANT_COLLECTION", "climate_data")
+    client = QdrantClient(host=host, port=port, prefer_grpc=False, timeout=30)
+
+    # facet() lazily collects unique values + counts. Available since
+    # qdrant-client 1.10. Falls back to scroll-aggregate on older versions.
+    counts: dict[str, int] = {}
+    try:
+        from qdrant_client.models import Filter
+        result = client.facet(
+            collection_name=collection,
+            key="source_id",
+            limit=10_000,  # we have ~233 catalog source_ids, plus per-source ETL ones
+        )
+        for hit in getattr(result, "hits", []) or []:
+            value = getattr(hit, "value", None)
+            count = getattr(hit, "count", 0)
+            if isinstance(value, str):
+                counts[value] = count
+    except Exception:
+        # Older qdrant-client without facet — fall back to a scroll aggregate.
+        offset = None
+        while True:
+            records, next_offset = client.scroll(
+                collection_name=collection,
+                limit=2048,
+                with_payload=["source_id"],
+                with_vectors=False,
+                offset=offset,
+            )
+            for rec in records or []:
+                sid = (rec.payload or {}).get("source_id")
+                if isinstance(sid, str):
+                    counts[sid] = counts.get(sid, 0) + 1
+            if not next_offset:
+                break
+            offset = next_offset
+
+    return {sid for sid, n in counts.items() if n >= min_chunks}
 
 
 FORMAT_TO_EXT = {
@@ -700,6 +873,15 @@ def _run_phase_download(
     resume: bool,
 ) -> Dict[str, int]:
     """Run Phase 1/2: download + process + embed."""
+    # Force dask to run all compute in the calling thread — no forking,
+    # no multiprocessing pool. Once PyTorch initializes a CUDA context,
+    # any subsequent fork()-based parallelism (which dask's default
+    # processes/threads schedulers can trigger via xarray.compute) will
+    # deadlock the GPU pipeline. The synchronous scheduler avoids that
+    # and is plenty fast for our chunk sizes.
+    import dask
+    dask.config.set(scheduler="synchronous")
+
     from src.climate_embeddings.embeddings.text_models import TextEmbedder
     from src.climate_embeddings.loaders.raster_pipeline import load_raster_auto
     from src.climate_embeddings.schema import ClimateChunkMetadata, generate_human_readable_text
@@ -736,9 +918,28 @@ def _run_phase_download(
     # the same file for duplicate rows (e.g. SLOCLIM appears on 3 rows for
     # different hazards but uses the exact same download URL).
     datasets_done_this_run: set = set()
+    # Mirror set for URLs that have failed permanently — sibling rows
+    # sharing the same URL get the same failure reason without burning
+    # another full retry cycle (4 attempts × ~3 min = 12 min per row).
+    failed_urls_this_run: dict = {}
 
     # Prefetch completed set — 1 DB query instead of per-entry is_completed()
     completed_set = progress.get_completed_set(phase=phase) if resume else set()
+
+    # Build "already-has-data-in-Qdrant" set so we don't re-download datasets
+    # that previous runs (or one-off ETL triggers) already chunked. Bypasses
+    # the catalog_progress table which may be missing Phase 1 records even
+    # though the chunks exist.
+    already_full: set = set()
+    if resume:
+        try:
+            already_full = _qdrant_full_source_ids(min_chunks=10)
+            catalog_logger.info(
+                f"Phase {phase}: {len(already_full)} source_ids already have "
+                f">=10 chunks in Qdrant — will skip re-download."
+            )
+        except Exception as e:
+            catalog_logger.warning(f"Could not query Qdrant for completed sources: {e}")
 
     # Pre-filter entries that will definitely be skipped, so we only HEAD-request
     # URLs we actually intend to download.
@@ -748,7 +949,18 @@ def _run_phase_download(
         if resume and entry.source_id in completed_set:
             pre_skipped += 1
             continue
-        if not entry.link:
+        if resume and entry.source_id in already_full:
+            # Already chunked in Qdrant — backfill the catalog_progress row
+            # so future resume calls take the fast path, then move on.
+            progress.mark_started(entry.source_id, entry.dataset_name or "unknown", phase)
+            progress.mark_completed(entry.source_id, phase=phase)
+            pre_skipped += 1
+            continue
+        # Resolve URL via overrides BEFORE the empty-link check — many
+        # entries (CMIP6, ISIMIP, NCEP-NCAR2, E-OBS by-variable) have an
+        # empty link in the Excel but a valid override in DIRECT_DOWNLOAD_URLS.
+        download_url = _get_download_url(entry)
+        if not download_url:
             pre_skipped += 1
             continue
         if entry.dataset_name in SKIP_PHASE1:
@@ -763,24 +975,55 @@ def _run_phase_download(
     # Re-combine: we'll iterate download_candidates and track skipped count separately
     skipped += pre_skipped
 
+    # Group catalog rows by download URL so a single download can fan out
+    # chunks to ALL the source_ids that point at it. Without this, the
+    # dedup logic only marks subsequent rows "completed" in catalog_progress
+    # but their source_ids never accrue real chunks in Qdrant — chat
+    # retrieval for that source_id then comes up empty.
+    url_to_siblings: dict = {}
+    for e in download_candidates:
+        u = _get_download_url(e)
+        if u:
+            url_to_siblings.setdefault(u, []).append(e)
+
     # Disable HNSW indexing during bulk ingestion (rebuild once at the end)
     db.disable_indexing()
     try:
       for entry in download_candidates:
-        # Deduplicate: same dataset_name + same download URL = same data.
-        # Mark all duplicate rows as completed (they share embeddings via Phase 0).
+        # Cooperative cancel check — the user can hit /catalog/cancel and
+        # the loop bails out between entries instead of running for an
+        # hour after the request.
+        if is_cancelled():
+            catalog_logger.warning("Phase loop: cancel flag set — stopping batch.")
+            break
+
+        # Deduplicate: identical download URL = identical file. We used to
+        # include `hazard` in the key, which forced NCEP-NCAR2 to download
+        # the same 153-chunk file 4× (once per hazard). The data is the
+        # same regardless of which hazard the catalog row points at, so
+        # dedup purely on the URL — every row sharing it is "done".
         download_url = _get_download_url(entry)
-        # Include hazard in dedup key — same dataset downloads different variables per hazard
-        hazard = (entry.hazard or "").strip()
-        dedup_key = f"{entry.dataset_name}||{hazard}||{download_url}"
-        if dedup_key in datasets_done_this_run:
+        dedup_key = download_url
+        if dedup_key and dedup_key in datasets_done_this_run:
             catalog_logger.info(
                 f"Phase {phase}: skipping duplicate {entry.dataset_name} "
-                f"(row {entry.row_index}, already processed same URL)"
+                f"(row {entry.row_index}, same URL already processed)"
             )
             progress.mark_started(entry.source_id, entry.dataset_name or "unknown", phase)
             progress.mark_completed(entry.source_id, phase=phase)
             skipped += 1
+            continue
+        if dedup_key and dedup_key in failed_urls_this_run:
+            # The first sibling already exhausted retries on this URL — no
+            # point burning another 4 attempts. Inherit the same reason.
+            inherited = failed_urls_this_run[dedup_key]
+            catalog_logger.info(
+                f"Phase {phase}: short-circuit FAIL for {entry.dataset_name} "
+                f"(row {entry.row_index}) — sibling already failed: {inherited}"
+            )
+            progress.mark_started(entry.source_id, entry.dataset_name or "unknown", phase)
+            progress.mark_failed(entry.source_id, inherited, phase=phase)
+            failed += 1
             continue
 
         # --- Memory guard ---
@@ -829,48 +1072,143 @@ def _run_phase_download(
                 # Download to temp file
                 logger.info(f"Phase {phase}: downloading {entry.dataset_name} from {url}")
 
-                try:
-                    resp = http_session.get(url, timeout=(30, 600), stream=True)
-                    resp.raise_for_status()
-                except http_requests.exceptions.SSLError:
-                    catalog_logger.warning(
-                        f"Phase {phase}: SSL verification failed for {entry.dataset_name}, "
-                        "retrying without verification"
-                    )
-                    resp = http_session.get(url, timeout=(30, 600), stream=True, verify=False)
-                    resp.raise_for_status()
-
-                # Check Content-Type before downloading body
-                content_type = resp.headers.get("Content-Type", "").lower()
-                if "text/html" in content_type:
-                    raise ValueError(
-                        f"Server returned HTML (Content-Type: {content_type}). "
-                        "URL is likely a portal page, not a direct file download."
-                    )
-
-                # Detect extension from URL — map format name to proper file extension
+                # Detect extension from URL — map format name to proper file extension.
+                # Compound extensions like ".csv.gz" must be preserved end-to-end
+                # so the gzip loader can detect the inner format. Saving as plain
+                # ".gz" makes _load_gzip default the inner suffix to ".nc" → CSV
+                # gets parsed as NetCDF → 0 chunks.
+                from urllib.parse import urlparse as _urlparse
                 from src.climate_embeddings.loaders.detect_format import detect_format_from_url
-                fmt = detect_format_from_url(url)
-                ext = FORMAT_TO_EXT.get(fmt, ".nc")
+                _url_filename = _urlparse(url).path.rsplit("/", 1)[-1].lower()
+                ext = None
+                for compound in (".csv.gz", ".tsv.gz", ".tar.gz", ".nc.gz", ".grib.gz", ".tif.gz"):
+                    if _url_filename.endswith(compound):
+                        ext = compound
+                        break
+                if ext is None:
+                    fmt = detect_format_from_url(url)
+                    ext = FORMAT_TO_EXT.get(fmt, ".nc")
 
-                DOWNLOAD_TIMEOUT_SEC = 1800  # 30 min total download time
+                # Hard cap: 4 hours. Generous enough for 20+ GB files at low
+                # bandwidth. Per-entry retry loop already protects against
+                # truly stuck downloads.
+                DOWNLOAD_TIMEOUT_SEC = 4 * 60 * 60
 
-                def _download_to_file(response, suffix):
-                    """Download response body to temp file. Runs in thread for hard timeout."""
-                    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
-                        for chunk in response.iter_content(chunk_size=65536):
-                            tmp.write(chunk)
-                        return tmp.name
+                def _download_with_resume(target_url: str, suffix: str) -> str:
+                    """Streamed download that survives mid-transfer disconnects.
+
+                    Writes to a temp file, retries up to RESUME_RETRIES times
+                    on connection drops by re-issuing the request with a
+                    Range: bytes=N- header and appending. Used to fail at
+                    ~1 GB on STEAD; this resumes from byte N instead of
+                    starting from zero.
+                    """
+                    RESUME_RETRIES = 6
+                    RESUME_BACKOFF_SEC = 5
+                    CHUNK_BYTES = 1 << 20  # 1 MiB chunks: lower syscall overhead than 64 KB
+
+                    tmp = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
+                    tmp_name = tmp.name
+                    tmp.close()
+
+                    bytes_done = 0
+                    expected_total = None
+                    headers_html_checked = False
+
+                    for resume_attempt in range(RESUME_RETRIES):
+                        if is_cancelled():
+                            raise RuntimeError("Cancelled by user")
+
+                        request_headers = {}
+                        if bytes_done > 0:
+                            request_headers["Range"] = f"bytes={bytes_done}-"
+
+                        try:
+                            resp = http_session.get(
+                                target_url,
+                                timeout=(30, 600),
+                                stream=True,
+                                headers=request_headers,
+                            )
+                            resp.raise_for_status()
+                        except http_requests.exceptions.SSLError:
+                            catalog_logger.warning(
+                                f"SSL verification failed, retrying insecurely"
+                            )
+                            resp = http_session.get(
+                                target_url,
+                                timeout=(30, 600),
+                                stream=True,
+                                verify=False,
+                                headers=request_headers,
+                            )
+                            resp.raise_for_status()
+
+                        # First request: validate Content-Type AND grab Content-Length
+                        # so we know when the resumed downloads have all bytes.
+                        if not headers_html_checked:
+                            ct = resp.headers.get("Content-Type", "").lower()
+                            if "text/html" in ct:
+                                resp.close()
+                                raise ValueError(
+                                    f"Server returned HTML (Content-Type: {ct}). "
+                                    "URL is likely a portal page, not a direct file download."
+                                )
+                            cl = resp.headers.get("Content-Length")
+                            if cl and cl.isdigit():
+                                expected_total = int(cl) + bytes_done
+                            headers_html_checked = True
+
+                        # If server didn't honor Range (returns 200 not 206), restart.
+                        if bytes_done > 0 and resp.status_code == 200:
+                            catalog_logger.warning(
+                                f"Server ignored Range header — restarting download from 0"
+                            )
+                            bytes_done = 0
+                            tmp_handle = open(tmp_name, "wb")
+                        else:
+                            tmp_handle = open(tmp_name, "ab" if bytes_done else "wb")
+
+                        try:
+                            for chunk in resp.iter_content(chunk_size=CHUNK_BYTES):
+                                if is_cancelled():
+                                    raise RuntimeError("Cancelled by user")
+                                if not chunk:
+                                    continue
+                                tmp_handle.write(chunk)
+                                bytes_done += len(chunk)
+                            # Stream finished cleanly → done.
+                            tmp_handle.close()
+                            resp.close()
+                            return tmp_name
+                        except (http_requests.exceptions.ChunkedEncodingError,
+                                http_requests.exceptions.ConnectionError,
+                                http_requests.exceptions.ReadTimeout) as conn_err:
+                            tmp_handle.close()
+                            resp.close()
+                            mb = bytes_done / 1024 / 1024
+                            total_mb = (expected_total / 1024 / 1024) if expected_total else None
+                            catalog_logger.warning(
+                                f"Connection broke at {mb:.0f} MB"
+                                + (f" / {total_mb:.0f} MB" if total_mb else "")
+                                + f" (resume attempt {resume_attempt + 1}/{RESUME_RETRIES}): {conn_err}"
+                            )
+                            time.sleep(RESUME_BACKOFF_SEC)
+                            continue
+
+                    raise IOError(
+                        f"Download could not complete after {RESUME_RETRIES} resume attempts "
+                        f"({bytes_done / 1024 / 1024:.0f} MB downloaded)"
+                    )
 
                 with ThreadPoolExecutor(max_workers=1) as dl_executor:
-                    dl_future = dl_executor.submit(_download_to_file, resp, ext)
+                    dl_future = dl_executor.submit(_download_with_resume, url, ext)
                     try:
                         tmp_path = dl_future.result(timeout=DOWNLOAD_TIMEOUT_SEC)
                     except FuturesTimeoutError:
-                        resp.close()
                         dl_future.cancel()
                         raise TimeoutError(
-                            f"Download exceeded {DOWNLOAD_TIMEOUT_SEC}s total time"
+                            f"Download exceeded {DOWNLOAD_TIMEOUT_SEC // 60} min total time"
                         )
 
                 # --- Post-download content validation: detect HTML login pages ---
@@ -956,13 +1294,35 @@ def _run_phase_download(
                     batch_texts.clear()
                     batch_metadatas.clear()
 
+                # All catalog rows that share this URL — write chunks for
+                # each of them so every source_id has its own real data in
+                # Qdrant (not just the orchestrator-marked "completed" status).
+                siblings = url_to_siblings.get(url, [entry])
+
+                # Heartbeat watchdog — the chunk iterator can hang inside
+                # xarray/dask compute on pathological files. If we go too
+                # long without a single chunk landing in `pending` we
+                # raise loudly so the per-row Reason surfaces "Stalled
+                # during chunking" instead of the user staring at silent
+                # 0% forever.
+                CHUNK_STALL_TIMEOUT_SEC = 5 * 60  # 5 min between chunks
+                last_chunk_at = time.time()
+
                 for chunk in raster_result.chunk_iterator:
+                    if time.time() - last_chunk_at > CHUNK_STALL_TIMEOUT_SEC:
+                        raise TimeoutError(
+                            f"Chunk iterator stalled for >{CHUNK_STALL_TIMEOUT_SEC}s "
+                            f"on {entry.dataset_name} — possible dask/CUDA deadlock "
+                            f"or oversized in-memory compute"
+                        )
+                    last_chunk_at = time.time()
+
                     data = chunk.data
                     valid = data[np.isfinite(data)]
                     if valid.size == 0:
                         continue
 
-                    # 8-dim stats vector
+                    # 8-dim stats vector — computed once, shared across all siblings
                     mn = float(np.min(valid))
                     mx = float(np.max(valid))
                     stats = [
@@ -974,33 +1334,35 @@ def _run_phase_download(
                         mx - mn,
                     ]
 
-                    meta = ClimateChunkMetadata.from_chunk_metadata(
-                        raw_metadata=chunk.metadata,
-                        stats_vector=stats,
-                        source_id=entry.source_id,
-                        dataset_name=entry.dataset_name,
-                    )
-                    meta_dict = meta.to_dict()
+                    # Fan out: emit one record per sibling (different
+                    # source_id / dataset_name / hazard) so every catalog
+                    # row that references this URL has retrievable chunks.
+                    for sib in siblings:
+                        meta = ClimateChunkMetadata.from_chunk_metadata(
+                            raw_metadata=chunk.metadata,
+                            stats_vector=stats,
+                            source_id=sib.source_id,
+                            dataset_name=sib.dataset_name,
+                        )
+                        meta_dict = meta.to_dict()
 
-                    # Add catalog metadata
-                    meta_dict["catalog_source"] = "D1.1.xlsx"
-                    if entry.hazard:
-                        meta_dict["hazard_type"] = entry.hazard
-                    if entry.impact_sector:
-                        meta_dict["impact_sector"] = entry.impact_sector
-                    if entry.region_country:
-                        meta_dict["location_name"] = entry.region_country
+                        meta_dict["catalog_source"] = "D1.1.xlsx"
+                        if sib.hazard:
+                            meta_dict["hazard_type"] = sib.hazard
+                        if sib.impact_sector:
+                            meta_dict["impact_sector"] = sib.impact_sector
+                        if sib.region_country:
+                            meta_dict["location_name"] = sib.region_country
 
-                    text = generate_human_readable_text(meta_dict)
+                        text = generate_human_readable_text(meta_dict)
+                        batch_ids.append(f"{sib.source_id}_chunk_{total_chunks}")
+                        batch_texts.append(text)
+                        batch_metadatas.append(meta_dict)
+                        all_chunk_metas.append(meta_dict)
+                        total_chunks += 1
 
-                    batch_ids.append(f"{entry.source_id}_chunk_{total_chunks}")
-                    batch_texts.append(text)
-                    batch_metadatas.append(meta_dict)
-                    all_chunk_metas.append(meta_dict)
-                    total_chunks += 1
-
-                    if len(batch_ids) >= UPSERT_BATCH_SIZE:
-                        _flush_batch()
+                        if len(batch_ids) >= UPSERT_BATCH_SIZE:
+                            _flush_batch()
 
                 # Flush remaining
                 _flush_batch()
@@ -1065,25 +1427,53 @@ def _run_phase_download(
                 break  # Success — exit retry loop
 
             except Exception as e:
-                last_error = str(e)
+                last_error = _classify_error(e, url if 'url' in locals() else "")
                 tb_str = traceback.format_exc()
                 catalog_logger.warning(
                     f"Phase {phase}: attempt {attempt}/{MAX_RETRIES} FAILED for "
-                    f"{entry.dataset_name}: {e}\n{tb_str}"
+                    f"{entry.dataset_name}: {last_error}"
                 )
+                logger.debug(f"Full traceback for {entry.dataset_name}: {tb_str}")
+                # Permanent failures (4xx auth/missing) — don't waste time retrying.
+                if _is_permanent_failure(e):
+                    catalog_logger.warning(
+                        f"Phase {phase}: permanent failure for {entry.dataset_name}, "
+                        f"skipping remaining retries"
+                    )
+                    break
 
             finally:
-                # Always clean up temp file
-                if tmp_path:
+                # Only delete the temp file on SUCCESS. On failure we keep
+                # it so the user can manually inspect / retry without
+                # re-downloading possibly tens of GB. The previous
+                # unconditional unlink burned a 19 GB SPEI-GD download
+                # because the format detector misidentified the URL as
+                # NetCDF — by the time the loader raised "no engine match",
+                # the file was already gone. The size cap below prevents
+                # /tmp from filling up with stale 1 GB partials over
+                # repeated runs.
+                if tmp_path and entry_succeeded:
                     Path(tmp_path).unlink(missing_ok=True)
+                elif tmp_path:
+                    try:
+                        size_mb = Path(tmp_path).stat().st_size / (1024 * 1024)
+                        catalog_logger.info(
+                            f"Phase {phase}: keeping failed-entry file "
+                            f"{tmp_path} ({size_mb:.0f} MB) for inspection / retry"
+                        )
+                    except Exception:
+                        pass
 
-        # All retries exhausted
+        # All retries exhausted (or short-circuited by permanent failure)
         if not entry_succeeded:
             progress.mark_failed(entry.source_id, last_error, phase=phase)
             failed += 1
             catalog_logger.error(
-                f"Phase {phase}: FAILED {entry.dataset_name} after {MAX_RETRIES} attempts: {last_error}"
+                f"Phase {phase}: FAILED {entry.dataset_name}: {last_error}"
             )
+            # Remember the URL so sibling rows skip it without retrying.
+            if download_url:
+                failed_urls_this_run[download_url] = last_error
 
     finally:
         # Re-enable HNSW indexing — triggers single optimized index build

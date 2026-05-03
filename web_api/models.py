@@ -193,6 +193,21 @@ class CatalogEntryResponse(BaseModel):
     notes: Optional[str] = None
     phase: Optional[int] = None
     processing_status: Optional[str] = None
+    # Number of Qdrant chunks tagged with this row's source_id. >1 means
+    # real data was ingested past the Phase-0 metadata embedding.
+    chunk_count: Optional[int] = None
+    # Human-readable failure reason or "why this is metadata-only" hint —
+    # populated from catalog_progress.error or, if the DB has nothing,
+    # inferred from the catalog itself (no URL, Phase 4, in SKIP_PHASE1, ...).
+    error: Optional[str] = None
+    # Highest phase + status the orchestrator has recorded for this source.
+    # Lets the UI distinguish "never tried Phase 1" from "Phase 1 failed".
+    last_phase: Optional[int] = None
+    last_status: Optional[str] = None
+    # Manual-ingest progress (e.g. SPEI-GD multi-file run). Surfaced by the
+    # Catalog UI as a "Partial: N/M files" badge so the user can see and
+    # resume long-running scripts that they killed mid-way.
+    ingest_progress: Optional[Dict[str, Any]] = None
 
 class CatalogProcessRequest(BaseModel):
     # `phases` is required so an empty POST body does not accidentally kick off

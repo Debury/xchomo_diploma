@@ -28,6 +28,9 @@ CREDENTIAL_KEYS: Dict[str, str] = {
     "nasa_earthdata_password": "NASA_EARTHDATA_PASSWORD",
     "cmems_username": "CMEMS_USERNAME",
     "cmems_password": "CMEMS_PASSWORD",
+    # ESGF — for CMIP6-BCCAQ + bonus EURO-CORDEX/MED-CORDEX.
+    "esgf_username": "ESGF_USERNAME",
+    "esgf_password": "ESGF_PASSWORD",
 }
 
 
@@ -78,5 +81,16 @@ def load_persisted_credentials_into_env(
     model = llm.get("model")
     if model and (override or not os.environ.get("OPENROUTER_MODEL")):
         os.environ["OPENROUTER_MODEL"] = str(model)
+
+    # Embedder per-call batch sizes — tunable per-GPU via Settings UI.
+    # Mirrored into env so newly-spawned embedder instances (RAG, ETL,
+    # catalog batch) pick them up without a process restart.
+    for env_key, llm_key in (
+        ("EMBEDDING_BATCH_SIZE", "embedding_batch_size"),
+        ("EMBEDDING_QUERY_BATCH_SIZE", "embedding_query_batch_size"),
+    ):
+        v = llm.get(llm_key)
+        if v is not None and (override or not os.environ.get(env_key)):
+            os.environ[env_key] = str(v)
 
     return {k: v for k, v in llm.items()}

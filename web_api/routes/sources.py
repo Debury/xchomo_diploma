@@ -334,26 +334,61 @@ async def source_runs_activity(limit: int = 20):
 
 @router.get("/")
 async def list_sources(active_only: bool = False):
-    """List all sources. Qdrant is the truth for what data exists,
-    PostgreSQL provides management metadata (schedules, auth, processing history)."""
+    """List all data sources, one row per source_id.
 
-    # 1. Get all datasets from Qdrant (the truth)
-    qdrant_datasets = []
+    Sources is the superset of "data we have": catalog (Excel) rows that
+    were processed AND anything the user added via Add Sources / zip upload.
+    Catalog is read-only — it shows what was *in* the Excel. Sources shows
+    what we *have* (catalog-derived + user-added). Adding a new source in
+    the UI lands here; it does NOT modify the Excel.
+
+    Per-source_id chunk counts come from the same Qdrant facet the Catalog
+    page reads, so a row's status / count is identical on both pages.
+    """
+    # Per-source-id chunk count from Qdrant — matches the Catalog page.
+    from web_api.routes.qdrant_datasets import _get_embedding_counts, list_qdrant_datasets
+    chunk_by_source: dict = {}
     try:
-        from web_api.routes.qdrant_datasets import list_qdrant_datasets
-        qdrant_datasets = await list_qdrant_datasets()
+        chunk_by_source = _get_embedding_counts()
     except Exception as e:
-        logger.warning(f"Could not fetch Qdrant datasets: {e}")
+        logger.warning(f"Could not fetch per-source chunk counts: {e}")
 
-    # 2. Get PostgreSQL management data
-    db_sources = {}
+    # Dataset-level aggregate (variables, hazard, link) keyed by dataset_name.
+    ds_aggregate: dict = {}
+    ds_chunk_total: dict = {}
+    try:
+        for qd in await list_qdrant_datasets():
+            dn = qd.get("dataset_name") or ""
+            if not dn:
+                continue
+            ds_aggregate[dn] = qd
+            ds_chunk_total[dn] = qd.get("chunk_count", 0)
+    except Exception as e:
+        logger.warning(f"Could not fetch dataset aggregate: {e}")
+
+    # Catalog Excel — every row here is a "source" too, just one with a
+    # known origin. Sources page shows them so the user has admin handles
+    # on everything we have data for.
+    catalog_entries = []
+    try:
+        from src.catalog.excel_reader import read_catalog
+        excel_path = os.getenv("CATALOG_EXCEL_PATH", "Kopie souboru D1.1.xlsx")
+        if not Path(excel_path).exists():
+            excel_path = str(Path(__file__).resolve().parents[2] / excel_path)
+        catalog_entries = read_catalog(excel_path)
+    except Exception as e:
+        logger.warning(f"Could not read catalog: {e}")
+
+    # Postgres management state — schedules, history, error_message,
+    # description for any row (catalog or user-added).
+    db_sources: dict = {}
     try:
         from src.sources import get_source_store
-        for s in get_source_store().get_all_sources(active_only=False):
+        for s in get_source_store().get_all_sources(active_only=active_only):
             d = s.to_dict()
             db_sources[d["source_id"]] = d
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"Could not fetch DB sources: {e}")
 
     schedules_map = {}
     try:
@@ -368,75 +403,137 @@ async def list_sources(active_only: bool = False):
     persisted = load_settings()
     source_creds = persisted.get("source_credentials", {})
 
-    # 3. Build unified list: Qdrant datasets enriched with DB management info
-    seen_source_ids = set()
-    results = []
+    def _build_entry(source_id: str, dataset_name: str, ce=None, db=None) -> dict:
+        """Compose a row by merging Qdrant counts (truth) with catalog
+        Excel metadata and Postgres management state. Status derivation
+        mirrors /catalog/ exactly so the same row reads identically on
+        both pages."""
+        chunks = chunk_by_source.get(source_id, 0)
+        ds_total = ds_chunk_total.get(dataset_name or "", 0)
+        agg = ds_aggregate.get(dataset_name or "", {}) if dataset_name else {}
+        db = db or {}
+        ce_link = ce.link if ce else None
 
-    for qd in qdrant_datasets:
-        source_id = qd.get("source_id") or ""
-        dataset_name = qd.get("dataset_name") or source_id
-        seen_source_ids.add(source_id)
+        if chunks > 1 or ds_total > 5:
+            processing_status = "completed"
+        elif chunks > 0:
+            processing_status = "metadata_only"
+        else:
+            processing_status = "pending"
+        db_status = db.get("processing_status")
+        if processing_status == "pending" and db_status and db_status != "pending":
+            processing_status = db_status
 
-        # Start with Qdrant data
+        cred_info = source_creds.get(source_id, {})
         entry = {
             "source_id": source_id,
             "dataset_name": dataset_name,
-            "url": qd.get("link") or "",
-            "format": None,
-            "variables": [v["name"] for v in qd.get("variables", [])],
-            "is_active": True,
-            "processing_status": "completed" if qd.get("chunk_count", 0) > 10 else "metadata_only",
-            "embedding_count": qd.get("chunk_count", 0),
-            "hazard_type": qd.get("hazard_type"),
-            "location_name": qd.get("location_name"),
-            "impact_sector": qd.get("impact_sector"),
-            "spatial_coverage": qd.get("spatial_coverage"),
-            "catalog_source": qd.get("catalog_source"),
-            "is_metadata_only": qd.get("is_metadata_only", False),
-            "time_start": qd.get("time_start"),
-            "time_end": qd.get("time_end"),
+            "url": db.get("url") or ce_link or agg.get("link") or "",
+            "format": db.get("format"),
+            "variables": [v["name"] for v in agg.get("variables", [])],
+            "is_active": db.get("is_active", True),
+            "processing_status": processing_status,
+            "embedding_count": chunks,
+            "hazard_type": db.get("hazard_type") or agg.get("hazard_type") or (ce.hazard if ce else None),
+            "location_name": agg.get("location_name"),
+            "impact_sector": db.get("impact_sector") or agg.get("impact_sector") or (ce.impact_sector if ce else None),
+            "spatial_coverage": db.get("spatial_coverage") or agg.get("spatial_coverage") or (ce.spatial_coverage if ce else None),
+            "catalog_source": agg.get("catalog_source") or ("D1.1.xlsx" if ce else None),
+            "is_metadata_only": (chunks <= 1 and processing_status != "completed"),
+            "time_start": agg.get("time_start"),
+            "time_end": agg.get("time_end"),
+            "description": db.get("description"),
+            "error_message": db.get("error_message"),
+            "last_processed": db.get("last_processed"),
+            "tags": db.get("tags"),
+            "created_at": db.get("created_at"),
+            "auth_method": db.get("auth_method") or cred_info.get("auth_method"),
+            "portal": db.get("portal") or cred_info.get("portal"),
+            "catalog_row_index": ce.row_index if ce else db.get("catalog_row_index"),
+            "from_catalog": ce is not None,
         }
-
-        # Enrich with DB management data if available
-        db = db_sources.get(source_id, {})
-        if db:
-            entry["url"] = db.get("url") or entry["url"]
-            entry["format"] = db.get("format")
-            entry["description"] = db.get("description")
-            entry["is_active"] = db.get("is_active", True)
-            entry["error_message"] = db.get("error_message")
-            entry["last_processed"] = db.get("last_processed")
-            entry["tags"] = db.get("tags")
-            entry["created_at"] = db.get("created_at")
-            # DB processing_status overrides if it's more specific
-            db_status = db.get("processing_status")
-            if db_status and db_status != "pending":
-                entry["processing_status"] = db_status
-
-        # Auth & schedule
-        cred_info = source_creds.get(source_id, {})
-        entry["auth_method"] = db.get("auth_method") or cred_info.get("auth_method")
-        entry["portal"] = db.get("portal") or cred_info.get("portal")
         sched = schedules_map.get(source_id)
         if sched:
             entry["schedule"] = sched
+        return entry
 
+    # Group catalog rows by dataset_name so SYNOP / E-OBS / CMIP6 each
+    # appear as ONE administratable source even though the Excel lists
+    # them under multiple hazards. The Catalog page still shows the raw
+    # 233 rows; Sources is the deduplicated view.
+    by_dataset: dict = {}
+    for ce in catalog_entries:
+        ds = ce.dataset_name or ce.source_id
+        by_dataset.setdefault(ds, []).append(ce)
+
+    results = []
+    seen_db = set()
+    for ds, group in by_dataset.items():
+        # Pick the catalog row with the most useful link (prefer one that
+        # has a real http URL) as the representative for the group.
+        rep = next(
+            (e for e in group if e.link and e.link.startswith(("http://", "https://"))),
+            group[0],
+        )
+        # Use a stable group source_id: the dataset_name itself is the
+        # natural identifier for administration. Catalog page keeps the
+        # row-specific catalog_<DS>_<row> ids; Sources collapses them.
+        # If a DB row keyed exactly on the dataset_name exists (manual
+        # ingest like catalog_SPEI-GD_manual or a user-added one), prefer
+        # it for management metadata.
+        group_db = next(
+            (db_sources.get(e.source_id) for e in group if db_sources.get(e.source_id)),
+            None,
+        )
+        if group_db:
+            seen_db.add(group_db["source_id"])
+        # Surface ALL hazards observed across the group as a comma-joined
+        # string so the user sees "Drought, Flood, Heat" instead of just
+        # the first one — that was the bug the user flagged.
+        hazards = sorted({e.hazard for e in group if e.hazard})
+        regions = sorted({e.region_country for e in group if e.region_country})
+        sectors = sorted({e.impact_sector for e in group if e.impact_sector})
+
+        # Sum chunk counts across all source_ids in the group so the
+        # number reflects "all data we have for this dataset".
+        group_chunks = sum(chunk_by_source.get(e.source_id, 0) for e in group)
+
+        entry = _build_entry(
+            source_id=group_db["source_id"] if group_db else (rep.source_id),
+            dataset_name=ds,
+            ce=rep,
+            db=group_db,
+        )
+        entry["hazard_type"] = ", ".join(hazards) if hazards else entry.get("hazard_type")
+        entry["region_country"] = ", ".join(regions) if regions else None
+        entry["impact_sector"] = ", ".join(sectors) if sectors else entry.get("impact_sector")
+        # Override with the dataset-aggregate count, not just the rep row's,
+        # so SYNOP shows ~420 chunks (60 × 7 rows fanned out) not 60.
+        entry["embedding_count"] = max(group_chunks, entry["embedding_count"])
+        entry["catalog_row_count"] = len(group)  # how many Excel rows folded in
         results.append(entry)
 
-    # 4. Add DB-only sources not yet in Qdrant (e.g., just created, not processed yet)
+    # User-added rows in the DB that aren't catalog-derived. These don't
+    # need grouping — they're already one row per source_id.
     for sid, db in db_sources.items():
-        if sid not in seen_source_ids:
-            db["embedding_count"] = 0
-            cred_info = source_creds.get(sid, {})
-            db["auth_method"] = db.get("auth_method") or cred_info.get("auth_method")
-            db["portal"] = db.get("portal") or cred_info.get("portal")
-            sched = schedules_map.get(sid)
-            if sched:
-                db["schedule"] = sched
-            results.append(db)
+        if sid in seen_db or sid.startswith("catalog_"):
+            continue
+        seen_db.add(sid)
+        results.append(_build_entry(
+            source_id=sid,
+            dataset_name=db.get("dataset_name") or sid,
+            db=db,
+        ))
 
-    # Sort: most data first, then by name
-    results.sort(key=lambda r: (-r.get("embedding_count", 0), r.get("dataset_name", r.get("source_id", ""))))
+    # Sort: most data first, then by name. Coerce the secondary key to a
+    # string explicitly because ``r.get(..., default)`` only kicks in when
+    # the key is absent — if dataset_name is present but ``None`` (which
+    # SQLAlchemy returns for a NULL column), the sort comparator hits
+    # `None < "some-id"` and raises TypeError on the request thread,
+    # taking the whole /sources/ page down with a 500.
+    def _name_key(r):
+        return (r.get("dataset_name") or r.get("source_id") or "")
+    results.sort(key=lambda r: (-r.get("embedding_count", 0), _name_key(r)))
 
     return results
 
@@ -1208,6 +1305,144 @@ async def upload_source_file(file: UploadFile = File(...)):
         "size_bytes": size,
         "file_path": str(target_path),
         "message": "File uploaded. Use `file_path` as the source URL.",
+    }
+
+
+@router.post("/upload-multi")
+async def upload_zip_multi_ingest(
+    file: UploadFile = File(...),
+    source_id: str = "",
+    dataset_name: str = "",
+    hazard_type: str = "",
+    glob_pattern: str = "*.nc",
+):
+    """Upload a zip of rasters and kick off a generic multi-file ingest.
+
+    This is the future-proof version of the SPEI-GD bespoke script:
+    any user can upload a zip via the UI, the helper extracts it once
+    (idempotently), iterates the rasters, embeds each as Qdrant
+    chunks, and writes ``ingest_state.json`` so the Catalog "Resume"
+    badge works automatically if the run is killed.
+
+    The launcher script is generated on the fly under the per-upload
+    directory; the Resume button re-invokes it via ``POST
+    /catalog/resume-ingest``.
+    """
+    if not file or not file.filename:
+        raise HTTPException(400, "No file provided")
+    if not source_id or not dataset_name:
+        raise HTTPException(400, "source_id and dataset_name are required")
+
+    ext = Path(file.filename).suffix.lower()
+    if ext != ".zip":
+        raise HTTPException(400, "upload-multi only accepts .zip — single files use /upload")
+
+    safe_name = _SAFE_NAME.sub("_", file.filename).strip("._") or "upload.zip"
+    upload_id = uuid.uuid4().hex[:12]
+    target_dir = _UPLOAD_ROOT / upload_id
+    target_dir.mkdir(parents=True, exist_ok=True)
+    zip_path = target_dir / safe_name
+    extracted_dir = target_dir / "extracted"
+    done_marker = target_dir / "done.txt"
+    launcher = target_dir / "_run_ingest.py"
+
+    max_bytes = _upload_max_bytes()
+    size = 0
+    try:
+        with open(zip_path, "wb") as out:
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > max_bytes:
+                    out.close()
+                    shutil.rmtree(target_dir, ignore_errors=True)
+                    raise HTTPException(
+                        413,
+                        f"Upload exceeds {max_bytes // (1024 * 1024)} MB limit",
+                    )
+                out.write(chunk)
+    except HTTPException:
+        raise
+    except Exception as e:
+        shutil.rmtree(target_dir, ignore_errors=True)
+        logger.error(f"upload-multi failed for {file.filename}: {e}")
+        raise HTTPException(500, f"Upload failed: {e}")
+
+    # Sanitize the strings before writing them into a Python source file.
+    # repr() is safer than f-string concatenation here — it escapes quotes
+    # and backslashes, so an attacker can't break out of the literal.
+    launcher.write_text(
+        "import logging, sys\n"
+        "logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')\n"
+        "sys.path.insert(0, '/app')\n"
+        "from src.catalog.multi_file_ingester import ingest_directory\n"
+        "if __name__ == '__main__':\n"
+        f"    ingest_directory(\n"
+        f"        directory={str(extracted_dir)!r},\n"
+        f"        zip_path={str(zip_path)!r},\n"
+        f"        source_id={source_id!r},\n"
+        f"        dataset_name={dataset_name!r},\n"
+        f"        hazard_type={hazard_type!r},\n"
+        f"        glob_pattern={glob_pattern!r},\n"
+        f"        catalog_source='manual_upload',\n"
+        f"        script_path=__file__,\n"
+        f"        done_marker={str(done_marker)!r},\n"
+        f"    )\n"
+    )
+
+    # Register a Postgres row so the source shows up in the Sources page
+    # (same place the user added it from). Without this, the upload would
+    # silently chunk into Qdrant but Sources would never list it. We use
+    # idempotent get-or-create so re-running the same upload doesn't 409.
+    try:
+        from src.sources import get_source_store
+        from src.sources.climate_source import ClimateDataSource
+        store = get_source_store()
+        if store.get_source(source_id) is None:
+            store.add_source(ClimateDataSource(
+                source_id=source_id,
+                dataset_name=dataset_name,
+                url=str(zip_path),
+                format="zip-multi",
+                description=f"Multi-file zip upload: {safe_name}",
+                hazard_type=hazard_type or None,
+                is_active=True,
+            ))
+            logger.info(f"upload-multi: registered Sources row for {source_id}")
+    except Exception as e:
+        # Non-fatal: ingest still proceeds, but the source won't show in
+        # Sources until a manual /sources/sync-from-qdrant call.
+        logger.warning(f"upload-multi: could not register Sources row: {e}")
+
+    # Launch detached so the upload response can return immediately.
+    import subprocess
+    import sys as _sys
+    proc = subprocess.Popen(
+        [_sys.executable, str(launcher)],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    logger.info(
+        f"upload-multi: launched {launcher} as pid {proc.pid} for "
+        f"source_id={source_id} dataset={dataset_name}"
+    )
+
+    return {
+        "upload_id": upload_id,
+        "size_bytes": size,
+        "zip_path": str(zip_path),
+        "launcher": str(launcher),
+        "pid": proc.pid,
+        "source_id": source_id,
+        "dataset_name": dataset_name,
+        "message": (
+            "Zip uploaded and ingest launched in background. "
+            "Watch the Catalog page — the row will show ⏳ Running and update "
+            "as files complete. If killed, click the row → Resume ingest."
+        ),
     }
 
 

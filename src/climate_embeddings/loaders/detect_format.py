@@ -30,6 +30,19 @@ def detect_format_from_url(url: str) -> str:
                 return fmt
 
         path_obj = Path(parsed.path)
-        return SUPPORTED_EXTENSIONS.get(path_obj.suffix.lower(), "unknown")
+        suffix = path_obj.suffix.lower()
+        if suffix in SUPPORTED_EXTENSIONS:
+            return SUPPORTED_EXTENSIONS[suffix]
+
+        # Zenodo / OSF / Dataverse style API URLs put the real filename
+        # one segment up: `…/files/30days.zip/content` or
+        # `…/data/foo.nc/download`. Walk back through the path segments
+        # and use the first one whose suffix we recognise.
+        for segment in reversed(path_lower.strip("/").split("/")):
+            seg_suffix = Path(segment).suffix.lower()
+            if seg_suffix in SUPPORTED_EXTENSIONS:
+                return SUPPORTED_EXTENSIONS[seg_suffix]
+
+        return "unknown"
     except Exception:
         return "unknown"

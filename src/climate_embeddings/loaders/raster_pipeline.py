@@ -7,7 +7,19 @@ import zipfile
 import tempfile
 from pathlib import Path
 from dataclasses import dataclass, field
-from typing import Any, Dict, Iterator, Union, Optional
+from typing import Any, Dict, Iterator, List, Optional, Union
+
+# Force dask to compute everything in the calling thread — no pool, no
+# spawn, no fork. PyTorch's CUDA context plus dask's default
+# multiprocessing/threaded schedulers deadlock the moment xarray's lazy
+# arrays are realized post-cuda (we observed this on E-OBS). Synchronous
+# is plenty fast for the chunk sizes the catalog batch produces and
+# eliminates the whole class of fork-after-CUDA hangs.
+try:
+    import dask
+    dask.config.set(scheduler="synchronous")
+except Exception:
+    pass
 import numpy as np
 import xarray as xr
 import dask.array as da
@@ -285,12 +297,52 @@ def _load_zip(path, **kwargs):
         except zipfile.BadZipFile:
             logger.error(f"Invalid ZIP file: {path}")
 
+def _enumerate_grib_grids(path: Path) -> List[int]:
+    """Return the unique ``numberOfPoints`` values present in a GRIB file.
+
+    Multi-grid GRIBs (e.g. ItaliaMeteo MOLOCH/ICON-2I, where a single .grib
+    bundles surface 2D fields and pressure-level 3D fields with different
+    grid resolutions) make ``xr.open_dataset(engine="cfgrib")`` fail with
+    "multiple values for unique key, try re-open with filter_by_keys=
+    {'numberOfPoints': ...}". We enumerate via eccodes so the loader can
+    iterate each subgrid separately.
+    """
+    try:
+        from eccodes import codes_grib_new_from_file, codes_get, codes_release
+    except Exception:
+        logger.warning("eccodes Python bindings missing — cannot enumerate GRIB grids")
+        return []
+
+    sizes: set = set()
+    try:
+        with open(path, "rb") as fh:
+            while True:
+                gid = codes_grib_new_from_file(fh)
+                if gid is None:
+                    break
+                try:
+                    sizes.add(int(codes_get(gid, "numberOfPoints")))
+                finally:
+                    codes_release(gid)
+    except Exception as e:
+        logger.warning(f"GRIB enumeration failed for {path.name}: {e}")
+        return []
+    return sorted(sizes, reverse=True)  # bigger subgrid first → more chunks earlier
+
+
 def _load_xarray_generic(path: Path, engine: Optional[str] = None, **kwargs) -> Iterator[RasterChunk]:
     """
     Generic Loader for NetCDF/GRIB using Xarray.
     Enforces Time=1 chunking for granular RAG answers.
     Tries engine fallback: requested engine → netcdf4 → h5netcdf → scipy → auto.
+
+    For GRIB files that bundle heterogeneous grids (multiple resolutions in
+    one file), the open will fail with "multiple values for unique key".
+    We catch that, enumerate the unique ``numberOfPoints`` values via
+    eccodes, and yield chunks from each subgrid via ``filter_by_keys``.
     """
+    # Allow callers (or recursive multi-grid pass) to pass cfgrib filter args.
+    grib_filter = kwargs.pop("_grib_filter", None)
     try:
         # Try requested engine first, then fallback chain
         engines_to_try = [engine] if engine else [None]
@@ -300,19 +352,41 @@ def _load_xarray_generic(path: Path, engine: Optional[str] = None, **kwargs) -> 
                 if fallback != engine and fallback not in engines_to_try:
                     engines_to_try.append(fallback)
 
+        def _open(eng_name, decode_times=True):
+            # Always use dask chunking so large variables don't get pulled
+            # entirely into RAM at once. Combined with the synchronous
+            # scheduler set at module import (no forks), this gives
+            # streaming chunked reads without the OOM-kill that eager
+            # numpy load triggers on multi-GB NetCDFs (E-OBS tn was 2 GB
+            # → blew the 3 GB container limit → OOM-kill silently).
+            open_kwargs: dict = {"engine": eng_name, "chunks": "auto"}
+            if not decode_times:
+                open_kwargs["decode_times"] = False
+            if grib_filter and (eng_name == "cfgrib" or eng_name is None):
+                open_kwargs["backend_kwargs"] = {"filter_by_keys": grib_filter}
+            return xr.open_dataset(path, **open_kwargs)
+
         ds = None
         last_err = None
+        multi_grid_error = False
         for eng in engines_to_try:
             try:
-                ds = xr.open_dataset(path, chunks="auto", engine=eng)
+                ds = _open(eng)
                 if eng != engine:
                     logger.info(f"Opened {path.name} with fallback engine '{eng}' (primary '{engine}' failed)")
                 break
             except Exception as e:
+                # cfgrib multi-grid: catch HERE so we don't waste the netcdf
+                # fallbacks on a GRIB error that they can't possibly fix.
+                err_msg = str(e).lower()
+                if engine == "cfgrib" and "multiple values for unique key" in err_msg:
+                    multi_grid_error = True
+                    last_err = e
+                    break
                 # Retry with decode_times=False for non-standard time units
-                if "decode time" in str(e).lower() or "calendar" in str(e).lower():
+                if "decode time" in err_msg or "calendar" in err_msg:
                     try:
-                        ds = xr.open_dataset(path, chunks="auto", engine=eng, decode_times=False)
+                        ds = _open(eng, decode_times=False)
                         logger.info(f"Opened {path.name} with engine '{eng}' + decode_times=False")
                         break
                     except Exception as e2:
@@ -322,6 +396,39 @@ def _load_xarray_generic(path: Path, engine: Optional[str] = None, **kwargs) -> 
                 last_err = e
                 logger.debug(f"Engine '{eng}' failed for {path.name}: {e}")
                 continue
+
+        # Multi-grid GRIB: enumerate subgrids and recursively load each.
+        # Yields chunks from EVERY subgrid so a 1.2 km surface grid + a
+        # coarser pressure-level grid both produce embeddings.
+        if multi_grid_error and engine == "cfgrib" and grib_filter is None:
+            sizes = _enumerate_grib_grids(path)
+            if sizes:
+                logger.info(
+                    f"Multi-grid GRIB {path.name}: iterating {len(sizes)} subgrids "
+                    f"(numberOfPoints={sizes})"
+                )
+                emitted = 0
+                for npts in sizes:
+                    try:
+                        sub_iter = _load_xarray_generic(
+                            path, engine="cfgrib", _grib_filter={"numberOfPoints": npts}, **kwargs
+                        )
+                        for chunk in sub_iter:
+                            # Tag the subgrid so payload metadata distinguishes them
+                            try:
+                                chunk.metadata["grid_npts"] = npts
+                            except Exception:
+                                pass
+                            emitted += 1
+                            yield chunk
+                    except Exception as sub_err:
+                        logger.warning(
+                            f"Multi-grid GRIB subgrid {npts} failed for {path.name}: {sub_err}"
+                        )
+                        continue
+                logger.info(f"Multi-grid GRIB {path.name}: yielded {emitted} chunks across all subgrids")
+                return
+            # Fall through if enumeration failed — re-raise original error below.
 
         if ds is None:
             raise last_err or RuntimeError(f"All xarray engines failed for {path.name}")
@@ -391,7 +498,16 @@ def _load_xarray_generic(path: Path, engine: Optional[str] = None, **kwargs) -> 
                 # Dynamic threshold: use at most 30% of *available* RAM,
                 # capped at 2 GB absolute, so future large datasets degrade
                 # gracefully instead of OOM-crashing.
-                max_preload = 6 * 1024**3  # 6 GB absolute cap
+                # Pre-load cap. Original 6 GB blew our 6 GB container
+                # OOM-killed the SPEI-GD ingest at "Pre-loading spei
+                # (3027 MB)" because there was already ~2 GB of model +
+                # working memory in the same Python process. Keep this
+                # below half of the container's mem_limit so eager
+                # pre-load is reserved for genuinely small variables
+                # (catalog summary CSVs etc.); anything bigger drops to
+                # dask per-chunk compute, which is plenty fast with the
+                # synchronous scheduler we set globally at module import.
+                max_preload = 1 * 1024**3  # 1 GB absolute cap
                 try:
                     import psutil
                     avail = psutil.virtual_memory().available
@@ -566,17 +682,36 @@ def _load_csv(path: Path, **kwargs) -> Iterator[RasterChunk]:
                 if any(line.startswith(ch) for line in first_lines if line.strip()):
                     comment_char = ch[0]
                     break
-            # Auto-detect delimiter: if no commas found in data lines, try whitespace
+            # Auto-detect delimiter from a real header/data line. Score each
+            # candidate by how many splits it produces — most-frequent wins.
+            # Old version only handled comma + whitespace, so European exports
+            # (Météo-France, etc.) using `;` ended up parsed as one giant
+            # column → 0 numeric columns → 0 chunks. Now we also catch `;`
+            # and `|`.
             data_lines = [l for l in first_lines if l.strip() and (comment_char is None or not l.startswith(comment_char))]
             if data_lines and suffix not in ('.tsv',):
-                sample_line = data_lines[0]
-                if ',' not in sample_line and ('\t' in sample_line or '  ' in sample_line):
-                    delimiter = r'\s+'  # whitespace-delimited
+                sample_line = data_lines[0].rstrip("\n\r")
+                # Count occurrences of each candidate; whichever wins becomes
+                # the delimiter.
+                candidates = {",": sample_line.count(","),
+                              ";": sample_line.count(";"),
+                              "|": sample_line.count("|"),
+                              "\t": sample_line.count("\t")}
+                best, best_n = max(candidates.items(), key=lambda kv: kv[1])
+                if best_n >= 2:
+                    delimiter = best
+                elif "  " in sample_line and best_n < 2:
+                    delimiter = r'\s+'
         except Exception:
             pass
 
+        # Common "missing value" placeholders used across European met-office
+        # exports — Météo-France writes "mq", others use "/", "---", etc.
+        # pandas treats these as NaN if listed here.
+        EXTRA_NA = ["mq", "MQ", "Mq", "/", "---", "--", "NULL", "null", "n/a", "N/A"]
+
         # First, read a small sample to understand structure
-        read_kwargs = dict(nrows=100, delimiter=delimiter, low_memory=False)
+        read_kwargs = dict(nrows=100, delimiter=delimiter, low_memory=False, na_values=EXTRA_NA)
         if comment_char:
             read_kwargs['comment'] = comment_char
         if delimiter == r'\s+':
@@ -658,8 +793,8 @@ def _load_csv(path: Path, **kwargs) -> Iterator[RasterChunk]:
         if has_time_column:
             logger.info(f"Detected time-series data, using variable-based chunking (one embedding per variable)")
             
-            # Read entire CSV (reuse detected settings)
-            full_kwargs = dict(delimiter=delimiter, low_memory=False)
+            # Read entire CSV (reuse detected settings, including NA placeholders)
+            full_kwargs = dict(delimiter=delimiter, low_memory=False, na_values=EXTRA_NA)
             if comment_char:
                 full_kwargs['comment'] = comment_char
             if delimiter == r'\s+':
@@ -853,7 +988,7 @@ def _load_csv(path: Path, **kwargs) -> Iterator[RasterChunk]:
             logger.info("Non-time-series data, using variable-based chunking")
             iter_kwargs = dict(
                 delimiter=delimiter, chunksize=chunk_size,
-                low_memory=False, iterator=True
+                low_memory=False, iterator=True, na_values=EXTRA_NA,
             )
             if comment_char:
                 iter_kwargs['comment'] = comment_char

@@ -78,15 +78,35 @@
 
           <!-- Chunk Details -->
           <div v-if="msg.chunks && msg.chunks.length" class="mt-3">
-            <button
-              @click="msg.showChunks = !msg.showChunks"
-              class="btn-ghost !px-2 !py-1 text-xs flex items-center gap-1 text-mendelu-green"
-            >
-              <svg class="w-3 h-3 transition-transform duration-150" :class="{ 'rotate-90': msg.showChunks }" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
-              </svg>
-              {{ msg.chunks.length }} retrieved chunks
-            </button>
+            <div class="flex items-center gap-2 flex-wrap">
+              <button
+                @click="msg.showChunks = !msg.showChunks"
+                class="btn-ghost !px-2 !py-1 text-xs flex items-center gap-1 text-mendelu-green"
+              >
+                <svg class="w-3 h-3 transition-transform duration-150" :class="{ 'rotate-90': msg.showChunks }" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
+                </svg>
+                {{ msg.chunks.length }} retrieved chunks
+              </button>
+              <span class="text-mendelu-gray-semi">·</span>
+              <button
+                @click="exportMessageData(msg, 'csv')"
+                :disabled="!!msg.exporting"
+                class="px-2 py-1 text-xs rounded-md font-medium bg-mendelu-green text-white hover:bg-mendelu-green/90 transition-colors duration-150 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1"
+                title="Downloads every chunk in the collection matching the cited datasets/variables, filtered to the year range mentioned in your question."
+              >
+                <svg class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M7 10l5 5 5-5M12 15V3" />
+                </svg>
+                {{ msg.exporting === 'csv' ? 'Exporting…' : 'Export full dataset (CSV)' }}
+              </button>
+              <button
+                @click="exportMessageData(msg, 'json')"
+                :disabled="!!msg.exporting"
+                class="px-2 py-1 text-xs rounded-md border border-mendelu-gray-semi text-mendelu-black hover:bg-mendelu-gray-light transition-colors duration-150 disabled:opacity-50"
+                title="Same as CSV but as a JSON file"
+              >{{ msg.exporting === 'json' ? 'Exporting…' : 'JSON' }}</button>
+            </div>
             <div v-if="msg.showChunks" class="mt-2 space-y-2">
               <div
                 v-for="(chunk, ci) in msg.chunks"
@@ -330,6 +350,11 @@ async function sendMessage() {
             : '',
           time_range: c.time_range || meta.time_range || '',
           text: c.text || c.content || '',
+          // Keep the full payload so the per-message export can dump
+          // exactly what the chat answer cited, not just the rendered
+          // subset above.
+          source_id: c.source_id || meta.source_id,
+          metadata: meta,
         }
       })
 
@@ -343,6 +368,13 @@ async function sendMessage() {
         spatial,
         chunks,
         showChunks: false,
+        // Per-message bulk-export state. The original question + filters
+        // are captured here so the Export button works even after later
+        // chats overwrite the input box or the user changes filters.
+        question,
+        sourceFilter: filterSource.value || null,
+        variableFilter: filterVariable.value || null,
+        exporting: '',
         meta: {
           llm_time_ms: data.llm_time_ms,
           search_time_ms: data.search_time_ms,
@@ -360,6 +392,166 @@ async function sendMessage() {
 }
 
 function clearChat() { messages.value = [] }
+
+// Find the user question that produced this assistant message — used
+// only to slug the export filename.
+function questionForMessage(msg: any): string {
+  if (msg?.question) return msg.question
+  const idx = messages.value.indexOf(msg)
+  for (let i = idx - 1; i >= 0; i--) {
+    if (messages.value[i].role === 'user') return messages.value[i].content || ''
+  }
+  return ''
+}
+
+// Stable column order for the CSV. Anything else from the metadata is
+// appended alphabetically so dataset-specific fields aren't dropped.
+const EXPORT_PRIORITY_COLS = [
+  'rank', 'score', 'source_id', 'dataset_name', 'variable', 'long_name',
+  'standard_name', 'units', 'unit',
+  'time_start', 'time_end', 'temporal_frequency',
+  'lat_min', 'lat_max', 'lon_min', 'lon_max',
+  'stats_mean', 'stats_min', 'stats_max', 'stats_std',
+  'region_country', 'spatial_coverage', 'hazard_type', 'impact_sector',
+  'text',
+]
+
+function flattenChunkForExport(rank: number, chunk: any): Record<string, any> {
+  const meta = chunk?.metadata || {}
+  const flat: Record<string, any> = {
+    rank,
+    score: chunk?.score ?? null,
+    source_id: meta.source_id ?? chunk?.source_id ?? null,
+    variable: meta.variable ?? chunk?.variable ?? null,
+    text: chunk?.text ?? '',
+  }
+  for (const [k, v] of Object.entries(meta)) {
+    if (k in flat) continue
+    flat[k] = (v && typeof v === 'object') ? JSON.stringify(v) : v
+  }
+  return flat
+}
+
+function csvEscape(v: any): string {
+  if (v === null || v === undefined) return ''
+  const s = String(v)
+  // Quote if it contains comma, quote, newline, or carriage return.
+  return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
+}
+
+function rowsToCsv(rows: Record<string, any>[]): string {
+  if (rows.length === 0) return '﻿rank\n'
+  const seen = new Set<string>()
+  const cols: string[] = []
+  for (const c of EXPORT_PRIORITY_COLS) {
+    if (rows.some(r => c in r) && !seen.has(c)) { cols.push(c); seen.add(c) }
+  }
+  const extras = new Set<string>()
+  for (const r of rows) for (const k of Object.keys(r)) if (!seen.has(k)) extras.add(k)
+  cols.push(...[...extras].sort())
+  // BOM so Excel auto-detects UTF-8.
+  const lines: string[] = ['﻿' + cols.join(',')]
+  for (const r of rows) {
+    lines.push(cols.map(c => csvEscape(r[c])).join(','))
+  }
+  return lines.join('\n') + '\n'
+}
+
+// Pull unique (dataset_name, variable) pairs out of the cited chunks.
+// These tell the export endpoint "I want every chunk in the collection
+// that's like one of these" — combined with the year filter, that's the
+// "give me all 2024 data on this variable" experience a scientist expects.
+function citedPairsFromMessage(msg: any): Array<{ dataset_name?: string; variable?: string; source_id?: string }> {
+  const seen = new Set<string>()
+  const out: Array<any> = []
+  for (const c of (msg?.chunks || [])) {
+    const meta = c.metadata || {}
+    const dataset_name = (meta.dataset_name || c.dataset || '').trim()
+    const source_id = (meta.source_id || c.source_id || '').trim()
+    const variable = (meta.variable || c.variable || '').trim()
+    if (!dataset_name && !source_id) continue
+    if (!variable) continue
+    const key = `${dataset_name}::${source_id}::${variable}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    const pair: any = { variable }
+    if (dataset_name) pair.dataset_name = dataset_name
+    else pair.source_id = source_id
+    out.push(pair)
+  }
+  return out
+}
+
+// Hand the question + cited pairs to the backend export. The endpoint
+// expands them to "every chunk in Qdrant matching one of these
+// (dataset, variable) pairs", auto-detects the year window from the
+// question, and streams a CSV of every overlapping data point.
+async function exportMessageData(msg: any, fmt: 'csv' | 'json') {
+  if (msg.exporting) return
+  const cited = citedPairsFromMessage(msg)
+  if (cited.length === 0) {
+    toast.error('No (dataset, variable) info on the cited chunks — try re-sending the question.')
+    return
+  }
+  const question = questionForMessage(msg)
+  const slug = question.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '').slice(0, 60) || 'export'
+
+  msg.exporting = fmt
+  try {
+    const resp = await apiFetch('/rag/export', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        question,
+        cited_pairs: cited,
+        fmt,
+      }),
+    })
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}))
+      throw new Error(err.detail || `HTTP ${resp.status}`)
+    }
+    if (fmt === 'csv') {
+      const yMin = resp.headers.get('X-Export-Year-Min')
+      const yMax = resp.headers.get('X-Export-Year-Max')
+      const auto = resp.headers.get('X-Export-Year-Auto') === '1'
+      const blob = await resp.blob()
+      triggerDownload(blob, `climate_export_${slug}.csv`)
+      // Backend doesn't pre-count when streaming, so derive count from rows
+      // the user actually got — minus the header line.
+      const rowCount = (await blob.text().catch(() => '')).split('\n').length - 2
+      const yearNote = (yMin && yMax)
+        ? ` covering ${yMin}–${yMax}${auto ? ' (auto-detected)' : ''}`
+        : ''
+      toast.success(`Exported ~${Math.max(0, rowCount)} rows${yearNote}`)
+    } else {
+      const data = await resp.json()
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' })
+      triggerDownload(blob, `climate_export_${slug}.json`)
+      const yearNote = (data.year_min && data.year_max)
+        ? ` covering ${data.year_min}–${data.year_max}${data.year_auto_detected ? ' (auto-detected)' : ''}`
+        : ''
+      const truncNote = data.truncated ? ' (truncated to 50k rows — use CSV for full export)' : ''
+      toast.success(`Exported ${data.count ?? 0} chunks${yearNote}${truncNote}`)
+    }
+  } catch (e: any) {
+    console.error('Export failed:', e)
+    toast.error(`Export failed: ${e?.message || 'unknown error'}`)
+  } finally {
+    msg.exporting = ''
+  }
+}
+
+function triggerDownload(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  URL.revokeObjectURL(url)
+}
 
 async function scrollToBottom() {
   await nextTick()

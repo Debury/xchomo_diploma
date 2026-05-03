@@ -275,7 +275,12 @@
 
     <!-- Embedding Model -->
     <div class="card">
-      <h3 class="text-sm font-medium text-mendelu-black mb-3">Embedding Model</h3>
+      <div class="flex items-center justify-between mb-3">
+        <h3 class="text-sm font-medium text-mendelu-black">Embedding Model</h3>
+        <button v-if="hasEmbedChanges" @click="saveEmbedSettings" :disabled="savingEmbed" class="btn-primary !py-1.5 !text-xs disabled:opacity-50">
+          {{ savingEmbed ? 'Saving…' : 'Save batch sizes' }}
+        </button>
+      </div>
       <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
         <div>
           <span class="text-xs text-mendelu-gray-dark uppercase tracking-wider block mb-0.5">Model</span>
@@ -290,10 +295,62 @@
           <span class="text-mendelu-black font-mono text-sm">{{ settings?.embedding_model?.distance || 'COSINE' }}</span>
         </div>
         <div>
-          <span class="text-xs text-mendelu-gray-dark uppercase tracking-wider block mb-0.5">Status</span>
-          <span class="text-mendelu-success text-sm font-medium">Active</span>
+          <span class="text-xs text-mendelu-gray-dark uppercase tracking-wider block mb-0.5">Device</span>
+          <span class="text-mendelu-black font-mono text-sm">{{ settings?.embedding_model?.device || 'auto' }}</span>
         </div>
       </div>
+
+      <!-- Batch size — critical knob for GPU memory.
+           BAAI-large at FP32 + 512 tokens needs ~16 MB / sample of VRAM.
+           A batch that doesn't fit in VRAM falls back to unified memory
+           (PCIe spill) which is 5-10× slower — that's the symptom of
+           "GPU at 100% but no progress for minutes". Recommended sizes
+           below are derived from VRAM tiers. -->
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4 pt-4 border-t border-mendelu-gray-semi/40">
+        <div>
+          <label for="settings-embed-doc-batch" class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-1">
+            Document batch size
+            <span class="text-[10px] text-mendelu-gray-dark/70 normal-case ml-1">(catalog batch + ETL)</span>
+          </label>
+          <input
+            id="settings-embed-doc-batch"
+            type="number"
+            v-model.number="editableSettings.embedding_batch_size"
+            min="1" max="2048" step="1"
+            class="input-field"
+          />
+          <div class="flex flex-wrap gap-1 mt-2">
+            <button v-for="p in batchPresets" :key="p.size"
+              @click="editableSettings.embedding_batch_size = p.size"
+              class="text-[10px] px-2 py-0.5 rounded-full transition-colors duration-150"
+              :class="editableSettings.embedding_batch_size === p.size ? 'bg-mendelu-green text-white' : 'bg-mendelu-gray-light text-mendelu-gray-dark hover:bg-mendelu-gray-semi'">
+              {{ p.size }} <span class="opacity-70">({{ p.label }})</span>
+            </button>
+          </div>
+        </div>
+        <div>
+          <label for="settings-embed-query-batch" class="block text-xs font-medium text-mendelu-gray-dark uppercase tracking-wider mb-1">
+            Query batch size
+            <span class="text-[10px] text-mendelu-gray-dark/70 normal-case ml-1">(RAG chat)</span>
+          </label>
+          <input
+            id="settings-embed-query-batch"
+            type="number"
+            v-model.number="editableSettings.embedding_query_batch_size"
+            min="1" max="512" step="1"
+            class="input-field"
+          />
+          <p class="text-[10px] text-mendelu-gray-dark/70 mt-1 leading-snug">
+            Queries are usually 1–10 texts → small batch is fine. Bump only
+            if you have a heavily-multi-user deployment.
+          </p>
+        </div>
+      </div>
+      <p class="text-[11px] text-mendelu-alert mt-3 leading-snug">
+        <span class="font-medium">⚠ If embedding takes minutes per batch with GPU at 100 % but no Qdrant chunks landing,</span>
+        the batch is too big and PyTorch is spilling tensors over PCIe to system RAM.
+        Drop the doc batch size to the next preset down.
+      </p>
     </div>
 
     <!-- Qdrant -->
@@ -316,6 +373,176 @@
           <span class="text-xs text-mendelu-gray-dark uppercase tracking-wider block mb-0.5">Collection</span>
           <span class="text-mendelu-black font-mono text-sm">{{ embeddingStats?.collection_name || 'climate_data' }}</span>
         </div>
+      </div>
+    </div>
+
+    <!-- Vector Database Backups -->
+    <div class="card">
+      <div class="flex items-center justify-between mb-4">
+        <div>
+          <h3 class="text-sm font-medium text-mendelu-black">Vector Database Backups</h3>
+          <p class="text-[10px] text-mendelu-gray-dark mt-0.5">Export or restore Qdrant collection snapshots</p>
+        </div>
+        <button @click="refreshSnapshots" :disabled="snapshotsLoading" class="btn-ghost !py-1 !text-xs disabled:opacity-50">
+          {{ snapshotsLoading ? 'Loading…' : 'Refresh' }}
+        </button>
+      </div>
+
+      <div class="flex flex-wrap gap-2 mb-4">
+        <button
+          @click="exportSnapshot"
+          :disabled="exportingSnapshot || importingSnapshot"
+          class="btn-primary !py-1.5 !text-xs disabled:opacity-50"
+        >
+          {{ exportingSnapshot ? exportProgress.stage : 'Export Snapshot' }}
+        </button>
+        <button
+          @click="triggerImportPicker"
+          :disabled="exportingSnapshot || importingSnapshot"
+          class="btn-secondary !py-1.5 !text-xs disabled:opacity-50"
+          title="Restore from a .snapshot file. WILL OVERWRITE current points."
+        >
+          {{ importingSnapshot ? importProgress.stage : 'Import Snapshot' }}
+        </button>
+        <input
+          ref="importFileInput"
+          type="file"
+          accept=".snapshot,application/octet-stream"
+          class="hidden"
+          @change="onSnapshotFilePicked"
+        />
+      </div>
+
+      <!-- Export progress -->
+      <div v-if="exportingSnapshot" class="mb-4 px-3 py-2.5 rounded-lg border border-mendelu-green/30 bg-mendelu-green/[0.04]">
+        <div class="flex items-center justify-between text-[11px] mb-1.5">
+          <span class="text-mendelu-black font-medium">{{ exportProgress.stage }}</span>
+          <span class="text-mendelu-gray-dark tabular-nums">{{ exportProgressLabel }}</span>
+        </div>
+        <div class="w-full bg-mendelu-gray-semi/60 rounded-full h-1.5 overflow-hidden">
+          <!-- Determinate (download with known length): width = % done.
+               Indeterminate (creating, or download w/o Content-Length): an
+               animated bar slides across to show "still working". -->
+          <div
+            v-if="exportProgress.indeterminate"
+            class="h-1.5 rounded-full bg-mendelu-green animate-snapshot-pulse"
+            style="width: 35%;"
+          ></div>
+          <div
+            v-else
+            class="h-1.5 rounded-full bg-mendelu-green transition-[width] duration-150 ease-linear"
+            :style="{ width: `${exportProgress.percent}%` }"
+          ></div>
+        </div>
+        <!-- Concurrency warning. Heavy disk I/O during snapshot creation
+             slows ETL and other Qdrant operations to a crawl. Better to
+             keep the system idle for the few minutes it takes. -->
+        <p class="text-[11px] text-mendelu-gray-dark mt-2 leading-snug">
+          <span class="font-medium text-mendelu-alert">⚠ Don't trigger ETL jobs, catalog processing, or other heavy operations until this finishes.</span>
+          Snapshot creation reads the full collection from disk; running concurrent
+          writes will slow it down and may produce a less consistent backup.
+          You can safely leave the page open or close the tab — the create
+          continues on the server, and reopening Settings will resume showing this progress.
+        </p>
+      </div>
+
+      <!-- Import progress (upload bytes) -->
+      <div v-if="importingSnapshot" class="mb-4 px-3 py-2.5 rounded-lg border border-mendelu-alert/30 bg-mendelu-alert/[0.04]">
+        <div class="flex items-center justify-between text-[11px] mb-1.5">
+          <span class="text-mendelu-black font-medium">{{ importProgress.stage }}</span>
+          <span class="text-mendelu-gray-dark tabular-nums">{{ importProgressLabel }}</span>
+        </div>
+        <div class="w-full bg-mendelu-gray-semi/60 rounded-full h-1.5 overflow-hidden">
+          <div
+            v-if="importProgress.indeterminate"
+            class="h-1.5 rounded-full bg-mendelu-alert animate-snapshot-pulse"
+            style="width: 35%;"
+          ></div>
+          <div
+            v-else
+            class="h-1.5 rounded-full bg-mendelu-alert transition-[width] duration-150 ease-linear"
+            :style="{ width: `${importProgress.percent}%` }"
+          ></div>
+        </div>
+      </div>
+
+      <p class="text-[11px] text-mendelu-alert mb-3 leading-snug">
+        <span class="font-medium">Warning:</span> Importing a snapshot will replace all current points
+        in the active collection. Export first if you want a recovery point.
+      </p>
+
+      <div v-if="snapshots.length > 0" class="border-t border-mendelu-gray-semi/40 pt-3">
+        <div class="text-[10px] font-medium text-mendelu-gray-dark uppercase tracking-wider mb-2">
+          Existing snapshots ({{ snapshots.length }})
+        </div>
+        <div class="space-y-1.5">
+          <div
+            v-for="snap in sortedSnapshots"
+            :key="snap.name"
+            class="flex items-center gap-3 px-3 py-2 rounded-lg bg-mendelu-gray-light/50 text-xs"
+          >
+            <div class="flex-1 min-w-0">
+              <div class="font-mono text-mendelu-black truncate" :title="snap.name">{{ snap.name }}</div>
+              <div class="text-[10px] text-mendelu-gray-dark mt-0.5 tabular-nums">
+                {{ snapshotTimestamp(snap) }}
+              </div>
+            </div>
+            <span class="text-mendelu-gray-dark tabular-nums whitespace-nowrap">{{ formatBytes(snap.size) }}</span>
+            <button
+              @click="downloadExistingSnapshot(snap.name)"
+              class="btn-ghost !px-2 !py-0.5 text-[11px] text-mendelu-green"
+            >Download</button>
+            <button
+              @click="deleteSnapshot(snap.name)"
+              class="btn-ghost !px-2 !py-0.5 text-[11px] text-mendelu-alert"
+            >Delete</button>
+          </div>
+        </div>
+      </div>
+      <div v-else-if="!snapshotsLoading" class="text-[11px] text-mendelu-gray-dark/70 italic">
+        No snapshots stored on the server yet.
+      </div>
+    </div>
+
+    <!-- ETL temp file cleanup — leftover /tmp/tmp*.nc partials from
+         crashed/killed batches accumulate to several GB. Show what's
+         there + offer a one-click cleanup. -->
+    <div class="card">
+      <div class="flex items-center justify-between mb-3">
+        <div>
+          <h3 class="text-sm font-medium text-mendelu-black">ETL temp files</h3>
+          <p class="text-[10px] text-mendelu-gray-dark mt-0.5">
+            Partial downloads left behind by killed batches. Safe to delete when nothing is running.
+          </p>
+        </div>
+        <div class="flex gap-2">
+          <button @click="refreshTmp" :disabled="tmpLoading" class="btn-ghost !py-1 !text-xs disabled:opacity-50">
+            {{ tmpLoading ? 'Loading…' : 'Refresh' }}
+          </button>
+          <button
+            @click="cleanTmp"
+            :disabled="tmpLoading || cleaningTmp || !tmp.files?.length"
+            class="btn-primary !py-1 !text-xs disabled:opacity-50"
+            title="Delete all /tmp/tmp*. Refused while a catalog batch is running."
+          >
+            {{ cleaningTmp ? 'Cleaning…' : `Clean ${tmp.count || 0} files` }}
+          </button>
+        </div>
+      </div>
+
+      <div v-if="tmp.files?.length" class="space-y-1">
+        <div class="flex items-center justify-between text-xs text-mendelu-gray-dark mb-1">
+          <span>{{ tmp.count }} files, total <span class="font-medium tabular-nums text-mendelu-black">{{ formatBytes(tmp.total_bytes) }}</span></span>
+        </div>
+        <div class="max-h-40 overflow-y-auto border border-mendelu-gray-semi/40 rounded-lg">
+          <div v-for="f in tmp.files" :key="f.path" class="flex items-center gap-3 px-3 py-1.5 text-xs odd:bg-mendelu-gray-light/40">
+            <span class="font-mono text-mendelu-gray-dark truncate flex-1" :title="f.path">{{ f.path }}</span>
+            <span class="text-mendelu-gray-dark tabular-nums whitespace-nowrap">{{ formatBytes(f.size_bytes) }}</span>
+          </div>
+        </div>
+      </div>
+      <div v-else-if="!tmpLoading" class="text-[11px] text-mendelu-gray-dark/70 italic">
+        No leftover temp files.
       </div>
     </div>
 
@@ -345,7 +572,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, reactive, onMounted } from 'vue'
+import { ref, computed, reactive, onMounted, onBeforeUnmount } from 'vue'
 import PageHeader from '../components/PageHeader.vue'
 import { apiFetch } from '../api'
 import { useToast } from '../composables/useToast'
@@ -376,6 +603,8 @@ interface EditableSettings {
   top_k: number
   use_reranker: boolean
   batch_size?: number
+  embedding_batch_size: number
+  embedding_query_batch_size: number
 }
 
 const editableSettings = reactive<EditableSettings>({
@@ -383,7 +612,53 @@ const editableSettings = reactive<EditableSettings>({
   temperature: 0.1,
   top_k: 10,
   use_reranker: false,
+  embedding_batch_size: 64,
+  embedding_query_batch_size: 32,
 })
+
+// Recommended embedding batch sizes by VRAM tier. BAAI-large at FP32 +
+// 512 tokens needs ~16 MB/sample of working VRAM, so 64 ≈ 1 GB ≈ safe
+// for 4 GB cards once the 1.3 GB model is loaded. Bigger cards can push
+// proportionally higher.
+const batchPresets = [
+  { size: 32, label: '2 GB GPU' },
+  { size: 64, label: '4 GB (RTX 3050)' },
+  { size: 128, label: '8 GB (RTX 3070)' },
+  { size: 256, label: '12 GB (RTX 3080 Ti)' },
+  { size: 512, label: '16+ GB (4090, A100)' },
+  { size: 1024, label: '24+ GB (workstation)' },
+]
+const savingEmbed = ref(false)
+
+const hasEmbedChanges = computed(() => {
+  return editableSettings.embedding_batch_size !== originalSettings.value.embedding_batch_size
+    || editableSettings.embedding_query_batch_size !== originalSettings.value.embedding_query_batch_size
+})
+
+async function saveEmbedSettings() {
+  savingEmbed.value = true
+  try {
+    const resp = await apiFetch('/settings/system', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        embedding_batch_size: editableSettings.embedding_batch_size,
+        embedding_query_batch_size: editableSettings.embedding_query_batch_size,
+      })
+    })
+    if (resp.ok) {
+      originalSettings.value.embedding_batch_size = editableSettings.embedding_batch_size
+      originalSettings.value.embedding_query_batch_size = editableSettings.embedding_query_batch_size
+      toast.success('Batch sizes saved — next embedding call will use them')
+    } else {
+      const err = await resp.json().catch(() => ({}))
+      throw new Error(err.detail || `HTTP ${resp.status}`)
+    }
+  } catch (e: any) {
+    toast.error(`Save failed: ${e?.message || 'network error'}`)
+  } finally {
+    savingEmbed.value = false
+  }
+}
 
 async function testConnection() {
   testingConnection.value = true
@@ -446,10 +721,12 @@ async function toggleReveal(key) {
   }
 }
 
-const credentialEdits = reactive({
+const credentialEdits = reactive<Record<string, string>>({
   openrouter_api_key: '', cds_api_key: '',
   nasa_earthdata_user: '', nasa_earthdata_password: '',
-  cmems_username: '', cmems_password: ''
+  cmems_username: '', cmems_password: '',
+  mistral_username: '', mistral_password: '',
+  esgf_username: '', esgf_password: '',
 })
 
 // Adapters grouped by portal with their credential fields
@@ -494,10 +771,16 @@ const builtinAdapters = reactive([
     name: 'ESGF',
     description: 'Earth System Grid Federation — CMIP6, CORDEX projections',
     datasets: 'CMIP6, CORDEX',
-    public: true,
+    public: false,
     expanded: false,
-    fields: [],
+    fields: [
+      { key: 'esgf_username', label: 'Username', hint: null },
+      { key: 'esgf_password', label: 'Password', hint: 'Register at any ESGF node, e.g. esgf-data.dkrz.de' },
+    ],
   },
+  // Mistral / CINECA tile removed — meteohub.agenziaitaliameteo.it serves
+  // generated download URLs without auth headers, so no portal credentials
+  // are needed; users just paste the URL into a Source upload.
   {
     id: 'noaa', builtin: true,
     name: 'NOAA',
@@ -650,6 +933,10 @@ async function refreshSettings() {
         editableSettings.top_k = settings.value.llm.top_k ?? 10
         editableSettings.use_reranker = settings.value.llm.use_reranker ?? false
       }
+      if (settings.value.embedding_model) {
+        editableSettings.embedding_batch_size = settings.value.embedding_model.doc_batch_size ?? 64
+        editableSettings.embedding_query_batch_size = settings.value.embedding_model.query_batch_size ?? 32
+      }
       originalSettings.value = { ...editableSettings }
     }
     if (embResp.ok) embeddingStats.value = await embResp.json()
@@ -716,8 +1003,499 @@ async function saveCredentials() {
   }
 }
 
+// --- Qdrant snapshot export/import ---
+//
+// Snapshots can be multi-GB so the download is streamed via the backend
+// (which proxies to Qdrant's REST API). We trigger the browser save
+// dialog by turning the response into a Blob + object URL — fetch is
+// required (not a plain <a href>) because the endpoint is JWT-protected.
+
+interface QdrantSnapshot {
+  name: string
+  size: number | null
+  creation_time: string | null
+  checksum: string | null
+}
+
+const snapshots = ref<QdrantSnapshot[]>([])
+const snapshotsLoading = ref(false)
+const exportingSnapshot = ref(false)
+const importingSnapshot = ref(false)
+const importFileInput = ref<HTMLInputElement | null>(null)
+
+interface SnapshotProgress {
+  stage: string
+  percent: number          // 0-100, only used when indeterminate=false
+  bytes: number            // bytes done
+  total: number            // 0 if unknown
+  elapsedMs: number        // ms since start
+  indeterminate: boolean   // true when we don't know the total
+}
+
+function makeProgress(stage = 'Working…'): SnapshotProgress {
+  return { stage, percent: 0, bytes: 0, total: 0, elapsedMs: 0, indeterminate: true }
+}
+
+const exportProgress = reactive<SnapshotProgress>(makeProgress('Creating…'))
+const importProgress = reactive<SnapshotProgress>(makeProgress('Uploading…'))
+
+function formatDuration(ms: number): string {
+  const s = Math.floor(ms / 1000)
+  if (s < 60) return `${s}s`
+  return `${Math.floor(s / 60)}m ${s % 60}s`
+}
+
+const exportProgressLabel = computed(() => {
+  if (exportProgress.indeterminate) {
+    const t = formatDuration(exportProgress.elapsedMs)
+    return exportProgress.bytes > 0
+      ? `${formatBytes(exportProgress.bytes)} • ${t}`
+      : t
+  }
+  return `${formatBytes(exportProgress.bytes)} / ${formatBytes(exportProgress.total)} • ${formatDuration(exportProgress.elapsedMs)}`
+})
+
+const importProgressLabel = computed(() => {
+  if (importProgress.indeterminate) return formatDuration(importProgress.elapsedMs)
+  return `${formatBytes(importProgress.bytes)} / ${formatBytes(importProgress.total)} • ${formatDuration(importProgress.elapsedMs)}`
+})
+
+function resetProgress(p: SnapshotProgress, stage: string) {
+  p.stage = stage
+  p.percent = 0
+  p.bytes = 0
+  p.total = 0
+  p.elapsedMs = 0
+  p.indeterminate = true
+}
+
+function formatBytes(n: number | null | undefined): string {
+  if (n == null) return '—'
+  if (n < 1024) return `${n} B`
+  const units = ['KB', 'MB', 'GB', 'TB']
+  let v = n / 1024
+  let i = 0
+  while (v >= 1024 && i < units.length - 1) { v /= 1024; i++ }
+  return `${v.toFixed(v >= 100 ? 0 : 1)} ${units[i]}`
+}
+
+// Qdrant names snapshots like "<collection>-<id>-<YYYY-MM-DD-HH-MM-SS>.snapshot".
+// The creation_time field on the API response is often null in 1.17, so we
+// fall back to parsing the embedded timestamp.
+const SNAPSHOT_TS_RE = /(\d{4})-(\d{2})-(\d{2})-(\d{2})-(\d{2})-(\d{2})/
+
+function parseSnapshotDate(snap: QdrantSnapshot): Date | null {
+  if (snap.creation_time) {
+    const d = new Date(snap.creation_time)
+    if (!isNaN(d.getTime())) return d
+  }
+  const m = snap.name?.match(SNAPSHOT_TS_RE)
+  if (m) {
+    // Qdrant emits these in UTC.
+    const [, y, mo, da, h, mi, s] = m
+    const d = new Date(Date.UTC(+y, +mo - 1, +da, +h, +mi, +s))
+    if (!isNaN(d.getTime())) return d
+  }
+  return null
+}
+
+function snapshotTimestamp(snap: QdrantSnapshot): string {
+  const d = parseSnapshotDate(snap)
+  if (!d) return 'unknown date'
+  // Local-time short form, e.g. "2026-05-03 14:22:31"
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
+}
+
+const sortedSnapshots = computed(() => {
+  // Newest first. parseSnapshotDate returns null for un-dated entries, which
+  // we sink to the bottom of the list.
+  return [...snapshots.value].sort((a, b) => {
+    const da = parseSnapshotDate(a)?.getTime() ?? -Infinity
+    const db = parseSnapshotDate(b)?.getTime() ?? -Infinity
+    return db - da
+  })
+})
+
+// --- /tmp ETL leftovers ---
+const tmp = ref<any>({ files: [], total_bytes: 0, count: 0 })
+const tmpLoading = ref(false)
+const cleaningTmp = ref(false)
+
+async function refreshTmp() {
+  tmpLoading.value = true
+  try {
+    const resp = await apiFetch('/admin/tmp/list')
+    if (resp.ok) tmp.value = await resp.json()
+  } catch (e: any) {
+    toast.error(`Could not list /tmp: ${e?.message || 'network error'}`)
+  } finally {
+    tmpLoading.value = false
+  }
+}
+
+async function cleanTmp() {
+  if (!window.confirm(`Delete ${tmp.value.count || 0} temp files (${formatBytes(tmp.value.total_bytes || 0)})?`)) return
+  cleaningTmp.value = true
+  try {
+    const resp = await apiFetch('/admin/tmp/clean', { method: 'POST' })
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}))
+      throw new Error(err.detail || `HTTP ${resp.status}`)
+    }
+    const data = await resp.json()
+    toast.success(`Deleted ${data.deleted} files, freed ${formatBytes(data.freed_bytes)}`)
+    await refreshTmp()
+  } catch (e: any) {
+    toast.error(`Clean failed: ${e?.message || 'network error'}`)
+  } finally {
+    cleaningTmp.value = false
+  }
+}
+
+async function refreshSnapshots() {
+  snapshotsLoading.value = true
+  try {
+    const resp = await apiFetch('/admin/qdrant/snapshot/list')
+    if (resp.ok) {
+      const data = await resp.json()
+      snapshots.value = data.snapshots || []
+    } else {
+      const err = await resp.json().catch(() => ({}))
+      throw new Error(err.detail || `HTTP ${resp.status}`)
+    }
+  } catch (e: any) {
+    console.error('Failed to list snapshots:', e)
+    toast.error(`Could not list snapshots: ${e?.message || 'network error'}`)
+  } finally {
+    snapshotsLoading.value = false
+  }
+}
+
+// Stream a snapshot download into memory chunk-by-chunk so we can update
+// the progress bar as bytes arrive. JWT auth means a plain <a href> won't
+// work — we need apiFetch + blob anyway.
+async function downloadSnapshotByName(name: string, p: SnapshotProgress, startedAt: number) {
+  p.stage = 'Downloading…'
+  p.indeterminate = false
+  p.percent = 0
+  p.bytes = 0
+  p.total = 0
+  const resp = await apiFetch(`/admin/qdrant/snapshot/download/${encodeURIComponent(name)}`)
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({}))
+    throw new Error(err.detail || `HTTP ${resp.status}`)
+  }
+  // Content-Length might be missing if a proxy strips it on streaming
+  // responses — fall back to indeterminate in that case.
+  const lenHdr = resp.headers.get('Content-Length')
+  const total = lenHdr ? parseInt(lenHdr, 10) : 0
+  if (!total || isNaN(total)) p.indeterminate = true
+  else p.total = total
+
+  const reader = resp.body?.getReader()
+  if (!reader) {
+    // No streaming support — fall back to a simple blob.
+    const blob = await resp.blob()
+    p.bytes = blob.size
+    p.total = blob.size
+    p.percent = 100
+    p.elapsedMs = Date.now() - startedAt
+    triggerBrowserDownload(blob, name)
+    return
+  }
+
+  const chunks: BlobPart[] = []
+  let received = 0
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    if (value) {
+      chunks.push(value as BlobPart)
+      received += value.byteLength
+      p.bytes = received
+      if (total) p.percent = Math.min(100, (received / total) * 100)
+      p.elapsedMs = Date.now() - startedAt
+    }
+  }
+  if (!total) {
+    // Promote to determinate now that we know the final size.
+    p.indeterminate = false
+    p.total = received
+    p.percent = 100
+  }
+  triggerBrowserDownload(new Blob(chunks, { type: 'application/octet-stream' }), name)
+}
+
+function triggerBrowserDownload(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  URL.revokeObjectURL(url)
+}
+
+// Active-create state lives on the backend so the progress bar survives a
+// page reload. We POST to start (returns immediately), then poll
+// /snapshot/active until status flips to completed/failed. The bytes-level
+// download progress can only resume in the same tab that clicked Export,
+// because the actual HTTP download is browser-local — for a reloaded tab
+// we just refresh the snapshot list and let the user click Download.
+
+let activePollHandle: number | null = null
+let activeTickerHandle: number | null = null
+// Set when this tab kicked off the create. Lets us auto-trigger the
+// download once the create completes, but only here — a different tab
+// that polls the same active state should not start a 2nd download.
+let exportInitiatedHere = false
+
+function stopActivePolling() {
+  if (activePollHandle !== null) { window.clearInterval(activePollHandle); activePollHandle = null }
+  if (activeTickerHandle !== null) { window.clearInterval(activeTickerHandle); activeTickerHandle = null }
+}
+
+async function dismissActiveServerState() {
+  try { await apiFetch('/admin/qdrant/snapshot/active/dismiss', { method: 'POST' }) } catch {}
+}
+
+async function pollActiveOnce(): Promise<void> {
+  let resp: Response
+  try {
+    resp = await apiFetch('/admin/qdrant/snapshot/active')
+  } catch {
+    return  // transient network blip — keep polling
+  }
+  if (!resp.ok) return
+  const data = await resp.json().catch(() => null)
+  if (!data?.active) {
+    // Nothing in flight on the server; clean up our local state.
+    stopActivePolling()
+    exportingSnapshot.value = false
+    exportInitiatedHere = false
+    return
+  }
+  if (data.status === 'running') {
+    // Keep showing progress; the ticker updates elapsed time independently.
+    if (data.started_at && exportProgress.elapsedMs === 0) {
+      // Page just loaded mid-run — re-anchor elapsed from the server time.
+      const t = Date.parse(data.started_at)
+      if (!isNaN(t)) exportProgress.elapsedMs = Date.now() - t
+    }
+    return
+  }
+  // Terminal: completed | failed.
+  stopActivePolling()
+  if (data.status === 'completed') {
+    const snap = data.snapshot
+    toast.success(`Snapshot created: ${snap?.name || 'new snapshot'}`)
+    await refreshSnapshots()
+    if (exportInitiatedHere && snap?.name) {
+      // Same tab that kicked it off — trigger the download automatically.
+      try {
+        const startedAt = Date.now()
+        if (snap.size) exportProgress.total = snap.size
+        await downloadSnapshotByName(snap.name, exportProgress, startedAt)
+      } catch (e: any) {
+        toast.error(`Download failed: ${e?.message || 'network error'}`)
+      }
+    }
+  } else {
+    toast.error(`Snapshot create failed: ${data.error || 'unknown error'}`)
+  }
+  exportInitiatedHere = false
+  exportingSnapshot.value = false
+  await dismissActiveServerState()
+}
+
+function startActivePolling(serverStartedAt?: string | null) {
+  stopActivePolling()
+  exportingSnapshot.value = true
+  // Anchor elapsed time to the server's started_at if available, otherwise now.
+  const anchor = serverStartedAt ? Date.parse(serverStartedAt) : Date.now()
+  const safeAnchor = isNaN(anchor) ? Date.now() : anchor
+  activeTickerHandle = window.setInterval(() => {
+    exportProgress.elapsedMs = Date.now() - safeAnchor
+  }, 500)
+  activePollHandle = window.setInterval(() => { pollActiveOnce() }, 2000)
+}
+
+async function exportSnapshot() {
+  resetProgress(exportProgress, 'Creating snapshot…')
+  exportingSnapshot.value = true
+  exportInitiatedHere = true
+  try {
+    const resp = await apiFetch('/admin/qdrant/snapshot/create', { method: 'POST' })
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}))
+      throw new Error(err.detail || `HTTP ${resp.status}`)
+    }
+    const data = await resp.json()
+    // Either status=started or status=already_running — either way we poll.
+    startActivePolling(data.started_at)
+  } catch (e: any) {
+    console.error('Snapshot export failed:', e)
+    toast.error(`Export failed: ${e?.message || 'network error'}`)
+    exportingSnapshot.value = false
+    exportInitiatedHere = false
+  }
+}
+
+// On mount, ask the backend whether a create is already running (or has
+// just finished) so a reloaded tab restores its progress UI instead of
+// looking like nothing's happening.
+async function restoreActiveCreateState() {
+  try {
+    const resp = await apiFetch('/admin/qdrant/snapshot/active')
+    if (!resp.ok) return
+    const data = await resp.json()
+    if (!data?.active) return
+    if (data.status === 'running') {
+      resetProgress(exportProgress, 'Creating snapshot…')
+      // exportInitiatedHere stays false — this tab didn't start it, so
+      // we won't auto-download on completion.
+      startActivePolling(data.started_at)
+    } else {
+      // Stale completed/failed state — quietly clear it so the UI is clean.
+      await dismissActiveServerState()
+    }
+  } catch (e) {
+    console.warn('Could not restore snapshot state:', e)
+  }
+}
+
+async function downloadExistingSnapshot(name: string) {
+  exportingSnapshot.value = true
+  resetProgress(exportProgress, 'Downloading…')
+  const startedAt = Date.now()
+  try {
+    await downloadSnapshotByName(name, exportProgress, startedAt)
+  } catch (e: any) {
+    console.error('Snapshot download failed:', e)
+    toast.error(`Download failed: ${e?.message || 'network error'}`)
+  } finally {
+    exportingSnapshot.value = false
+  }
+}
+
+async function deleteSnapshot(name: string) {
+  if (!window.confirm(`Delete snapshot "${name}"? This cannot be undone.`)) return
+  try {
+    const resp = await apiFetch(`/admin/qdrant/snapshot/${encodeURIComponent(name)}`, { method: 'DELETE' })
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}))
+      throw new Error(err.detail || `HTTP ${resp.status}`)
+    }
+    toast.success(`Deleted ${name}`)
+    await refreshSnapshots()
+  } catch (e: any) {
+    console.error('Snapshot delete failed:', e)
+    toast.error(`Delete failed: ${e?.message || 'network error'}`)
+  }
+}
+
+function triggerImportPicker() {
+  importFileInput.value?.click()
+}
+
+async function onSnapshotFilePicked(ev: Event) {
+  const input = ev.target as HTMLInputElement
+  const file = input.files?.[0]
+  // Reset so picking the same file twice still triggers @change.
+  input.value = ''
+  if (!file) return
+
+  // Two-step confirmation — this destroys the live collection.
+  const confirmMsg =
+    `Restore collection from "${file.name}" (${formatBytes(file.size)})?\n\n` +
+    `This WILL REPLACE all current points in the active Qdrant collection. ` +
+    `Make sure you have an export of the current state first.`
+  if (!window.confirm(confirmMsg)) return
+  if (!window.confirm('Last chance — proceed with restore?')) return
+
+  importingSnapshot.value = true
+  resetProgress(importProgress, 'Uploading…')
+  importProgress.indeterminate = false
+  importProgress.total = file.size
+  const startedAt = Date.now()
+  try {
+    await uploadSnapshotWithProgress(file, importProgress, startedAt)
+    toast.success(`Restored snapshot from ${file.name}`)
+    await Promise.all([refreshSettings(), refreshSnapshots()])
+  } catch (e: any) {
+    console.error('Snapshot restore failed:', e)
+    toast.error(`Restore failed: ${e?.message || 'network error'}`)
+  } finally {
+    importingSnapshot.value = false
+  }
+}
+
+// fetch() doesn't expose upload progress events, so the upload uses XHR.
+// After bytes finish uploading the server still has to verify+recover the
+// snapshot — we flip back to indeterminate during that "Restoring…" phase.
+function uploadSnapshotWithProgress(file: File, p: SnapshotProgress, startedAt: number): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const form = new FormData()
+    form.append('snapshot', file)
+    const xhr = new XMLHttpRequest()
+    xhr.open('POST', '/admin/qdrant/snapshot/restore')
+    const token = localStorage.getItem('auth_token')
+    if (token && token !== 'undefined' && token !== 'null') {
+      xhr.setRequestHeader('Authorization', `Bearer ${token}`)
+    }
+    xhr.upload.addEventListener('progress', (ev) => {
+      if (ev.lengthComputable) {
+        p.bytes = ev.loaded
+        p.total = ev.total
+        p.percent = Math.min(100, (ev.loaded / ev.total) * 100)
+      }
+      p.elapsedMs = Date.now() - startedAt
+    })
+    xhr.upload.addEventListener('load', () => {
+      // Bytes done. Server still needs to load + recover the snapshot.
+      p.stage = 'Restoring on server…'
+      p.indeterminate = true
+    })
+    const tickerId = window.setInterval(() => {
+      p.elapsedMs = Date.now() - startedAt
+    }, 500)
+    xhr.addEventListener('loadend', () => window.clearInterval(tickerId))
+    xhr.addEventListener('error', () => reject(new Error('Network error during upload')))
+    xhr.addEventListener('abort', () => reject(new Error('Upload aborted')))
+    xhr.addEventListener('load', () => {
+      if (xhr.status === 401) {
+        // Mirror apiFetch's 401 handling.
+        localStorage.removeItem('auth_token')
+        localStorage.removeItem('auth_user')
+        window.location.assign('/app/login')
+        return reject(new Error('Session expired'))
+      }
+      if (xhr.status >= 200 && xhr.status < 300) {
+        resolve()
+      } else {
+        let detail = `HTTP ${xhr.status}`
+        try {
+          const body = JSON.parse(xhr.responseText)
+          if (body?.detail) detail = body.detail
+        } catch {}
+        reject(new Error(detail))
+      }
+    })
+    xhr.send(form)
+  })
+}
+
 onMounted(() => {
   refreshSettings()
   loadCustomAdapters()
+  refreshSnapshots()
+  refreshTmp()
+  restoreActiveCreateState()
+})
+
+onBeforeUnmount(() => {
+  stopActivePolling()
 })
 </script>

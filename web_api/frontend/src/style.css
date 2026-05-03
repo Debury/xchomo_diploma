@@ -269,6 +269,18 @@ table tbody tr:hover { @apply bg-black/[0.02]; }
   100% { background-position: 200% 0; }
 }
 
+/* Indeterminate progress bar — slides a 35%-wide block across so the user
+   sees motion while we're waiting on a server step (e.g. Qdrant snapshot
+   creation) that gives no real progress signal. */
+@keyframes snapshot-pulse {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(285%); } /* 100% / 0.35 ≈ 285% to clear the right edge */
+}
+.animate-snapshot-pulse {
+  animation: snapshot-pulse 1.6s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+  will-change: transform;
+}
+
 /* Service status pulse */
 .pulse-online {
   animation: pulse-ring 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
